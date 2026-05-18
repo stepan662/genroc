@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 )
 
@@ -10,119 +11,116 @@ var (
 	specBytes []byte
 )
 
-// buildSpec generates the OpenAPI spec from the action registry.
-// No manual maintenance needed — edit actions.go to change the docs.
+// buildSpec generates the OpenAPI 3.0 spec entirely from the action registry.
+// Adding an entry to actions.go is sufficient — no changes needed here.
 func buildSpec() []byte {
 	specOnce.Do(func() {
+		paths := map[string]interface{}{}
+		for _, a := range registry {
+			op := buildOperation(a)
+			entry, ok := paths[a.Path].(map[string]interface{})
+			if !ok {
+				entry = map[string]interface{}{}
+			}
+			entry[strings.ToLower(a.Method)] = op
+			paths[a.Path] = entry
+		}
+
 		spec := map[string]interface{}{
 			"openapi": "3.0.3",
 			"info": map[string]interface{}{
 				"title":       "gent",
-				"description": "Minimalist business process orchestrator. All actions use the same JSON envelope over HTTP, TCP, and Unix sockets.",
+				"description": "Minimalist business process orchestrator. HTTP endpoints are generated from the action registry.",
 				"version":     "1.0.0",
 			},
-			"paths": map[string]interface{}{
-				"/": map[string]interface{}{
-					"post": map[string]interface{}{
-						"summary":     "Send an action",
-						"description": "All actions share the same envelope: `action` selects the operation, `payload` carries the input, `id` is used for single-resource lookups.",
-						"tags":        []string{"Actions"},
-						"requestBody": map[string]interface{}{
-							"required": true,
-							"content": map[string]interface{}{
-								"application/json": map[string]interface{}{
-									"schema":   buildEnvelopeSchema(),
-									"examples": buildExamples(),
-								},
-							},
-						},
-						"responses": map[string]interface{}{
-							"200": map[string]interface{}{
-								"description": "Result of the action",
-								"content": map[string]interface{}{
-									"application/json": map[string]interface{}{
-										"schema":   buildReplySchema(),
-										"examples": buildRespExamples(),
-									},
-								},
-							},
-						},
-					},
-				},
-			},
+			"paths": paths,
 		}
 		specBytes, _ = json.Marshal(spec)
 	})
 	return specBytes
 }
 
-// buildExamples generates request examples from the registry.
-func buildExamples() map[string]interface{} {
-	out := make(map[string]interface{}, len(registry))
-	for _, a := range registry {
-		env := map[string]interface{}{"action": a.Name}
-		if a.Req != nil {
-			env["payload"] = jsonRoundtrip(a.Req)
-		}
-		if a.ReqID != "" {
-			env["id"] = a.ReqID
-		}
-		out[a.Name] = map[string]interface{}{
-			"summary": a.Summary,
-			"value":   env,
+func buildOperation(a actionDef) map[string]interface{} {
+	op := map[string]interface{}{
+		"summary": a.Summary,
+		"tags":    a.Tags,
+	}
+
+	// Parameters: path params (from {name} in path) + query params
+	var params []interface{}
+	for _, seg := range strings.Split(a.Path, "/") {
+		if strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") {
+			name := seg[1 : len(seg)-1]
+			params = append(params, map[string]interface{}{
+				"name": name, "in": "path", "required": true,
+				"schema": map[string]interface{}{"type": "string", "format": "uuid"},
+			})
 		}
 	}
-	return out
-}
-
-// buildRespExamples generates response examples from the registry.
-func buildRespExamples() map[string]interface{} {
-	out := make(map[string]interface{}, len(registry))
-	for _, a := range registry {
-		if a.Resp == nil {
-			continue
+	for _, qp := range a.QueryParams {
+		p := map[string]interface{}{
+			"name": qp.Name, "in": "query",
+			"required":    qp.Required,
+			"description": qp.Desc,
+			"schema":      map[string]interface{}{"type": "string"},
 		}
-		out[a.Name] = map[string]interface{}{
-			"summary": a.Summary,
-			"value": map[string]interface{}{
-				"ok":   true,
-				"data": jsonRoundtrip(a.Resp),
+		if len(qp.Enum) > 0 {
+			p["schema"] = map[string]interface{}{"type": "string", "enum": qp.Enum}
+		}
+		params = append(params, p)
+	}
+	if len(params) > 0 {
+		op["parameters"] = params
+	}
+
+	// Request body (non-GET with an example)
+	if a.Method != "GET" && a.Req != nil {
+		op["requestBody"] = map[string]interface{}{
+			"required": true,
+			"content": map[string]interface{}{
+				"application/json": map[string]interface{}{
+					"schema":  map[string]interface{}{"type": "object"},
+					"example": jsonRoundtrip(a.Req),
+				},
 			},
 		}
 	}
-	return out
-}
 
-func buildEnvelopeSchema() map[string]interface{} {
-	names := make([]string, len(registry))
-	for i, a := range registry {
-		names[i] = a.Name
-	}
-	return map[string]interface{}{
-		"type":     "object",
-		"required": []string{"action"},
-		"properties": map[string]interface{}{
-			"action":  map[string]interface{}{"type": "string", "enum": names},
-			"payload": map[string]interface{}{"type": "object"},
-			"id":      map[string]interface{}{"type": "string", "format": "uuid"},
+	// Response
+	respContent := map[string]interface{}{
+		"application/json": map[string]interface{}{
+			"schema": map[string]interface{}{
+				"type":     "object",
+				"required": []string{"ok"},
+				"properties": map[string]interface{}{
+					"ok":    map[string]interface{}{"type": "boolean"},
+					"data":  map[string]interface{}{"description": "Action result"},
+					"error": map[string]interface{}{"type": "string"},
+				},
+			},
 		},
 	}
-}
-
-func buildReplySchema() map[string]interface{} {
-	return map[string]interface{}{
-		"type":     "object",
-		"required": []string{"ok"},
-		"properties": map[string]interface{}{
-			"ok":    map[string]interface{}{"type": "boolean"},
-			"data":  map[string]interface{}{"description": "Action result"},
-			"error": map[string]interface{}{"type": "string"},
+	if a.Resp != nil {
+		respContent["application/json"].(map[string]interface{})["example"] = map[string]interface{}{
+			"ok":   true,
+			"data": jsonRoundtrip(a.Resp),
+		}
+	}
+	op["responses"] = map[string]interface{}{
+		"200": map[string]interface{}{"description": "OK", "content": respContent},
+		"400": map[string]interface{}{"description": "Error",
+			"content": map[string]interface{}{
+				"application/json": map[string]interface{}{
+					"example": map[string]interface{}{"ok": false, "error": "error message"},
+				},
+			},
 		},
 	}
+
+	return op
 }
 
-// jsonRoundtrip marshals v to JSON and back to a plain interface{} so it
-// serialises cleanly into the spec without Go-specific type wrappers.
+// jsonRoundtrip marshals v and back so it embeds cleanly as a plain JSON value.
 func jsonRoundtrip(v interface{}) interface{} {
 	b, _ := json.Marshal(v)
 	var out interface{}

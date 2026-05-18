@@ -21,7 +21,7 @@ func main() {
 	tcpAddr := flag.String("tcp", "", "TCP listen address, e.g. 127.0.0.1:9090 (empty to disable)")
 	udsPath := flag.String("uds", "", "Unix socket path, e.g. /tmp/gent.sock (empty to disable)")
 	pollMs := flag.Int("poll", 500, "Engine poll interval in milliseconds")
-	logLevel := flag.String("log", "info", "Log level: debug, info, warn, error")
+	logLevel := flag.String("log", "debug", "Log level: debug, info, warn, error")
 	flag.Parse()
 
 	log := newLogger(*logLevel)
@@ -63,7 +63,7 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := srv.ListenTCP(*tcpAddr); err != nil {
+			if err := srv.ListenTCP(ctx, *tcpAddr); err != nil {
 				log.Error("TCP server", "err", err)
 			}
 		}()
@@ -73,7 +73,7 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := srv.ListenUDS(*udsPath); err != nil {
+			if err := srv.ListenUDS(ctx, *udsPath); err != nil {
 				log.Error("UDS server", "err", err)
 			}
 		}()

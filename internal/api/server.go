@@ -7,11 +7,12 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 )
 
 // Server listens on HTTP, TCP, and/or Unix Domain Socket simultaneously.
-// All three transports share the same JSON envelope protocol.
+// All three transports share the same handler logic; only the envelope extraction differs.
 type Server struct {
 	handlers *Handlers
 	log      *slog.Logger
@@ -23,11 +24,23 @@ func NewServer(handlers *Handlers, log *slog.Logger) *Server {
 
 // ListenHTTP starts an HTTP server on addr and shuts it down gracefully when ctx is cancelled.
 //
-//	POST /            — send any action (same envelope protocol as TCP/UDS)
-//	GET  /docs        — Swagger UI
-//	GET  /openapi.json — OpenAPI 3.0 spec
+// Routes and Swagger docs are generated entirely from the action registry in actions.go.
+// To add a new endpoint, add an entry there — no changes needed here or in openapi.go.
 func (s *Server) ListenHTTP(ctx context.Context, addr string) error {
 	mux := http.NewServeMux()
+	h := s.handlers
+
+	for _, a := range registry {
+		a := a
+		mux.HandleFunc(a.Method+" "+a.Path, func(w http.ResponseWriter, r *http.Request) {
+			env, err := a.envelope(r)
+			if err != nil {
+				writeReply(w, errReply(fmt.Errorf("bad request: %w", err)))
+				return
+			}
+			writeReply(w, a.handle(h, env))
+		})
+	}
 
 	mux.HandleFunc("GET /docs", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -37,15 +50,6 @@ func (s *Server) ListenHTTP(ctx context.Context, addr string) error {
 	mux.HandleFunc("GET /openapi.json", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(buildSpec())
-	})
-
-	mux.HandleFunc("POST /", func(w http.ResponseWriter, r *http.Request) {
-		var env Envelope
-		if err := json.NewDecoder(r.Body).Decode(&env); err != nil {
-			writeReply(w, errReply(fmt.Errorf("decode envelope: %w", err)))
-			return
-		}
-		writeReply(w, s.handlers.Handle(env))
 	})
 
 	srv := &http.Server{Addr: addr, Handler: mux}
@@ -62,26 +66,32 @@ func (s *Server) ListenHTTP(ctx context.Context, addr string) error {
 }
 
 // ListenTCP starts a JSON stream server on a TCP address (e.g. "127.0.0.1:9090").
-func (s *Server) ListenTCP(addr string) error {
+// Protocol: newline-delimited JSON envelopes {"action":"...","payload":{...},"id":"..."}.
+func (s *Server) ListenTCP(ctx context.Context, addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen tcp %s: %w", addr, err)
 	}
 	s.log.Info("TCP listening", "addr", addr)
-	return s.acceptLoop(ln)
+	return s.acceptLoop(ctx, ln)
 }
 
 // ListenUDS starts a JSON stream server on a Unix Domain Socket path.
-func (s *Server) ListenUDS(path string) error {
+func (s *Server) ListenUDS(ctx context.Context, path string) error {
+	os.Remove(path)
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		return fmt.Errorf("listen uds %s: %w", path, err)
 	}
 	s.log.Info("UDS listening", "path", path)
-	return s.acceptLoop(ln)
+	return s.acceptLoop(ctx, ln)
 }
 
-func (s *Server) acceptLoop(ln net.Listener) error {
+func (s *Server) acceptLoop(ctx context.Context, ln net.Listener) error {
+	go func() {
+		<-ctx.Done()
+		ln.Close()
+	}()
 	for {
 		conn, err := ln.Accept()
 		if err != nil {

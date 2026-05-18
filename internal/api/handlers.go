@@ -91,8 +91,8 @@ func (h *Handlers) putDefinition(raw json.RawMessage) Reply {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return errReply(fmt.Errorf("decode: %w", err))
 	}
-	if req.Name == "" || req.Version == 0 || len(req.Steps) == 0 {
-		return errReply(fmt.Errorf("name, version, and at least one step are required"))
+	if err := req.Validate(); err != nil {
+		return errReply(err)
 	}
 	if err := h.db.SaveDefinition(&req.ProcessDefinition); err != nil {
 		return errReply(fmt.Errorf("save: %w", err))
