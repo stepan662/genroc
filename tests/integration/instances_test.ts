@@ -42,9 +42,12 @@ test("POST /instances — starts a new instance", async () => {
 test("GET /instances/{id} — returns instance status", async () => {
   await ensureDefinition();
 
-  const { data: startData, error: startError } = await client.POST("/instances", {
-    body: { process: processName, input: { order_id: 1 } },
-  });
+  const { data: startData, error: startError } = await client.POST(
+    "/instances",
+    {
+      body: { process: processName, input: { order_id: 1 } },
+    },
+  );
 
   expect(startError).toBeUndefined();
   const id = startData!.id;
@@ -79,4 +82,42 @@ test("POST /instances — fails when input is invalid", async () => {
 
   expect(error).toBeDefined();
   expect(data).toBeUndefined();
+});
+
+test("POST /instances — what happens when referencing types?", async () => {
+  await client.PUT("/definitions", {
+    body: {
+      name: processName,
+      version: 1,
+      input_schema: {
+        $ref: "#/$defs/order",
+        $defs: {
+          order: {
+            type: "object",
+            properties: {
+              order_id: { type: "number" },
+            },
+            required: ["order_id"],
+          },
+        },
+      },
+      steps: [
+        {
+          type: "task" as const,
+          id: "s1",
+          transport: "http" as const,
+          endpoint: "http://localhost:19991/action",
+          timeout_ms: 500,
+          retries: 0,
+        },
+      ],
+    },
+  });
+
+  const { data, error } = await client.POST("/instances", {
+    body: { process: processName, input: { order_id: 10 } },
+  });
+
+  expect(data).toBeDefined();
+  expect(undefined).toBeUndefined();
 });

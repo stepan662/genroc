@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 
 	"gent/internal/db"
 	"gent/internal/model"
@@ -264,6 +265,11 @@ func patchInputSchema(spec map[string]any, inputSchema map[string]any) error {
 	props, ok := reqSchema["properties"].(map[string]any)
 	if !ok {
 		return fmt.Errorf("ApiStartInstanceReq missing properties")
+	}
+
+	if inputSchema["$id"] == nil {
+		inputSchema = maps.Clone(inputSchema)
+		inputSchema["$id"] = "instance_input_schema"
 	}
 	props["input"] = inputSchema
 	reqSchema["required"] = []string{"process", "input"}
