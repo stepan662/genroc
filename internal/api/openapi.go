@@ -1,131 +1,107 @@
 package api
 
 import (
-	"encoding/json"
+	"net/http"
+	"reflect"
 	"strings"
 	"sync"
+
+	"github.com/swaggest/jsonschema-go"
+	"github.com/swaggest/openapi-go"
+	"github.com/swaggest/openapi-go/openapi3"
 )
+
+// Spec returns the OpenAPI 3.0 spec as JSON, built from the action registry.
+// Can be called without starting the server — useful for generating static spec files.
+func Spec() []byte { return buildSpec() }
 
 var (
 	specOnce  sync.Once
 	specBytes []byte
 )
 
-// buildSpec generates the OpenAPI 3.0 spec entirely from the action registry.
-// Adding an entry to actions.go is sufficient — no changes needed here.
 func buildSpec() []byte {
 	specOnce.Do(func() {
-		paths := map[string]interface{}{}
-		for _, a := range registry {
-			op := buildOperation(a)
-			entry, ok := paths[a.Path].(map[string]interface{})
-			if !ok {
-				entry = map[string]interface{}{}
+		r := openapi3.Reflector{}
+		r.Spec = &openapi3.Spec{Openapi: "3.0.3"}
+
+		desc := "Minimalist business process orchestrator. HTTP endpoints are generated from the action registry."
+		r.Spec.Info.Title = "gent"
+		r.Spec.Info.Description = &desc
+		r.Spec.Info.Version = "1.0.0"
+
+		// Fields are required by default; add json:",omitempty" or use a pointer type to opt out.
+		r.DefaultOptions = append(r.DefaultOptions, jsonschema.InterceptProp(func(params jsonschema.InterceptPropParams) error {
+			if !params.Processed || params.Field.Type == nil || params.ParentSchema == nil {
+				return nil
 			}
-			entry[strings.ToLower(a.Method)] = op
-			paths[a.Path] = entry
+			tag := params.Field.Tag.Get("json")
+			if strings.Contains(tag, "omitempty") || params.Field.Type.Kind() == reflect.Ptr {
+				return nil
+			}
+			for _, r := range params.ParentSchema.Required {
+				if r == params.Name {
+					return nil
+				}
+			}
+			params.ParentSchema.Required = append(params.ParentSchema.Required, params.Name)
+			return nil
+		}))
+
+		for _, a := range registry {
+			addOperation(&r, a)
 		}
 
-		spec := map[string]interface{}{
-			"openapi": "3.0.3",
-			"info": map[string]interface{}{
-				"title":       "gent",
-				"description": "Minimalist business process orchestrator. HTTP endpoints are generated from the action registry.",
-				"version":     "1.0.0",
-			},
-			"paths": paths,
-		}
-		specBytes, _ = json.Marshal(spec)
+		b, _ := r.Spec.MarshalJSON()
+		specBytes = b
 	})
 	return specBytes
 }
 
-func buildOperation(a actionDef) map[string]interface{} {
-	op := map[string]interface{}{
-		"summary": a.Summary,
-		"tags":    a.Tags,
+func addOperation(r *openapi3.Reflector, a actionDef) {
+	op, err := r.NewOperationContext(a.Method, a.Path)
+	if err != nil {
+		return
+	}
+	op.SetSummary(a.Summary)
+	if len(a.Tags) > 0 {
+		op.SetTags(a.Tags...)
 	}
 
-	// Parameters: path params (from {name} in path) + query params
-	var params []interface{}
-	for _, seg := range strings.Split(a.Path, "/") {
-		if strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") {
-			name := seg[1 : len(seg)-1]
-			params = append(params, map[string]interface{}{
-				"name": name, "in": "path", "required": true,
-				"schema": map[string]interface{}{"type": "string", "format": "uuid"},
-			})
-		}
-	}
-	for _, qp := range a.QueryParams {
-		p := map[string]interface{}{
-			"name": qp.Name, "in": "query",
-			"required":    qp.Required,
-			"description": qp.Desc,
-			"schema":      map[string]interface{}{"type": "string"},
-		}
-		if len(qp.Enum) > 0 {
-			p["schema"] = map[string]interface{}{"type": "string", "enum": qp.Enum}
-		}
-		params = append(params, p)
-	}
-	if len(params) > 0 {
-		op["parameters"] = params
+	// Request body (POST/PUT) — reflect zero value of the type to avoid
+	// runtime values influencing additionalProperties inference.
+	if a.Req != nil && a.Method != http.MethodGet {
+		op.AddReqStructure(zeroOf(a.Req))
 	}
 
-	// Request body (non-GET with an example)
-	if a.Method != "GET" && a.Req != nil {
-		op["requestBody"] = map[string]interface{}{
-			"required": true,
-			"content": map[string]interface{}{
-				"application/json": map[string]interface{}{
-					"schema":  map[string]interface{}{"type": "object"},
-					"example": jsonRoundtrip(a.Req),
-				},
-			},
-		}
+	// Path and query parameters — struct with path/query tagged fields.
+	if a.QueryParams != nil {
+		op.AddReqStructure(a.QueryParams)
 	}
 
-	// Response
-	respContent := map[string]interface{}{
-		"application/json": map[string]interface{}{
-			"schema": map[string]interface{}{
-				"type":     "object",
-				"required": []string{"ok"},
-				"properties": map[string]interface{}{
-					"ok":    map[string]interface{}{"type": "boolean"},
-					"data":  map[string]interface{}{"description": "Action result"},
-					"error": map[string]interface{}{"type": "string"},
-				},
-			},
-		},
-	}
+	// Response data — reflect zero value of the type.
 	if a.Resp != nil {
-		respContent["application/json"].(map[string]interface{})["example"] = map[string]interface{}{
-			"ok":   true,
-			"data": jsonRoundtrip(a.Resp),
-		}
-	}
-	op["responses"] = map[string]interface{}{
-		"200": map[string]interface{}{"description": "OK", "content": respContent},
-		"400": map[string]interface{}{"description": "Error",
-			"content": map[string]interface{}{
-				"application/json": map[string]interface{}{
-					"example": map[string]interface{}{"ok": false, "error": "error message"},
-				},
-			},
-		},
+		op.AddRespStructure(zeroOf(a.Resp))
+		op.AddRespStructure(Reply{}, func(cu *openapi.ContentUnit) {
+			cu.HTTPStatus = http.StatusBadRequest
+		})
 	}
 
-	return op
+	_ = r.AddOperation(op)
 }
 
-// jsonRoundtrip marshals v and back so it embeds cleanly as a plain JSON value.
-func jsonRoundtrip(v interface{}) interface{} {
-	b, _ := json.Marshal(v)
-	var out interface{}
-	json.Unmarshal(b, &out)
-	return out
+// zeroOf returns a zero value of the same type as v.
+// This prevents runtime map/slice values from polluting the reflected schema
+// (e.g. map[string]any{"id": 42} would otherwise infer additionalProperties:{type:integer}).
+func zeroOf(v any) any {
+	t := reflect.TypeOf(v)
+	if t == nil {
+		return v
+	}
+	if t.Kind() == reflect.Ptr {
+		return reflect.New(t.Elem()).Interface()
+	}
+	return reflect.New(t).Elem().Interface()
 }
 
 const swaggerUI = `<!DOCTYPE html>

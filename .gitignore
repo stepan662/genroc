@@ -19,3 +19,5 @@
 .idea/
 .vscode/
 *.swp
+openapi.json
+tests/generated/

@@ -125,6 +125,8 @@ func writeReply(w http.ResponseWriter, r Reply) {
 	w.Header().Set("Content-Type", "application/json")
 	if !r.OK {
 		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": r.Error})
+	} else {
+		json.NewEncoder(w).Encode(r.Data)
 	}
-	json.NewEncoder(w).Encode(r)
 }

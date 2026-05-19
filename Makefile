@@ -5,9 +5,9 @@ uds     ?=
 poll    ?= 500
 log     ?= info
 
-BUILD_FLAGS = CGO_ENABLED=1
+# BUILD_FLAGS = CGO_ENABLED=1
 
-.PHONY: run build clean
+.PHONY: run build test swagger client test-int clean
 
 run:
 	$(BUILD_FLAGS) go run ./cmd/gent \
@@ -20,6 +20,18 @@ run:
 
 build:
 	$(BUILD_FLAGS) go build -o gent ./cmd/gent
+
+test:
+	$(BUILD_FLAGS) go test ./...
+
+swagger:
+	$(BUILD_FLAGS) go run ./cmd/gentspec
+
+client: swagger
+	cd tests && deno task generate
+
+test-int:
+	cd tests && deno task test
 
 clean:
 	rm -f gent $(db)

@@ -24,7 +24,7 @@ type ProcessInstance struct {
 	StepQueue []*Step
 
 	// ContextData is the accumulated key/value state passed between steps.
-	ContextData map[string]interface{}
+	ContextData map[string]any
 
 	RetryCount  int
 	NextRetryAt *time.Time

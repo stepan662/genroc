@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"gent/internal/db"
 	"gent/internal/model"
+
+	"github.com/google/uuid"
 )
 
 // Handlers holds business logic for all API operations.
@@ -26,9 +27,9 @@ type PutDefinitionReq struct {
 }
 
 type StartInstanceReq struct {
-	Process string                 `json:"process"`
-	Version *int                   `json:"version"` // nil = latest
-	Input   map[string]interface{} `json:"input"`
+	Process string          `json:"process"`
+	Version *int            `json:"version"` // nil = latest
+	Input   *map[string]any `json:"input,omitempty"`
 }
 
 type StartInstanceResp struct {
@@ -48,15 +49,15 @@ type DefinitionSummary struct {
 }
 
 type InstanceStatusResp struct {
-	ID         string                 `json:"id"`
-	Process    string                 `json:"process"`
-	Version    int                    `json:"version"`
-	Status     model.Status           `json:"status"`
-	RetryCount int                    `json:"retry_count"`
-	Context    map[string]interface{} `json:"context"`
-	Error      string                 `json:"error,omitempty"`
-	CreatedAt  string                 `json:"created_at"`
-	UpdatedAt  string                 `json:"updated_at"`
+	ID         string         `json:"id"`
+	Process    string         `json:"process"`
+	Version    int            `json:"version"`
+	Status     model.Status   `json:"status"`
+	RetryCount int            `json:"retry_count"`
+	Context    map[string]any `json:"context"`
+	Error      string         `json:"error,omitempty"`
+	CreatedAt  string         `json:"created_at"`
+	UpdatedAt  string         `json:"updated_at"`
 }
 
 // --- Envelope ---
@@ -127,7 +128,7 @@ func (h *Handlers) startInstance(raw json.RawMessage) Reply {
 
 	input := req.Input
 	if input == nil {
-		input = map[string]interface{}{}
+		input = &map[string]any{}
 	}
 
 	inst := &model.ProcessInstance{
@@ -135,7 +136,7 @@ func (h *Handlers) startInstance(raw json.RawMessage) Reply {
 		ProcessName:    def.Name,
 		ProcessVersion: def.Version,
 		StepQueue:      def.Steps,
-		ContextData:    input,
+		ContextData:    map[string]any{"input": input},
 		Status:         model.StatusRunning,
 		CreatedAt:      time.Now(),
 	}

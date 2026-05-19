@@ -116,7 +116,7 @@ var registry = func() []actionDef {
 			Req: StartInstanceReq{
 				Process: "order_pipeline",
 				Version: &v1,
-				Input:   map[string]interface{}{"order_id": 42},
+				Input:   &map[string]any{"order_id": 42},
 			},
 			Resp: StartInstanceResp{
 				ID: "550e8400-e29b-41d4-a716-446655440000", Process: "order_pipeline",
@@ -153,7 +153,7 @@ var registry = func() []actionDef {
 			Resp: InstanceStatusResp{
 				ID: "550e8400-e29b-41d4-a716-446655440000", Process: "order_pipeline",
 				Version: 1, Status: model.StatusCompleted,
-				Context: map[string]interface{}{"order_id": 42, "charged": true},
+				Context: map[string]any{"order_id": 42, "charged": true},
 			},
 			fromHTTP: func(r *http.Request) (Envelope, error) {
 				return Envelope{Action: "get_instance", ID: r.PathValue("id")}, nil
