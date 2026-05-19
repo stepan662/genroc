@@ -33,7 +33,7 @@ client: swagger
 	cd tests && bun run generate
 
 test-int: client
-	cd tests && bun test integration/
+	cd tests && ~/.bun/bin/bun run typecheck && ~/.bun/bin/bun run test
 
 clean:
 	rm -f gent $(db)

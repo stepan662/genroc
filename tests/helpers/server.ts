@@ -1,4 +1,4 @@
-import { afterAll, beforeAll } from "bun:test";
+import { spawnSync, spawn, type ChildProcess } from "child_process";
 import { join } from "path";
 import { tmpdir } from "os";
 import { BASE_URL } from "./constants.ts";
@@ -13,40 +13,36 @@ async function ping(): Promise<boolean> {
   }
 }
 
-let proc: ReturnType<typeof Bun.spawn> | null = null;
+let proc: ChildProcess | null = null;
 
-beforeAll(async () => {
+export async function setup() {
   if (await ping()) return;
 
   const root = new URL("../../", import.meta.url).pathname;
   const bin = join(tmpdir(), `gent_${Date.now()}`);
   const db = join(tmpdir(), `gent_${Date.now()}.db`);
 
-  console.error("Building test server…");
-  const build = Bun.spawnSync(["go", "build", "-o", bin, "./cmd/gent"], {
+  console.log("\nBuilding test server…");
+  const build = spawnSync("go", ["build", "-o", bin, "./cmd/gent"], {
     cwd: root,
     env: { ...process.env, CGO_ENABLED: "1" },
-    stderr: "inherit",
+    stdio: ["ignore", "ignore", "inherit"],
   });
 
-  if (build.exitCode !== 0) throw new Error("Failed to build test server");
+  if (build.status !== 0) throw new Error("Failed to build test server");
 
-  proc = Bun.spawn([bin, "--db", db, "--http", ":8080", "--log", "error"], {
-    stdout: "ignore",
-    stderr: "ignore",
+  proc = spawn(bin, ["--db", db, "--http", ":8080", "--log", "error"], {
+    stdio: "ignore",
   });
 
   let ready = false;
   for (let i = 0; i < 50; i++) {
-    if (await ping()) {
-      ready = true;
-      break;
-    }
-    await Bun.sleep(200);
+    if (await ping()) { ready = true; break; }
+    await new Promise((r) => setTimeout(r, 200));
   }
   if (!ready) throw new Error("Test server did not start within 10 s");
-});
+}
 
-afterAll(() => {
-  proc?.kill();
-});
+export function teardown() {
+  proc?.kill("SIGTERM");
+}

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { client } from "../helpers/client.ts";
 
 const processName = `test_proc_${crypto.randomUUID()}`;

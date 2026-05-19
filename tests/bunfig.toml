@@ -1,3 +1,0 @@
-[test]
-preload = ["./helpers/server.ts"]
-timeout = 30000
