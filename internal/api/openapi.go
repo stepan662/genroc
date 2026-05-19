@@ -8,7 +8,7 @@ import (
 
 	"github.com/swaggest/jsonschema-go"
 	"github.com/swaggest/openapi-go"
-	"github.com/swaggest/openapi-go/openapi3"
+	"github.com/swaggest/openapi-go/openapi31"
 )
 
 // Spec returns the OpenAPI 3.0 spec as JSON, built from the action registry.
@@ -22,8 +22,8 @@ var (
 
 func buildSpec() []byte {
 	specOnce.Do(func() {
-		r := openapi3.Reflector{}
-		r.Spec = &openapi3.Spec{Openapi: "3.0.3"}
+		r := openapi31.Reflector{}
+		r.Spec = &openapi31.Spec{Openapi: "3.1.0"}
 
 		desc := "Minimalist business process orchestrator. HTTP endpoints are generated from the action registry."
 		r.Spec.Info.Title = "gent"
@@ -58,7 +58,7 @@ func buildSpec() []byte {
 	return specBytes
 }
 
-func addOperation(r *openapi3.Reflector, a actionDef) {
+func addOperation(r *openapi31.Reflector, a actionDef) {
 	op, err := r.NewOperationContext(a.Method, a.Path)
 	if err != nil {
 		return
