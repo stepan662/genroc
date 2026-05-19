@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -44,12 +45,38 @@ func (s *Server) ListenHTTP(ctx context.Context, addr string) error {
 
 	mux.HandleFunc("GET /docs", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, swaggerUI)
+		fmt.Fprint(w, swaggerUIHTML("gent API", "/openapi.json"))
 	})
 
 	mux.HandleFunc("GET /openapi.json", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(buildSpec())
+	})
+
+	mux.HandleFunc("GET /definitions/{name}/docs", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		specURL := "/definitions/" + name + "/openapi.json"
+		if v := r.URL.Query().Get("version"); v != "" {
+			specURL += "?version=" + v
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, swaggerUIHTML(name+" — gent API", specURL))
+	})
+
+	mux.HandleFunc("GET /definitions/{name}/openapi.json", func(w http.ResponseWriter, r *http.Request) {
+		version := 0
+		if v := r.URL.Query().Get("version"); v != "" {
+			if parsed, err := strconv.Atoi(v); err == nil {
+				version = parsed
+			}
+		}
+		data, err := h.ProcessSpec(r.PathValue("name"), version)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
 	})
 
 	srv := &http.Server{Addr: addr, Handler: mux}

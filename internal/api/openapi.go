@@ -107,10 +107,12 @@ func zeroOf(v any) any {
 	return reflect.New(t).Elem().Interface()
 }
 
-const swaggerUI = `<!DOCTYPE html>
+// swaggerUIHTML renders a Swagger UI page pointing at the given spec URL and title.
+func swaggerUIHTML(title, specURL string) string {
+	return `<!DOCTYPE html>
 <html>
 <head>
-  <title>gent API</title>
+  <title>` + title + `</title>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
@@ -120,7 +122,7 @@ const swaggerUI = `<!DOCTYPE html>
 <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
 <script>
   SwaggerUIBundle({
-    url: "/openapi.json",
+    url: "` + specURL + `",
     dom_id: '#swagger-ui',
     presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
     layout: "BaseLayout",
@@ -129,3 +131,4 @@ const swaggerUI = `<!DOCTYPE html>
 </script>
 </body>
 </html>`
+}
