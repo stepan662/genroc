@@ -16,16 +16,17 @@ import (
 	"io"
 	"os"
 
+	"gent/internal/exprtype"
 	"gent/internal/model"
 	"gent/internal/schema"
 )
 
 // TaskSchemas holds the schemas associated with a single task step.
-// Output and Context are inline JSON Schemas; Output is a $ref into $defs.
+// Output is a $ref into $defs; Input is inferred from params expressions or
+// equals the full context schema when the task has no params.
 type TaskSchemas struct {
-	Input   map[string]any `json:"input,omitempty"`
-	Output  map[string]any `json:"output,omitempty"`
-	Context map[string]any `json:"context,omitempty"`
+	Input  map[string]any `json:"input,omitempty"`
+	Output map[string]any `json:"output,omitempty"`
 }
 
 // SchemaFile is the top-level output. $defs collects every named schema so
@@ -109,7 +110,7 @@ func Generate(def *model.ProcessDefinition) (SchemaFile, error) {
 
 	tasks := make(map[string]TaskSchemas)
 	collectTaskRefs(def.Steps, tasks)
-	buildContexts(def.Steps, nil, tasks, result.ProcessInput)
+	buildInputs(def.Steps, nil, tasks, result.ProcessInput, result.Defs)
 	if len(tasks) > 0 {
 		result.Tasks = tasks
 	}
@@ -166,25 +167,49 @@ func flattenNamedSchemas(named map[string]map[string]any) (map[string]any, error
 	return rootDefs, nil
 }
 
-// buildContexts walks the step tree in execution order, sets Context on each
-// task entry in tasks, and returns the IDs of all tasks that could have run
-// by the end of steps.
-func buildContexts(steps []*model.Step, accumulated []string, tasks map[string]TaskSchemas, processInput map[string]any) []string {
+// buildInputs walks the step tree in execution order, sets Input on each task
+// entry in tasks, and returns the IDs of all tasks that could have run by the
+// end of steps. It builds the context schema internally for inference but does
+// not store it on the output. Tasks with params appear even without an output
+// schema; their input is inferred from param expressions. Tasks without params
+// receive the full context schema as their input.
+func buildInputs(steps []*model.Step, accumulated []string, tasks map[string]TaskSchemas, processInput map[string]any, defs map[string]any) []string {
 	for _, s := range steps {
 		switch s.Type {
 		case model.StepTypeTask:
-			if ts, ok := tasks[s.ID]; ok {
-				ts.Context = contextSchema(accumulated, tasks, processInput)
+			ctx := contextSchema(accumulated, tasks, processInput)
+			ts, inMap := tasks[s.ID]
+			if inMap || len(s.Params) > 0 {
+				ts.Input = inferInput(s, ctx, defs)
 				tasks[s.ID] = ts
 			}
 			accumulated = append(accumulated, s.ID)
 		case model.StepTypeConditional:
-			thenAcc := buildContexts(s.Then, sliceCopy(accumulated), tasks, processInput)
-			elseAcc := buildContexts(s.Else, sliceCopy(accumulated), tasks, processInput)
+			thenAcc := buildInputs(s.Then, sliceCopy(accumulated), tasks, processInput, defs)
+			elseAcc := buildInputs(s.Else, sliceCopy(accumulated), tasks, processInput, defs)
 			accumulated = sliceUnion(thenAcc, elseAcc)
 		}
 	}
 	return accumulated
+}
+
+// inferInput returns the input schema for a task. When the task has params,
+// each param name maps to the inferred type of its expression against ctx.
+// When there are no params the full ctx is sent, so ctx is returned as-is.
+func inferInput(s *model.Step, ctx map[string]any, defs map[string]any) map[string]any {
+	if len(s.Params) == 0 {
+		return ctx
+	}
+	props := make(map[string]any, len(s.Params))
+	for name, expr := range s.Params {
+		inferred, err := exprtype.InferType(expr, ctx, defs)
+		if err != nil {
+			props[name] = map[string]any{}
+		} else {
+			props[name] = inferred
+		}
+	}
+	return map[string]any{"type": "object", "properties": props}
 }
 
 // contextSchema builds a JSON Schema for the context available to a task:

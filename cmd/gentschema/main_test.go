@@ -182,7 +182,7 @@ func TestGenerate_UnusedDefsRemoved(t *testing.T) {
 	}
 }
 
-func TestGenerate_Context_FirstTaskNoInput(t *testing.T) {
+func TestGenerate_Input_FirstTaskNoInput(t *testing.T) {
 	out := runGenerate(t, `{
 		"name": "p", "version": 1,
 		"steps": [{
@@ -191,7 +191,7 @@ func TestGenerate_Context_FirstTaskNoInput(t *testing.T) {
 			"output_schema": { "type": "object", "properties": { "ok": { "type": "boolean" } } }
 		}]
 	}`)
-	assertJSON(t, out.Tasks["charge"].Context, `{
+	assertJSON(t, out.Tasks["charge"].Input, `{
 		"type": "object",
 		"properties": {
 			"outputs": { "type": "object" }
@@ -199,7 +199,7 @@ func TestGenerate_Context_FirstTaskNoInput(t *testing.T) {
 	}`)
 }
 
-func TestGenerate_Context_WithProcessInput(t *testing.T) {
+func TestGenerate_Input_WithProcessInput(t *testing.T) {
 	out := runGenerate(t, `{
 		"name": "p", "version": 1,
 		"input_schema": { "type": "object", "properties": { "order_id": { "type": "integer" } } },
@@ -209,7 +209,7 @@ func TestGenerate_Context_WithProcessInput(t *testing.T) {
 			"output_schema": { "type": "object", "properties": { "ok": { "type": "boolean" } } }
 		}]
 	}`)
-	assertJSON(t, out.Tasks["charge"].Context, `{
+	assertJSON(t, out.Tasks["charge"].Input, `{
 		"type": "object",
 		"properties": {
 			"input": { "$ref": "#/$defs/input" },
@@ -218,7 +218,7 @@ func TestGenerate_Context_WithProcessInput(t *testing.T) {
 	}`)
 }
 
-func TestGenerate_Context_PrecedingTaskOutput(t *testing.T) {
+func TestGenerate_Input_PrecedingTaskOutput(t *testing.T) {
 	out := runGenerate(t, `{
 		"name": "p", "version": 1,
 		"steps": [
@@ -234,11 +234,11 @@ func TestGenerate_Context_PrecedingTaskOutput(t *testing.T) {
 			}
 		]
 	}`)
-	assertJSON(t, out.Tasks["charge"].Context, `{
+	assertJSON(t, out.Tasks["charge"].Input, `{
 		"type": "object",
 		"properties": { "outputs": { "type": "object" } }
 	}`)
-	assertJSON(t, out.Tasks["notify"].Context, `{
+	assertJSON(t, out.Tasks["notify"].Input, `{
 		"type": "object",
 		"properties": {
 			"outputs": {
@@ -251,7 +251,7 @@ func TestGenerate_Context_PrecedingTaskOutput(t *testing.T) {
 	}`)
 }
 
-func TestGenerate_Context_TaskWithNoOutputSkippedInContext(t *testing.T) {
+func TestGenerate_Input_TaskWithNoOutputSkippedInContext(t *testing.T) {
 	out := runGenerate(t, `{
 		"name": "p", "version": 1,
 		"steps": [
@@ -263,13 +263,13 @@ func TestGenerate_Context_TaskWithNoOutputSkippedInContext(t *testing.T) {
 			}
 		]
 	}`)
-	assertJSON(t, out.Tasks["notify"].Context, `{
+	assertJSON(t, out.Tasks["notify"].Input, `{
 		"type": "object",
 		"properties": { "outputs": { "type": "object" } }
 	}`)
 }
 
-func TestGenerate_Context_ConditionalBranchUnion(t *testing.T) {
+func TestGenerate_Input_ConditionalBranchUnion(t *testing.T) {
 	out := runGenerate(t, `{
 		"name": "p", "version": 1,
 		"steps": [
@@ -298,7 +298,7 @@ func TestGenerate_Context_ConditionalBranchUnion(t *testing.T) {
 			}
 		]
 	}`)
-	assertJSON(t, out.Tasks["ship"].Context, `{
+	assertJSON(t, out.Tasks["ship"].Input, `{
 		"type": "object",
 		"properties": {
 			"outputs": {
@@ -307,7 +307,7 @@ func TestGenerate_Context_ConditionalBranchUnion(t *testing.T) {
 			}
 		}
 	}`)
-	assertJSON(t, out.Tasks["notify"].Context, `{
+	assertJSON(t, out.Tasks["notify"].Input, `{
 		"type": "object",
 		"properties": {
 			"outputs": {
@@ -319,6 +319,54 @@ func TestGenerate_Context_ConditionalBranchUnion(t *testing.T) {
 				}
 			}
 		}
+	}`)
+}
+
+func TestGenerate_Input_Params(t *testing.T) {
+	out := runGenerate(t, `{
+		"name": "p", "version": 1,
+		"input_schema": {
+			"type": "object",
+			"properties": {
+				"order_id": { "type": "integer" },
+				"amount":   { "type": "number" }
+			}
+		},
+		"steps": [{
+			"type": "task", "id": "charge",
+			"transport": "http", "endpoint": "http://x",
+			"params": {
+				"id":  "input.order_id",
+				"sum": "input.amount"
+			},
+			"output_schema": { "type": "object", "properties": { "ok": { "type": "boolean" } } }
+		}]
+	}`)
+	input := out.Tasks["charge"].Input
+	props, _ := input["properties"].(map[string]any)
+	if input["type"] != "object" {
+		t.Errorf("input type: got %v, want object", input["type"])
+	}
+	assertJSON(t, props["id"], `{"type": "integer"}`)
+	assertJSON(t, props["sum"], `{"type": "number"}`)
+}
+
+func TestGenerate_Input_ParamsOnlyTask(t *testing.T) {
+	out := runGenerate(t, `{
+		"name": "p", "version": 1,
+		"input_schema": { "type": "object", "properties": { "user_id": { "type": "string" } } },
+		"steps": [{
+			"type": "task", "id": "log",
+			"transport": "http", "endpoint": "http://x",
+			"params": { "uid": "input.user_id" }
+		}]
+	}`)
+	if _, ok := out.Tasks["log"]; !ok {
+		t.Fatal("task with params but no output_schema should appear in tasks")
+	}
+	assertJSON(t, out.Tasks["log"].Input, `{
+		"type": "object",
+		"properties": { "uid": { "type": "string" } }
 	}`)
 }
 
