@@ -37,8 +37,9 @@ type Def struct {
 // Ref holds a collected $ref and a pointer to the schema object containing it
 // so the value can be rewritten in place later.
 type Ref struct {
-	RefValue string
-	Schema   map[string]any
+	RefValue     string
+	Schema       map[string]any
+	ResourceBase string // path of the nearest $id ancestor; empty string for root resource
 }
 
 // ErrUnsupportedRef is returned when a $ref value is structurally outside the
@@ -59,6 +60,16 @@ func (e ErrUnresolvedAnchor) Error() string {
 	return fmt.Sprintf("unresolved $ref %q: anchor %q is not defined in the root resource", e.Ref, anchor)
 }
 
+// ErrUnresolvedRef is returned when a "#/$defs/<name>" ref cannot be matched to
+// any known definition. Without a $id boundary a short name like "#/$defs/Item"
+// must match a root-level definition exactly; suffix matching is only applied
+// within the nearest enclosing $id sub-resource.
+type ErrUnresolvedRef struct{ Ref string }
+
+func (e ErrUnresolvedRef) Error() string {
+	return fmt.Sprintf("unresolved $ref %q: no matching definition", e.Ref)
+}
+
 // Normalize flattens all $defs to the root, removes unused definitions,
 // and rewrites $ref values to point to the new flat locations.
 func Normalize(schema map[string]any) (map[string]any, error) {
@@ -69,17 +80,17 @@ func Normalize(schema map[string]any) (map[string]any, error) {
 	}
 
 	// Phase 1: collect all definitions, anchors, and references from the whole tree.
-	walkTree(schema, nil, func(node map[string]any, path []string, depth int) {
+	walkTree(schema, nil, func(node map[string]any, path []string, resourceBase string) {
 		if len(path) >= 2 && path[len(path)-2] == "$defs" {
 			key := strings.Join(path, "/")
 			if _, exists := ctx.definitions[key]; !exists {
 				def := &Def{OriginalName: path[len(path)-1], Schema: node}
 				ctx.definitions[key] = def
-				if anchor, ok := node["$anchor"].(string); ok && depth == 0 {
+				if anchor, ok := node["$anchor"].(string); ok && resourceBase == "" {
 					ctx.anchors[anchor] = def
 				}
 			}
-		} else if anchor, ok := node["$anchor"].(string); ok && depth == 0 {
+		} else if anchor, ok := node["$anchor"].(string); ok && resourceBase == "" {
 			key := strings.Join(append(cp(path), "$anchor", anchor), "/")
 			if _, exists := ctx.definitions[key]; !exists {
 				def := &Def{OriginalName: anchor, Schema: node}
@@ -88,13 +99,17 @@ func Normalize(schema map[string]any) (map[string]any, error) {
 			}
 		}
 		if refVal, ok := node["$ref"].(string); ok {
-			ctx.references = append(ctx.references, &Ref{RefValue: refVal, Schema: node})
+			ctx.references = append(ctx.references, &Ref{
+				RefValue:     refVal,
+				Schema:       node,
+				ResourceBase: resourceBase,
+			})
 		}
 	})
 
 	// Phase 2: resolve each ref to its target definition and mark it as used.
 	for _, ref := range ctx.references {
-		def, err := ctx.resolveRef(ref.RefValue)
+		def, err := ctx.resolveRef(ref.RefValue, ref.ResourceBase)
 		if err != nil {
 			return nil, err
 		}
@@ -104,13 +119,13 @@ func Normalize(schema map[string]any) (map[string]any, error) {
 	}
 
 	// Phase 3: clean $defs and $id from every node in the tree.
-	walkTree(schema, nil, func(node map[string]any, _ []string, _ int) {
+	walkTree(schema, nil, func(node map[string]any, _ []string, _ string) {
 		delete(node, "$id")
 		delete(node, "$defs")
 		delete(node, "$anchor")
 	})
 	for _, def := range ctx.definitions {
-		walkTree(def.Schema, nil, func(node map[string]any, _ []string, _ int) {
+		walkTree(def.Schema, nil, func(node map[string]any, _ []string, _ string) {
 			delete(node, "$id")
 			delete(node, "$defs")
 			delete(node, "$anchor")
@@ -136,7 +151,7 @@ func Normalize(schema map[string]any) (map[string]any, error) {
 
 	// Rewrite $ref values to the new flat paths.
 	for _, ref := range ctx.references {
-		def, _ := ctx.resolveRef(ref.RefValue)
+		def, _ := ctx.resolveRef(ref.RefValue, ref.ResourceBase)
 		if def != nil && def.Used {
 			ref.Schema["$ref"] = "#/$defs/" + def.NewName
 		}
@@ -148,54 +163,58 @@ func Normalize(schema map[string]any) (map[string]any, error) {
 	return schema, nil
 }
 
-// walkTree calls fn(node, path, resourceDepth) for the given node and all nested
+// walkTree calls fn(node, path, resourceBase) for the given node and all nested
 // schema nodes, covering every JSON Schema keyword that can contain sub-schemas.
-// resourceDepth counts how many $id boundaries have been crossed from the root;
-// it starts at 0 and increments each time a non-root node carries $id.
-func walkTree(schema map[string]any, path []string, fn func(map[string]any, []string, int)) {
-	var walk func(map[string]any, []string, int)
-	walk = func(s map[string]any, p []string, depth int) {
+// resourceBase is the slash-joined path of the nearest $id ancestor; it is empty
+// for nodes in the root resource and changes each time a non-root node carries $id.
+func walkTree(schema map[string]any, path []string, fn func(map[string]any, []string, string)) {
+	var walk func(map[string]any, []string, string)
+	walk = func(s map[string]any, p []string, resourceBase string) {
 		if s == nil {
 			return
 		}
 		if _, hasID := s["$id"].(string); hasID && len(p) > 0 {
-			depth++
+			resourceBase = strings.Join(p, "/")
 		}
-		fn(s, p, depth)
+		fn(s, p, resourceBase)
 		for _, key := range []string{"$defs", "properties"} {
 			if next, ok := s[key].(map[string]any); ok {
 				for name, v := range next {
 					if sub, ok := v.(map[string]any); ok {
-						walk(sub, append(cp(p), key, name), depth)
+						walk(sub, append(cp(p), key, name), resourceBase)
 					}
 				}
 			}
 		}
 		for _, key := range []string{"items", "not", "additionalProperties", "if", "then", "else"} {
 			if sub, ok := s[key].(map[string]any); ok {
-				walk(sub, append(cp(p), key), depth)
+				walk(sub, append(cp(p), key), resourceBase)
 			}
 		}
 		for _, key := range []string{"oneOf", "anyOf", "allOf", "prefixItems"} {
 			if arr, ok := s[key].([]any); ok {
 				for i, item := range arr {
 					if sub, ok := item.(map[string]any); ok {
-						walk(sub, append(cp(p), key, fmt.Sprintf("%d", i)), depth)
+						walk(sub, append(cp(p), key, fmt.Sprintf("%d", i)), resourceBase)
 					}
 				}
 			}
 		}
 	}
-	walk(schema, path, 0)
+	walk(schema, path, "")
 }
 
 // resolveRef resolves a $ref value to a Def. Supports both:
 //   - "#/$defs/<name>" — path-based ref
 //   - "#<anchor>"      — anchor-based ref (no slash after #)
-func (ctx *normContext) resolveRef(ref string) (*Def, error) {
+func (ctx *normContext) resolveRef(ref string, resourceBase string) (*Def, error) {
 	if strings.HasPrefix(ref, "#/$defs/") {
 		path := strings.TrimPrefix(ref, "#/")
-		return ctx.resolveDef(path), nil
+		def := ctx.resolveDef(path, resourceBase)
+		if def == nil {
+			return nil, ErrUnresolvedRef{Ref: ref}
+		}
+		return def, nil
 	}
 	if strings.HasPrefix(ref, "#") && !strings.HasPrefix(ref, "#/") {
 		anchor := strings.TrimPrefix(ref, "#")
@@ -208,15 +227,16 @@ func (ctx *normContext) resolveRef(ref string) (*Def, error) {
 	return nil, ErrUnsupportedRef{Ref: ref}
 }
 
-// resolveDef finds a definition by its absolute path, falling back to suffix
-// matching for nested defs referenced by a short path (e.g. "$defs/Item" matches
-// "$defs/Order/$defs/Item" when no root-level Item exists).
-func (ctx *normContext) resolveDef(path string) *Def {
+// resolveDef finds a definition by its absolute path. If the ref is inside a
+// $id sub-resource (resourceBase != ""), it also tries resolving the path
+// relative to that resource. Without a $id boundary, only an exact match is
+// accepted — short names like "$defs/Item" must correspond to a root-level def.
+func (ctx *normContext) resolveDef(path string, resourceBase string) *Def {
 	if def, ok := ctx.definitions[path]; ok {
 		return def
 	}
-	for key, def := range ctx.definitions {
-		if strings.HasSuffix(key, "/"+path) {
+	if resourceBase != "" {
+		if def, ok := ctx.definitions[resourceBase+"/"+path]; ok {
 			return def
 		}
 	}

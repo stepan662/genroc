@@ -1,4 +1,4 @@
-package schema
+package schema_test
 
 import "testing"
 
@@ -157,4 +157,49 @@ func TestNormalize_rejectUnknownAnchor(t *testing.T) {
 		`{"$ref": "#no-such-anchor", "$defs": {}}`,
 		`unresolved $ref "#no-such-anchor": anchor "no-such-anchor" is not defined in the root resource`,
 	)
+}
+
+func TestNormalize_rejectShortPathWithoutID(t *testing.T) {
+	// "#/$defs/Item" must match a root-level definition exactly.
+	// Without a $id boundary, short-name suffix matching is not applied.
+	assertErr(t,
+		`{
+			"properties": {"x": {"$ref": "#/$defs/Item"}},
+			"$defs": {
+				"Order": {
+					"$defs": {
+						"Item": {"type": "string"}
+					}
+				}
+			}
+		}`,
+		`unresolved $ref "#/$defs/Item": no matching definition`,
+	)
+}
+
+func TestNormalize_shortPathWithIDScope(t *testing.T) {
+	// Inside a $id sub-resource "#/$defs/Item" resolves relative to that resource.
+	out := normalize(t, `{
+		"properties": {"order": {"$ref": "#/$defs/Order"}},
+		"$defs": {
+			"Order": {
+				"$id": "urn:order",
+				"type": "object",
+				"properties": {"item": {"$ref": "#/$defs/Item"}},
+				"$defs": {
+					"Item": {"type": "string"}
+				}
+			}
+		}
+	}`)
+	assertJSON(t, out, `{
+		"$defs": {
+			"Item":  {"type": "string"},
+			"Order": {
+				"type": "object",
+				"properties": {"item": {"$ref": "#/$defs/Item"}}
+			}
+		},
+		"properties": {"order": {"$ref": "#/$defs/Order"}}
+	}`)
 }
