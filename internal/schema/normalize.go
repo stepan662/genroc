@@ -177,7 +177,7 @@ func walkTree(schema map[string]any, path []string, fn func(map[string]any, []st
 			resourceBase = strings.Join(p, "/")
 		}
 		fn(s, p, resourceBase)
-		for _, key := range []string{"$defs", "properties"} {
+		for _, key := range []string{"$defs", "properties", "patternProperties"} {
 			if next, ok := s[key].(map[string]any); ok {
 				for name, v := range next {
 					if sub, ok := v.(map[string]any); ok {
@@ -186,7 +186,7 @@ func walkTree(schema map[string]any, path []string, fn func(map[string]any, []st
 				}
 			}
 		}
-		for _, key := range []string{"items", "not", "additionalProperties", "if", "then", "else"} {
+		for _, key := range []string{"items", "not", "additionalProperties", "if", "then", "else", "propertyNames", "contains"} {
 			if sub, ok := s[key].(map[string]any); ok {
 				walk(sub, append(cp(p), key), resourceBase)
 			}
