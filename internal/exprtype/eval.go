@@ -52,6 +52,9 @@ func evalMember(n *ast.MemberNode, ctx map[string]any) (any, error) {
 	}
 	switch prop := n.Property.(type) {
 	case *ast.StringNode:
+		if base == nil {
+			return nil, nil
+		}
 		m, ok := base.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("cannot access .%s: value is not an object", prop.Value)
@@ -83,19 +86,43 @@ func evalBinary(n *ast.BinaryNode, ctx map[string]any) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if !mustBool(left) {
+		lb, ok := left.(bool)
+		if !ok {
+			return nil, fmt.Errorf("&& requires boolean operands, got %T", left)
+		}
+		if !lb {
 			return false, nil
 		}
-		return evalNode(n.Right, ctx)
+		right, err := evalNode(n.Right, ctx)
+		if err != nil {
+			return nil, err
+		}
+		rb, ok := right.(bool)
+		if !ok {
+			return nil, fmt.Errorf("&& requires boolean operands, got %T", right)
+		}
+		return rb, nil
 	case "||":
 		left, err := evalNode(n.Left, ctx)
 		if err != nil {
 			return nil, err
 		}
-		if mustBool(left) {
+		lb, ok := left.(bool)
+		if !ok {
+			return nil, fmt.Errorf("|| requires boolean operands, got %T", left)
+		}
+		if lb {
 			return true, nil
 		}
-		return evalNode(n.Right, ctx)
+		right, err := evalNode(n.Right, ctx)
+		if err != nil {
+			return nil, err
+		}
+		rb, ok := right.(bool)
+		if !ok {
+			return nil, fmt.Errorf("|| requires boolean operands, got %T", right)
+		}
+		return rb, nil
 	}
 
 	op, ok := binaryOps[n.Operator]

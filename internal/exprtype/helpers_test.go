@@ -3,6 +3,7 @@ package exprtype_test
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"gent/internal/exprtype"
@@ -28,12 +29,16 @@ func infer(t *testing.T, expr string, schema map[string]any) map[string]any {
 	return got
 }
 
-// inferErr calls InferType and expects an error.
-func inferErr(t *testing.T, expr string, schema map[string]any) error {
+// inferErr calls InferType, expects an error, and optionally checks that the
+// error message contains wantContains (pass "" to skip the message check).
+func inferErr(t *testing.T, expr string, schema map[string]any, wantContains string) error {
 	t.Helper()
 	_, err := exprtype.InferType(expr, schema)
 	if err == nil {
 		t.Fatalf("InferType(%q): expected error, got nil", expr)
+	}
+	if wantContains != "" && !strings.Contains(err.Error(), wantContains) {
+		t.Errorf("InferType(%q): error %q does not contain %q", expr, err.Error(), wantContains)
 	}
 	return err
 }

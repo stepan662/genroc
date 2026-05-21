@@ -102,7 +102,7 @@ func inferBinary(n *ast.BinaryNode, ctx map[string]any, defs map[string]any) (ma
 	if err != nil {
 		return nil, err
 	}
-	return op.infer(left, right)
+	return op.infer(unwrapSingleVariant(left), unwrapSingleVariant(right))
 }
 
 func inferUnary(n *ast.UnaryNode, ctx map[string]any, defs map[string]any) (map[string]any, error) {
@@ -114,7 +114,7 @@ func inferUnary(n *ast.UnaryNode, ctx map[string]any, defs map[string]any) (map[
 	if err != nil {
 		return nil, err
 	}
-	return op.infer(operand)
+	return op.infer(unwrapSingleVariant(operand))
 }
 
 func inferConditional(n *ast.ConditionalNode, ctx map[string]any, defs map[string]any) (map[string]any, error) {
@@ -154,6 +154,7 @@ func lookupProperty(schemaObj map[string]any, name string, defs map[string]any) 
 		}
 		results := make([]any, 0, len(variants))
 		hadNull := false
+		hadMiss := false
 		for i, v := range variants {
 			varSchema, ok := v.(map[string]any)
 			if !ok {
@@ -165,12 +166,18 @@ func lookupProperty(schemaObj map[string]any, name string, defs map[string]any) 
 			}
 			r, err := lookupProperty(varSchema, name, defs)
 			if err != nil {
-				return nil, fmt.Errorf("cannot access .%s in %s[%d]: %w", name, kw, i, err)
+				hadMiss = true
+				hadNull = true // optional-chain semantics: absent property → null at runtime
+				continue
 			}
 			results = append(results, r)
 		}
 		if len(results) == 0 {
-			return nil, fmt.Errorf("cannot access .%s: %s has no non-null variants", name, kw)
+			if hadMiss {
+				return nil, fmt.Errorf("field %q not found in any %s variant", name, kw)
+			}
+			// All variants were null — the property access is valid but always null.
+			return typeSchema("null"), nil
 		}
 		var result map[string]any
 		if allSameSchema(results) {

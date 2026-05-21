@@ -39,6 +39,12 @@ const complexCtxJSON = `{
 						{"type":"object","properties":{"inner":{"type":"object","properties":{"z":{"type":"boolean"}}}}},
 						{"type":"object","properties":{"inner":{"type":"object","properties":{"z":{"type":"integer"}}}}}
 					]
+				},
+				"obj_union_anyof_in_oneof": {
+					"oneOf": [
+						{"type":"object","properties":{"x":{"anyOf":[{"type":"number"},{"type":"object","properties":{"y":{"type":"boolean"}}}]}}},
+						{"type":"object","properties":{"x":{"anyOf":[{"type":"integer"}]}}}
+					]
 				}
 			}
 		}
@@ -87,9 +93,9 @@ func TestInfer_AnyOf_InequalityIsBoolean(t *testing.T) {
 	assertSchema(t, infer(t, "input.flexible != 0", c), `{"type":"boolean"}`)
 }
 
-func TestInfer_AnyOf_OrderComparisonIsBoolean(t *testing.T) {
+func TestInfer_AnyOf_OrderComparisonFails(t *testing.T) {
 	c := ctx(t, complexCtxJSON)
-	assertSchema(t, infer(t, "input.flexible < 10", c), `{"type":"boolean"}`)
+	inferErr(t, "input.flexible < 10", c, "unambiguous")
 }
 
 func TestInfer_OneOf_EqualityIsBoolean(t *testing.T) {
@@ -116,27 +122,30 @@ func TestInfer_AnyOf_UnaryNotIsBoolean(t *testing.T) {
 	assertSchema(t, infer(t, "!(input.flexible == 1)", c), `{"type":"boolean"}`)
 }
 
-// --- arithmetic on complex schemas fails (cannot determine numeric type) ---
+// --- arithmetic on complex schemas ---
 
+// flexible is anyOf[integer, string] — incompatible types for arithmetic.
 func TestInfer_AnyOf_ArithmeticFails(t *testing.T) {
 	c := ctx(t, complexCtxJSON)
-	inferErr(t, "input.flexible + 1", c)
+	inferErr(t, "input.flexible + 1", c, "unambiguous")
 }
 
-func TestInfer_OneOf_ArithmeticFails(t *testing.T) {
+// exactly_one is oneOf[integer, number] — all numeric variants, so arithmetic is allowed.
+func TestInfer_OneOf_AllNumericArithmeticOK(t *testing.T) {
 	c := ctx(t, complexCtxJSON)
-	inferErr(t, "input.exactly_one * 2", c)
+	// integer widened to number because oneOf contains both integer and number.
+	assertSchema(t, infer(t, "input.exactly_one * 2", c), `{"type":"number"}`)
 }
 
 func TestInfer_AllOf_ArithmeticFails(t *testing.T) {
 	c := ctx(t, complexCtxJSON)
 	// allOf carries no plain "type" key at the top level
-	inferErr(t, "input.combined + 1", c)
+	inferErr(t, "input.combined + 1", c, "unambiguous")
 }
 
 func TestInfer_Not_ArithmeticFails(t *testing.T) {
 	c := ctx(t, complexCtxJSON)
-	inferErr(t, "input.negated + 1", c)
+	inferErr(t, "input.negated + 1", c, "unambiguous")
 }
 
 // --- nullable types ---
@@ -187,7 +196,7 @@ func TestInfer_Nullable_BothBranchesNil(t *testing.T) {
 // Arithmetic on a nullable type fails — the null case is unhandled.
 func TestInfer_Nullable_ArithmeticFails(t *testing.T) {
 	c := ctx(t, nullableCtxJSON)
-	inferErr(t, "input.amount + 1.0", c)
+	inferErr(t, "input.amount + 1.0", c, "non-nullable")
 }
 
 // Comparisons on nullable types still return boolean.
@@ -241,8 +250,20 @@ func TestInfer_AnyOf_MemberAccess_DeepPath(t *testing.T) {
 	}`)
 }
 
-// TestInfer_AnyOf_MemberAccess_MissingInVariant errors when one variant lacks
-// the requested property.
+func TestInfer_OneOf_in_AnyOf_accessValueWhichExistsOnlyInSomeVariants(t *testing.T) {
+	c := ctx(t, complexCtxJSON)
+	assertSchema(t, infer(t, "input.obj_union_anyof_in_oneof.x.y", c), `{
+		"type":["boolean","null"]
+	}`)
+}
+
+func TestInfer_OneOf_in_AnyOf(t *testing.T) {
+	c := ctx(t, complexCtxJSON)
+	inferErr(t, "input.obj_union_anyof_in_oneof.x.f", c, `"f" not found in any`)
+}
+
+// TestInfer_AnyOf_MemberAccess_MissingInVariant allows access when a property
+// exists in at least one variant; variants that lack it contribute null.
 func TestInfer_AnyOf_MemberAccess_MissingInVariant(t *testing.T) {
 	c := ctx(t, `{
 		"type": "object",
@@ -260,7 +281,7 @@ func TestInfer_AnyOf_MemberAccess_MissingInVariant(t *testing.T) {
 			}
 		}
 	}`)
-	inferErr(t, "input.partial.x", c)
+	assertSchema(t, infer(t, "input.partial.x", c), `{"type":["integer","null"]}`)
 }
 
 // TestInfer_AnyOf_MemberAccess_NonObjectVariant errors when a variant is not
@@ -268,21 +289,82 @@ func TestInfer_AnyOf_MemberAccess_MissingInVariant(t *testing.T) {
 func TestInfer_AnyOf_MemberAccess_NonObjectVariant(t *testing.T) {
 	c := ctx(t, complexCtxJSON)
 	// input.flexible is anyOf [integer, string] — neither has properties
-	inferErr(t, "input.flexible.x", c)
+	inferErr(t, "input.flexible.x", c, `"x" not found in any anyOf variant`)
+}
+
+// --- member access on all-null variants ---
+
+// TestInfer_AnyOf_AllNullVariants_MemberAccess checks that accessing a property
+// on an anyOf whose only variants are null-type returns null rather than an error.
+// The property can't exist at runtime but the access is not a type error —
+// it's a likely bug the caller should be warned about, not a hard failure.
+func TestInfer_AnyOf_AllNullVariants_MemberAccess(t *testing.T) {
+	c := ctx(t, `{
+		"type": "object",
+		"properties": {
+			"input": {
+				"type": "object",
+				"properties": {
+					"always_null": {
+						"anyOf": [{"type":"null"}, {"type":"null"}]
+					}
+				}
+			}
+		}
+	}`)
+	assertSchema(t, infer(t, "input.always_null.x", c), `{"type":"null"}`)
+}
+
+// TestInfer_OneOf_AllNullVariants_MemberAccess same as above but oneOf.
+func TestInfer_OneOf_AllNullVariants_MemberAccess(t *testing.T) {
+	c := ctx(t, `{
+		"type": "object",
+		"properties": {
+			"input": {
+				"type": "object",
+				"properties": {
+					"always_null": {
+						"oneOf": [{"type":"null"}]
+					}
+				}
+			}
+		}
+	}`)
+	assertSchema(t, infer(t, "input.always_null.x", c), `{"type":"null"}`)
+}
+
+// TestInfer_AnyOf_NullAndObject_MemberAccess checks that mixing null variants
+// with object variants still resolves the property, with null added to the result.
+func TestInfer_AnyOf_NullAndObject_MemberAccess(t *testing.T) {
+	c := ctx(t, `{
+		"type": "object",
+		"properties": {
+			"input": {
+				"type": "object",
+				"properties": {
+					"maybe": {
+						"anyOf": [
+							{"type":"null"},
+							{"type":"object","properties":{"x":{"type":"integer"}}}
+						]
+					}
+				}
+			}
+		}
+	}`)
+	assertSchema(t, infer(t, "input.maybe.x", c), `{"type":["integer","null"]}`)
 }
 
 // --- member access on opaque schemas (not, allOf, unknown) always fails ---
 
 func TestInfer_Not_MemberAccessFails(t *testing.T) {
 	c := ctx(t, complexCtxJSON)
-	// "not" schema carries no structural information — cannot resolve .x
-	inferErr(t, "input.negated.x", c)
+	inferErr(t, "input.negated.x", c, "cannot access .x: schema has no properties")
 }
 
 func TestInfer_AllOf_MemberAccessFails(t *testing.T) {
 	c := ctx(t, complexCtxJSON)
-	// allOf without a top-level properties map — cannot resolve .x
-	inferErr(t, "input.combined.x", c)
+	inferErr(t, "input.combined.x", c, "cannot access .x: schema has no properties")
 }
 
 // --- conditional with complex schemas ---

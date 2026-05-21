@@ -110,7 +110,9 @@ func Generate(def *model.ProcessDefinition) (SchemaFile, error) {
 
 	tasks := make(map[string]TaskSchemas)
 	collectTaskRefs(def.Steps, tasks)
-	buildInputs(def.Steps, nil, tasks, result.ProcessInput, result.Defs)
+	if _, err := buildInputs(def.Steps, nil, tasks, result.ProcessInput, result.Defs); err != nil {
+		return SchemaFile{}, err
+	}
 	if len(tasks) > 0 {
 		result.Tasks = tasks
 	}
@@ -173,32 +175,49 @@ func flattenNamedSchemas(named map[string]map[string]any) (map[string]any, error
 // not store it on the output. Tasks with params appear even without an output
 // schema; their input is inferred from param expressions. Tasks without params
 // receive the full context schema as their input.
-func buildInputs(steps []*model.Step, accumulated []string, tasks map[string]TaskSchemas, processInput map[string]any, defs map[string]any) []string {
+func buildInputs(steps []*model.Step, accumulated []string, tasks map[string]TaskSchemas, processInput map[string]any, defs map[string]any) ([]string, error) {
 	for _, s := range steps {
 		switch s.Type {
 		case model.StepTypeTask:
 			ctx := contextSchema(accumulated, tasks, processInput)
 			ts, inMap := tasks[s.ID]
 			if inMap || len(s.Params) > 0 {
-				ts.Input = inferInput(s, ctx, defs)
+				input, err := inferInput(s, ctx, defs)
+				if err != nil {
+					return nil, err
+				}
+				ts.Input = input
 				tasks[s.ID] = ts
 			}
 			accumulated = append(accumulated, s.ID)
 		case model.StepTypeConditional:
-			thenAcc := buildInputs(s.Then, sliceCopy(accumulated), tasks, processInput, defs)
-			elseAcc := buildInputs(s.Else, sliceCopy(accumulated), tasks, processInput, defs)
+			ctx := contextSchema(accumulated, tasks, processInput)
+			if len(defs) > 0 {
+				ctx["$defs"] = defs
+			}
+			if _, err := exprtype.InferType(s.Condition, ctx); err != nil {
+				return nil, fmt.Errorf("conditional %q condition: %w", s.ID, err)
+			}
+			thenAcc, err := buildInputs(s.Then, sliceCopy(accumulated), tasks, processInput, defs)
+			if err != nil {
+				return nil, err
+			}
+			elseAcc, err := buildInputs(s.Else, sliceCopy(accumulated), tasks, processInput, defs)
+			if err != nil {
+				return nil, err
+			}
 			accumulated = sliceUnion(thenAcc, elseAcc)
 		}
 	}
-	return accumulated
+	return accumulated, nil
 }
 
 // inferInput returns the input schema for a task. When the task has params,
 // each param name maps to the inferred type of its expression against ctx.
 // When there are no params the full ctx is sent, so ctx is returned as-is.
-func inferInput(s *model.Step, ctx map[string]any, defs map[string]any) map[string]any {
+func inferInput(s *model.Step, ctx map[string]any, defs map[string]any) (map[string]any, error) {
 	if len(s.Params) == 0 {
-		return ctx
+		return ctx, nil
 	}
 	if len(defs) > 0 {
 		ctx["$defs"] = defs
@@ -207,12 +226,11 @@ func inferInput(s *model.Step, ctx map[string]any, defs map[string]any) map[stri
 	for name, expr := range s.Params {
 		inferred, err := exprtype.InferType(expr, ctx)
 		if err != nil {
-			props[name] = map[string]any{}
-		} else {
-			props[name] = inferred
+			return nil, fmt.Errorf("task %q param %q: %w", s.ID, name, err)
 		}
+		props[name] = inferred
 	}
-	return map[string]any{"type": "object", "properties": props}
+	return map[string]any{"type": "object", "properties": props}, nil
 }
 
 // contextSchema builds a JSON Schema for the context available to a task:

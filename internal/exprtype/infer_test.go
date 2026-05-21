@@ -64,13 +64,12 @@ func TestInfer_NestedField_DeepPath(t *testing.T) {
 
 func TestInfer_FieldNotFound(t *testing.T) {
 	c := ctx(t, richContextJSON)
-	inferErr(t, "input.missing", c)
+	inferErr(t, "input.missing", c, `field "missing" not found in schema`)
 }
 
 func TestInfer_FieldOnNonObject(t *testing.T) {
 	c := ctx(t, richContextJSON)
-	// order_id is integer, not an object — accessing .x should fail
-	inferErr(t, "input.order_id.x", c)
+	inferErr(t, "input.order_id.x", c, "cannot access .x: schema has no properties")
 }
 
 // --- $ref resolution ---
@@ -101,7 +100,7 @@ func TestInfer_RefMissing(t *testing.T) {
 		},
 		"$defs": {}
 	}`)
-	inferErr(t, "input.order_id", c)
+	inferErr(t, "input.order_id", c, `$ref "#/$defs/Missing" not found in defs`)
 }
 
 func TestInfer_RefWithoutDefs(t *testing.T) {
@@ -111,7 +110,7 @@ func TestInfer_RefWithoutDefs(t *testing.T) {
 			"input": { "$ref": "#/$defs/Input" }
 		}
 	}`)
-	inferErr(t, "input.order_id", c)
+	inferErr(t, "input.order_id", c, "cannot resolve $ref")
 }
 
 // --- Arithmetic ---
@@ -143,12 +142,12 @@ func TestInfer_StringConcatenation(t *testing.T) {
 
 func TestInfer_ArithmeticOnStrings(t *testing.T) {
 	c := ctx(t, richContextJSON)
-	inferErr(t, "input.label - 1", c)
+	inferErr(t, "input.label - 1", c, "operator requires numeric operands")
 }
 
 func TestInfer_ArithmeticOnBool(t *testing.T) {
 	c := ctx(t, richContextJSON)
-	inferErr(t, "input.active + 1", c)
+	inferErr(t, "input.active + 1", c, "operator requires numeric operands")
 }
 
 // --- Unary ---
@@ -165,7 +164,7 @@ func TestInfer_UnaryMinus(t *testing.T) {
 
 func TestInfer_UnaryMinusOnString(t *testing.T) {
 	c := ctx(t, richContextJSON)
-	inferErr(t, "-input.label", c)
+	inferErr(t, "-input.label", c, "unary operator requires a numeric operand")
 }
 
 // --- Comparison ---
@@ -214,12 +213,12 @@ func TestInfer_Conditional_FieldFromContext(t *testing.T) {
 // --- Unsupported constructs ---
 
 func TestInfer_FunctionCall_Unsupported(t *testing.T) {
-	err := inferErr(t, `len("hello")`, nil)
+	err := inferErr(t, `len("hello")`, nil, "")
 	assertUnsupported(t, err)
 }
 
 func TestInfer_InOperator_Unsupported(t *testing.T) {
 	c := ctx(t, richContextJSON)
-	err := inferErr(t, "1 in [1, 2, 3]", c)
+	err := inferErr(t, "1 in [1, 2, 3]", c, "")
 	assertUnsupported(t, err)
 }
