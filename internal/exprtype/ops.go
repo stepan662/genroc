@@ -45,7 +45,7 @@ var binaryOps = map[string]binOp{
 	"-":  {infer: inferArith, eval: numBinOp("-", func(a, b float64) float64 { return a - b })},
 	"*":  {infer: inferArith, eval: numBinOp("*", func(a, b float64) float64 { return a * b })},
 	"/":  {infer: inferDiv, eval: evalDiv},
-	"%":  {infer: inferArith, eval: evalMod},
+	"%":  {infer: inferMod, eval: evalMod},
 }
 
 // unaryOps is the authoritative list of supported unary operators.
@@ -61,30 +61,42 @@ func alwaysBoolean(_, _ map[string]any) (map[string]any, error) {
 	return typeSchema("boolean"), nil
 }
 
-// inferOrderingCmp rejects nullable and ambiguous operands.
+// inferOrderingCmp rejects nullable, ambiguous, and non-numeric operands.
+// expr-lang only supports numeric ordering; string and boolean comparisons fail
+// at runtime.
 func inferOrderingCmp(left, right map[string]any) (map[string]any, error) {
 	if hasNullType(left) || hasNullType(right) {
 		return nil, fmt.Errorf("comparison requires non-nullable operands")
 	}
-	if _, ok := concreteTypeOf(left); !ok {
+	lt, ok := concreteTypeOf(left)
+	if !ok {
 		return nil, fmt.Errorf("comparison requires an unambiguous operand")
 	}
-	if _, ok := concreteTypeOf(right); !ok {
+	rt, ok := concreteTypeOf(right)
+	if !ok {
 		return nil, fmt.Errorf("comparison requires an unambiguous operand")
+	}
+	if !isNumeric(lt) || !isNumeric(rt) {
+		return nil, fmt.Errorf("comparison requires numeric operands, got %q and %q", lt, rt)
 	}
 	return typeSchema("boolean"), nil
 }
 
-// inferLogical rejects nullable and ambiguous operands.
+// inferLogical rejects nullable, ambiguous, and non-boolean operands.
 func inferLogical(left, right map[string]any) (map[string]any, error) {
 	if hasNullType(left) || hasNullType(right) {
 		return nil, fmt.Errorf("logical operator requires non-nullable boolean operands")
 	}
-	if _, ok := concreteTypeOf(left); !ok {
+	lt, ok := concreteTypeOf(left)
+	if !ok {
 		return nil, fmt.Errorf("logical operator requires an unambiguous operand")
 	}
-	if _, ok := concreteTypeOf(right); !ok {
+	rt, ok := concreteTypeOf(right)
+	if !ok {
 		return nil, fmt.Errorf("logical operator requires an unambiguous operand")
+	}
+	if lt != "boolean" || rt != "boolean" {
+		return nil, fmt.Errorf("logical operator requires boolean operands, got %q and %q", lt, rt)
 	}
 	return typeSchema("boolean"), nil
 }
@@ -93,8 +105,12 @@ func inferNot(operand map[string]any) (map[string]any, error) {
 	if hasNullType(operand) {
 		return nil, fmt.Errorf("! requires a non-nullable boolean operand")
 	}
-	if _, ok := concreteTypeOf(operand); !ok {
+	t, ok := concreteTypeOf(operand)
+	if !ok {
 		return nil, fmt.Errorf("! requires an unambiguous operand")
+	}
+	if t != "boolean" {
+		return nil, fmt.Errorf("! requires a boolean operand, got %q", t)
 	}
 	return typeSchema("boolean"), nil
 }
@@ -138,6 +154,23 @@ func inferArith(left, right map[string]any) (map[string]any, error) {
 		return typeSchema("integer"), nil
 	}
 	return typeSchema("number"), nil
+}
+
+// inferMod requires both operands to be integer — expr-lang rejects float % int
+// at runtime, unlike the other arithmetic operators.
+func inferMod(left, right map[string]any) (map[string]any, error) {
+	if hasNullType(left) || hasNullType(right) {
+		return nil, fmt.Errorf("%% requires non-nullable operands")
+	}
+	lt, ltOK := concreteTypeOf(left)
+	rt, rtOK := concreteTypeOf(right)
+	if !ltOK || !rtOK {
+		return nil, fmt.Errorf("%% requires an unambiguous integer operand")
+	}
+	if lt != "integer" || rt != "integer" {
+		return nil, fmt.Errorf("%% requires integer operands, got %q and %q", lt, rt)
+	}
+	return typeSchema("integer"), nil
 }
 
 // inferDiv always returns number because division of integers can produce a fraction.
@@ -230,18 +263,14 @@ func evalDiv(l, r any) (any, error) {
 }
 
 func evalMod(l, r any) (any, error) {
-	lf, rf, ok := bothNumeric(l, r)
-	if !ok {
-		return nil, fmt.Errorf("%% requires numeric operands")
+	if !isIntLike(l) || !isIntLike(r) {
+		return nil, fmt.Errorf("%% requires integer operands, got %T and %T", l, r)
 	}
+	lf, rf, _ := bothNumeric(l, r)
 	if rf == 0 {
 		return nil, fmt.Errorf("modulo by zero")
 	}
-	result := math.Mod(lf, rf)
-	if isIntLike(l) && isIntLike(r) {
-		return int(result), nil
-	}
-	return result, nil
+	return int(math.Mod(lf, rf)), nil
 }
 
 func negateNum(v any) (any, error) {
