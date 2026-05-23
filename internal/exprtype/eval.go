@@ -57,7 +57,7 @@ func evalMember(n *ast.MemberNode, ctx map[string]any) (any, error) {
 		}
 		m, ok := base.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("cannot access .%s: value is not an object", prop.Value)
+			return nil, nil // non-object value → null, mirrors type-inference optional-chain semantics
 		}
 		v, ok := m[prop.Value]
 		if !ok {

@@ -58,8 +58,13 @@ func TestEval_FieldNotFound(t *testing.T) {
 	assertEq(t, evalOK(t, "input.missing", richCtx), nil)
 }
 
-func TestEval_FieldOnNonObject(t *testing.T) {
-	evalErr(t, "input.order_id.x", richCtx)
+func TestEval_FieldOnNonObject_ReturnsNil(t *testing.T) {
+	assertEq(t, evalOK(t, "input.order_id.x", richCtx), nil)
+}
+
+func TestEval_FieldOnString_ReturnsNil(t *testing.T) {
+	ctx := map[string]any{"result": "valid"}
+	assertEq(t, evalOK(t, "result.valid", ctx), nil)
 }
 
 // --- Arithmetic ---

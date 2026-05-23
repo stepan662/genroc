@@ -11,15 +11,14 @@ const handlers: Handlers = {
   async save_order({ data: { amount } }) {
     console.log("validating order, amount:", amount);
     if (amount <= 0) return { valid: false, reason: "amount must be positive" };
-    if (amount > 10000)
-      return { valid: false, reason: "amount exceeds $10,000 limit" };
-    return {};
+    if (amount > 10000) return { valid: false, reason: "amount exceeds limit" };
+    return { valid: true };
   },
   check_fraud: function (
     ctx: CheckFraudInput,
   ): Promise<Record<string, unknown>> {
     console.log("checking for fraud:", ctx);
-    if (ctx.valid) {
+    if (ctx.result.valid === true) {
       console.log("no fraud detected");
       return Promise.resolve({ fraud: false });
     } else {

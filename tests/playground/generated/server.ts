@@ -21,12 +21,19 @@ export interface Handlers {
 // Output schemas baked in for runtime validation via AJV.
 const stepSchemas: Record<string, object> = {
   "save_order": {
-    "properties": {
-      "valid": {
-        "type": "boolean"
+    "oneOf": [
+      {
+        "properties": {
+          "valid": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "valid"
+        ],
+        "type": "object"
       }
-    },
-    "type": "object"
+    ]
   }
 }
 

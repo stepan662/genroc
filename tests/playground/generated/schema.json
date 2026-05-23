@@ -8,15 +8,24 @@
     "check_fraud": {
       "input": {
         "properties": {
-          "valid": {
-            "type": [
-              "boolean",
-              "null"
+          "result": {
+            "oneOf": [
+              {
+                "properties": {
+                  "valid": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "valid"
+                ],
+                "type": "object"
+              }
             ]
           }
         },
         "required": [
-          "valid"
+          "result"
         ],
         "type": "object"
       }
@@ -75,12 +84,19 @@
       "type": "object"
     },
     "save_order_output": {
-      "properties": {
-        "valid": {
-          "type": "boolean"
+      "oneOf": [
+        {
+          "properties": {
+            "valid": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "valid"
+          ],
+          "type": "object"
         }
-      },
-      "type": "object"
+      ]
     }
   }
 }

@@ -290,12 +290,42 @@ func TestInfer_AnyOf_MemberAccess_MissingInVariant(t *testing.T) {
 	assertSchema(t, infer(t, "input.partial.x", c), `{"type":["integer","null"]}`)
 }
 
-// TestInfer_AnyOf_MemberAccess_NonObjectVariant errors when a variant is not
-// an object schema.
+// TestInfer_AnyOf_MemberAccess_NonObjectVariant errors when no variant has the property.
 func TestInfer_AnyOf_MemberAccess_NonObjectVariant(t *testing.T) {
 	c := ctx(t, complexCtxJSON)
 	// input.flexible is anyOf [integer, string] — neither has properties
 	inferErr(t, "input.flexible.x", c, `"x" not found in any anyOf variant`)
+}
+
+// TestInfer_OneOf_ObjectAndNonObject_PropertyAccess checks that when a oneOf has
+// one object variant with the property and one non-object variant (e.g. string),
+// accessing the property succeeds and returns a nullable type.
+// This is the pattern used by save_order_output → check_fraud.result.
+func TestInfer_OneOf_ObjectAndNonObject_PropertyAccess(t *testing.T) {
+	c := ctx(t, `{
+		"type": "object",
+		"properties": {
+			"outputs": {
+				"type": "object",
+				"properties": {
+					"save_order": {
+						"$ref": "#/$defs/save_order_output"
+					}
+				},
+				"required": ["save_order"]
+			}
+		},
+		"required": ["outputs"],
+		"$defs": {
+			"save_order_output": {
+				"oneOf": [
+					{"type":"object","properties":{"valid":{"type":"boolean"}}},
+					{"type":"string"}
+				]
+			}
+		}
+	}`)
+	assertSchema(t, infer(t, "outputs.save_order.valid", c), `{"type":["boolean","null"]}`)
 }
 
 // --- member access on all-null variants ---

@@ -325,6 +325,35 @@ func TestGenerate_Input_ParamsOnlyTask(t *testing.T) {
 	}`)
 }
 
+func TestGenerate_Input_Params_OneOfOutputPropertyAccess(t *testing.T) {
+	// save_order has a oneOf output (object|string). check_fraud accesses
+	// outputs.save_order.valid — the inferred type must be boolean|null, not
+	// the full oneOf[object,string].
+	out := runGenerate(t, `{
+		"name": "p", "version": 1,
+		"steps": [
+			{
+				"type": "task", "id": "save_order",
+				"transport": "http", "endpoint": "http://x",
+				"output_schema": {
+					"oneOf": [
+						{"type":"object","properties":{"valid":{"type":"boolean"}}},
+						{"type":"string"}
+					]
+				}
+			},
+			{
+				"type": "task", "id": "check_fraud",
+				"transport": "http", "endpoint": "http://x",
+				"params": { "result": "outputs.save_order.valid" }
+			}
+		]
+	}`)
+	input := out.Tasks["check_fraud"].Input
+	props, _ := input["properties"].(map[string]any)
+	assertJSON(t, props["result"], `{"type":["boolean","null"]}`)
+}
+
 func TestGenerate_InvalidRef(t *testing.T) {
 	err := runGenerateErr(t, `{
 		"name": "p", "version": 1,

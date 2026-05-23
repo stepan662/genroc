@@ -35,14 +35,17 @@ export const processDefinition = {
       type: "task" as const,
       transport: "http" as const,
       endpoint: `http://localhost:${PORT}/save_order`,
-      timeout_ms: 2000,
-      retries: 0,
       params: {
         data: "input",
       },
       output_schema: {
-        type: "object",
-        properties: { valid: { type: "boolean" } },
+        oneOf: [
+          {
+            type: "object",
+            properties: { valid: { type: "boolean" } },
+            required: ["valid"],
+          },
+        ],
       },
     },
     {
@@ -50,10 +53,8 @@ export const processDefinition = {
       type: "task" as const,
       transport: "http" as const,
       endpoint: `http://localhost:${PORT}/check_fraud`,
-      timeout_ms: 2000,
-      retries: 0,
       params: {
-        valid: "outputs.save_order.valid",
+        result: "outputs.save_order",
       },
     },
   ],

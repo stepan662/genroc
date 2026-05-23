@@ -157,8 +157,13 @@ func TestInferError_FieldOnPrimitive(t *testing.T) {
 		"properties": {"x": {"anyOf": [{"type": "object", "properties": {"foo": {"type": "string"}}}, {"type": "string"}]}},
 		"required": ["x"]
 	}`)
+	// Inference succeeds: string variant contributes null via optional-chain semantics.
 	infer(t, "x.foo", schema)
-	evalErr(t, "x.foo", map[string]any{"x": 42})
+	// Runtime: non-object access returns nil (matches optional-chain semantics).
+	got := evalOK(t, "x.foo", map[string]any{"x": 42})
+	if got != nil {
+		t.Errorf("Eval(x.foo) with x=42: expected nil, got %v", got)
+	}
 }
 
 func TestInferError_UndeclaredVariable(t *testing.T) {

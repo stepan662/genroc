@@ -41,10 +41,10 @@ type Step struct {
 	Condition    string         `json:"condition,omitempty" validate:"required_if=Type conditional"`
 	Then         []*Step        `json:"then,omitempty"      validate:"omitempty,dive"`
 	Else         []*Step        `json:"else,omitempty"      validate:"omitempty,dive"`
-	OutputSchema map[string]any    `json:"output_schema,omitempty"`
+	OutputSchema map[string]any `json:"output_schema,omitempty"`
 	// Params maps field names to expr-lang expressions evaluated against the context.
 	// When set, only these fields are sent to the task endpoint instead of the full context.
-	Params       map[string]string `json:"params,omitempty"`
+	Params map[string]string `json:"params,omitempty"`
 }
 
 // ProcessDefinition is the immutable versioned blueprint for a process.
@@ -131,7 +131,7 @@ func (d *ProcessDefinition) ValidateInput(input any) error {
 }
 
 // ValidateOutput checks output data against OutputSchema. No-op if OutputSchema is nil.
-func (s *Step) ValidateOutput(output map[string]any) error {
+func (s *Step) ValidateOutput(output any) error {
 	return validateSchema(s.OutputSchema, output)
 }
 

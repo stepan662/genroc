@@ -8,7 +8,9 @@ export interface ProcessInput {
 }
 
 export interface CheckFraudInput {
-  valid: boolean | null;
+  result: {
+    valid: boolean;
+  };
 }
 
 export interface SaveOrderInput {
@@ -19,6 +21,6 @@ export interface SaveOrderInput {
   };
 }
 
-export interface SaveOrderOutput {
-  valid?: boolean;
-}
+export type SaveOrderOutput = {
+  valid: boolean;
+};

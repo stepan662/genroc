@@ -21,9 +21,9 @@ type Request struct {
 
 // Response is the message the engine expects back from a service.
 type Response struct {
-	Status string                 `json:"status"` // "ok" or "error"
-	Output map[string]interface{} `json:"output,omitempty"`
-	Error  string                 `json:"error,omitempty"`
+	Status string `json:"status"` // "ok" or "error"
+	Output any    `json:"output,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // Send dispatches a request to the appropriate endpoint based on the step's transport.
