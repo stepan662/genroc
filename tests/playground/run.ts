@@ -24,7 +24,7 @@ console.log("  registered");
 
 const input: ProcessInput = {
   customer_id: "cust_42",
-  amount: 99.0,
+  amount: 101,
   card_token: "tok_visa_1234",
 };
 

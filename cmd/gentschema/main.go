@@ -89,7 +89,7 @@ func Generate(def *model.ProcessDefinition) (SchemaFile, error) {
 	}
 	result := SchemaFile{Process: def.Name, Version: def.Version}
 
-	// Collect named schemas: "input" for process input, "<id>_output" per task.
+	// Collect named schemas: "input" for process input, "<id>_output" per action step.
 	named := make(map[string]map[string]any)
 	if len(def.InputSchema) > 0 {
 		named["input"] = def.InputSchema
@@ -119,27 +119,23 @@ func Generate(def *model.ProcessDefinition) (SchemaFile, error) {
 	return result, nil
 }
 
-// collectNamedOutputs walks steps recursively and adds each task's OutputSchema
+// collectNamedOutputs walks steps and adds each action step's OutputSchema
 // to named under the key "<id>_output".
 func collectNamedOutputs(steps []*model.Step, named map[string]map[string]any) {
 	for _, s := range steps {
-		if s.Type == model.StepTypeTask && len(s.OutputSchema) > 0 {
+		if len(s.OutputSchema) > 0 {
 			named[s.ID+"_output"] = s.OutputSchema
 		}
-		collectNamedOutputs(s.Then, named)
-		collectNamedOutputs(s.Else, named)
 	}
 }
 
-// collectTaskRefs walks steps recursively and populates out with a $ref output
-// for every task that has an OutputSchema.
+// collectTaskRefs walks steps and populates out with a $ref output
+// for every step that has an OutputSchema.
 func collectTaskRefs(steps []*model.Step, out map[string]TaskSchemas) {
 	for _, s := range steps {
-		if s.Type == model.StepTypeTask && len(s.OutputSchema) > 0 {
+		if len(s.OutputSchema) > 0 {
 			out[s.ID] = TaskSchemas{Output: schemaRef(s.ID + "_output")}
 		}
-		collectTaskRefs(s.Then, out)
-		collectTaskRefs(s.Else, out)
 	}
 }
 
@@ -169,16 +165,16 @@ func flattenNamedSchemas(named map[string]map[string]any) (map[string]any, error
 	return rootDefs, nil
 }
 
-// buildInputs walks the step tree in execution order, sets Input on each task
-// entry in tasks, and returns the IDs of all tasks that could have run by the
-// end of steps. It builds the context schema internally for inference but does
-// not store it on the output. Tasks with params appear even without an output
-// schema; tasks without params only appear if they already have an output schema.
+// buildInputs walks the step list in definition order, infers input schemas for
+// action steps, and type-checks switch expressions. It returns the IDs of all
+// action steps encountered so callers can track context accumulation.
 func buildInputs(steps []*model.Step, accumulated []string, tasks map[string]TaskSchemas, processInput map[string]any, defs map[string]any) ([]string, error) {
 	for _, s := range steps {
-		switch s.Type {
-		case model.StepTypeTask:
+		if s.Transport != "" {
 			ctx := contextSchema(accumulated, tasks, processInput)
+			if len(defs) > 0 {
+				ctx["$defs"] = defs
+			}
 			ts, inMap := tasks[s.ID]
 			if inMap || len(s.Params) > 0 {
 				input, err := inferInput(s, ctx, defs)
@@ -189,30 +185,42 @@ func buildInputs(steps []*model.Step, accumulated []string, tasks map[string]Tas
 				tasks[s.ID] = ts
 			}
 			accumulated = append(accumulated, s.ID)
-		case model.StepTypeConditional:
-			ctx := contextSchema(accumulated, tasks, processInput)
+		}
+
+		if len(s.Switch) > 0 {
+			// Switch runs after the action, so accumulated already includes this step.
+			switchCtx := contextSchema(accumulated, tasks, processInput)
+			if s.Transport != "" {
+				addSelfSchema(switchCtx, s)
+			}
 			if len(defs) > 0 {
-				ctx["$defs"] = defs
+				switchCtx["$defs"] = defs
 			}
-			if _, err := exprtype.InferType(s.Condition, ctx); err != nil {
-				return nil, fmt.Errorf("conditional %q condition: %w", s.ID, err)
+			for _, c := range s.Switch {
+				if _, err := exprtype.InferType(c.When, switchCtx); err != nil {
+					return nil, fmt.Errorf("step %q switch when %q: %w", s.ID, c.When, err)
+				}
 			}
-			thenAcc, err := buildInputs(s.Then, sliceCopy(accumulated), tasks, processInput, defs)
-			if err != nil {
-				return nil, err
-			}
-			elseAcc, err := buildInputs(s.Else, sliceCopy(accumulated), tasks, processInput, defs)
-			if err != nil {
-				return nil, err
-			}
-			accumulated = sliceUnion(thenAcc, elseAcc)
 		}
 	}
 	return accumulated, nil
 }
 
-// inferInput returns the input schema for a task. Each param name maps to the
-// inferred type of its expression against ctx. Tasks with no params receive an
+// addSelfSchema injects a "self" property into ctx representing this step's own
+// action output. Used when type-checking switch expressions.
+func addSelfSchema(ctx map[string]any, s *model.Step) {
+	props, _ := ctx["properties"].(map[string]any)
+	selfSchema := map[string]any(s.OutputSchema)
+	if len(selfSchema) == 0 {
+		selfSchema = map[string]any{"type": "object"}
+	}
+	props["self"] = selfSchema
+	req, _ := ctx["required"].([]any)
+	ctx["required"] = append(req, "self")
+}
+
+// inferInput returns the input schema for an action step. Each param name maps to
+// the inferred type of its expression against ctx. Steps with no params receive an
 // empty payload from the engine, so their input schema is an empty object.
 func inferInput(s *model.Step, ctx map[string]any, defs map[string]any) (map[string]any, error) {
 	if len(s.Params) == 0 {
@@ -234,8 +242,8 @@ func inferInput(s *model.Step, ctx map[string]any, defs map[string]any) (map[str
 	return map[string]any{"type": "object", "properties": props, "required": required}, nil
 }
 
-// contextSchema builds a JSON Schema for the context available to a task:
-// the process input (if any, as a $ref) and $ref outputs of all preceding tasks.
+// contextSchema builds a JSON Schema for the context available to a step:
+// the process input (if any, as a $ref) and $ref outputs of all preceding action steps.
 // All fields listed are guaranteed present at runtime, so they are marked required.
 func contextSchema(preceding []string, tasks map[string]TaskSchemas, processInput map[string]any) map[string]any {
 	props := make(map[string]any)

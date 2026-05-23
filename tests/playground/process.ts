@@ -32,7 +32,6 @@ export const processDefinition = {
   steps: [
     {
       id: "save_order",
-      type: "task" as const,
       transport: "http" as const,
       endpoint: `http://localhost:${PORT}/save_order`,
       params: {
@@ -47,10 +46,13 @@ export const processDefinition = {
           },
         ],
       },
+      switch: {
+        "input.amount > 100": "check_fraud",
+      },
+      final: true,
     },
     {
       id: "check_fraud",
-      type: "task" as const,
       transport: "http" as const,
       endpoint: `http://localhost:${PORT}/check_fraud`,
       params: {

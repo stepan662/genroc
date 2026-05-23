@@ -73,7 +73,7 @@ var registry = func() []actionDef {
 				},
 				Steps: []*model.Step{
 					{
-						Type: model.StepTypeTask, ID: "charge",
+						ID:        "charge",
 						Transport: model.TransportHTTP, Endpoint: "http://localhost:9001/charge",
 						TimeoutMs: 5000, Retries: 3,
 						OutputSchema: map[string]any{
@@ -82,20 +82,20 @@ var registry = func() []actionDef {
 								"charged": map[string]any{"type": "boolean"},
 							},
 						},
+						Switch: model.SwitchMap{
+							{When: "self.charged == true", Goto: "ship"},
+							{When: "self.charged == false", Goto: "refund"},
+						},
 					},
 					{
-						Type: model.StepTypeConditional, ID: "check_payment",
-						Condition: "outputs.charge.charged == true",
-						Then: []*model.Step{{
-							Type: model.StepTypeTask, ID: "ship",
-							Transport: model.TransportHTTP, Endpoint: "http://localhost:9002/ship",
-							TimeoutMs: 3000, Retries: 2,
-						}},
-						Else: []*model.Step{{
-							Type: model.StepTypeTask, ID: "refund",
-							Transport: model.TransportHTTP, Endpoint: "http://localhost:9003/refund",
-							TimeoutMs: 3000, Retries: 1,
-						}},
+						ID:        "ship",
+						Transport: model.TransportHTTP, Endpoint: "http://localhost:9002/ship",
+						TimeoutMs: 3000, Retries: 2,
+					},
+					{
+						ID:        "refund",
+						Transport: model.TransportHTTP, Endpoint: "http://localhost:9003/refund",
+						TimeoutMs: 3000, Retries: 1,
 					},
 				},
 			},

@@ -8,7 +8,7 @@ import (
 func TestGenerate_NoSchemas(t *testing.T) {
 	out := runGenerate(t, `{
 		"name": "p", "version": 1,
-		"steps": [{"type":"task","id":"s1","transport":"http","endpoint":"http://x"}]
+		"steps": [{"id":"s1","transport":"http","endpoint":"http://x"}]
 	}`)
 	if out.Process != "p" || out.Version != 1 {
 		t.Errorf("metadata: got process=%q version=%d", out.Process, out.Version)
@@ -27,7 +27,7 @@ func TestGenerate_NoSchemas(t *testing.T) {
 func TestGenerate_ProcessInput(t *testing.T) {
 	out := runGenerate(t, `{
 		"name": "order", "version": 2,
-		"steps": [{"type":"task","id":"s1","transport":"http","endpoint":"http://x"}],
+		"steps": [{"id":"s1","transport":"http","endpoint":"http://x"}],
 		"input_schema": {
 			"type": "object",
 			"properties": { "order_id": { "type": "integer" } },
@@ -47,14 +47,14 @@ func TestGenerate_TaskOutput(t *testing.T) {
 		"name": "p", "version": 1,
 		"steps": [
 			{
-				"type": "task", "id": "charge",
+				"id": "charge",
 				"transport": "http", "endpoint": "http://x",
 				"output_schema": {
 					"type": "object",
 					"properties": { "charged": { "type": "boolean" } }
 				}
 			},
-			{ "type": "task", "id": "notify", "transport": "http", "endpoint": "http://x" }
+			{ "id": "notify", "transport": "http", "endpoint": "http://x" }
 		]
 	}`)
 	assertJSON(t, out.Tasks["charge"].Output, `{"$ref": "#/$defs/charge_output"}`)
@@ -67,32 +67,31 @@ func TestGenerate_TaskOutput(t *testing.T) {
 	}
 }
 
-func TestGenerate_NestedSteps(t *testing.T) {
+func TestGenerate_FlatStepsWithOutputs(t *testing.T) {
 	out := runGenerate(t, `{
 		"name": "p", "version": 1,
-		"steps": [{
-			"type": "conditional", "id": "check", "condition": "true",
-			"then": [{
-				"type": "task", "id": "ship",
+		"steps": [
+			{
+				"id": "charge",
+				"transport": "http", "endpoint": "http://x",
+				"switch": {"self.charged == true": "ship"},
+				"output_schema": { "type": "object", "properties": { "charged": { "type": "boolean" } } }
+			},
+			{
+				"id": "ship",
 				"transport": "http", "endpoint": "http://x",
 				"output_schema": { "type": "object", "properties": { "tracking": { "type": "string" } } }
-			}],
-			"else": [{
-				"type": "task", "id": "refund",
+			},
+			{
+				"id": "refund",
 				"transport": "http", "endpoint": "http://x",
 				"output_schema": { "type": "object", "properties": { "refunded": { "type": "boolean" } } }
-			}]
-		}]
+			}
+		]
 	}`)
+	assertJSON(t, out.Tasks["charge"].Output, `{"$ref": "#/$defs/charge_output"}`)
 	assertJSON(t, out.Tasks["ship"].Output, `{"$ref": "#/$defs/ship_output"}`)
-	assertJSON(t, out.Defs["ship_output"], `{
-		"type": "object",
-		"properties": { "tracking": { "type": "string" } }
-	}`)
 	assertJSON(t, out.Tasks["refund"].Output, `{"$ref": "#/$defs/refund_output"}`)
-	if _, ok := out.Tasks["check"]; ok {
-		t.Error("conditional step should not appear in tasks")
-	}
 }
 
 func TestGenerate_InnerDefsPromotedToRoot(t *testing.T) {
@@ -100,7 +99,7 @@ func TestGenerate_InnerDefsPromotedToRoot(t *testing.T) {
 	// should be promoted to the root $defs with scoped names.
 	out := runGenerate(t, `{
 		"name": "p", "version": 1,
-		"steps": [{"type":"task","id":"s1","transport":"http","endpoint":"http://x"}],
+		"steps": [{"id":"s1","transport":"http","endpoint":"http://x"}],
 		"input_schema": {
 			"type": "object",
 			"$defs": {
@@ -137,7 +136,7 @@ func TestGenerate_InnerDefsConflictRenamed(t *testing.T) {
 			"properties": { "x": { "$ref": "#/$defs/Item" } }
 		},
 		"steps": [{
-			"type": "task", "id": "charge",
+			"id": "charge",
 			"transport": "http", "endpoint": "http://x",
 			"output_schema": {
 				"type": "object",
@@ -162,7 +161,7 @@ func TestGenerate_UnusedDefsRemoved(t *testing.T) {
 	out := runGenerate(t, `{
 		"name": "p", "version": 1,
 		"steps": [{
-			"type": "task", "id": "charge",
+			"id": "charge",
 			"transport": "http", "endpoint": "http://x",
 			"output_schema": {
 				"type": "object",
@@ -186,7 +185,7 @@ func TestGenerate_Input_FirstTaskNoInput(t *testing.T) {
 	out := runGenerate(t, `{
 		"name": "p", "version": 1,
 		"steps": [{
-			"type": "task", "id": "charge",
+			"id": "charge",
 			"transport": "http", "endpoint": "http://x",
 			"output_schema": { "type": "object", "properties": { "ok": { "type": "boolean" } } }
 		}]
@@ -199,7 +198,7 @@ func TestGenerate_Input_WithProcessInput(t *testing.T) {
 		"name": "p", "version": 1,
 		"input_schema": { "type": "object", "properties": { "order_id": { "type": "integer" } } },
 		"steps": [{
-			"type": "task", "id": "charge",
+			"id": "charge",
 			"transport": "http", "endpoint": "http://x",
 			"output_schema": { "type": "object", "properties": { "ok": { "type": "boolean" } } }
 		}]
@@ -212,12 +211,12 @@ func TestGenerate_Input_PrecedingTaskOutput(t *testing.T) {
 		"name": "p", "version": 1,
 		"steps": [
 			{
-				"type": "task", "id": "charge",
+				"id": "charge",
 				"transport": "http", "endpoint": "http://x",
 				"output_schema": { "type": "object", "properties": { "charged": { "type": "boolean" } } }
 			},
 			{
-				"type": "task", "id": "notify",
+				"id": "notify",
 				"transport": "http", "endpoint": "http://x",
 				"output_schema": { "type": "object", "properties": { "sent": { "type": "boolean" } } }
 			}
@@ -231,9 +230,9 @@ func TestGenerate_Input_TaskWithNoOutputSkippedInContext(t *testing.T) {
 	out := runGenerate(t, `{
 		"name": "p", "version": 1,
 		"steps": [
-			{ "type": "task", "id": "log", "transport": "http", "endpoint": "http://x" },
+			{ "id": "log", "transport": "http", "endpoint": "http://x" },
 			{
-				"type": "task", "id": "notify",
+				"id": "notify",
 				"transport": "http", "endpoint": "http://x",
 				"output_schema": { "type": "object", "properties": { "sent": { "type": "boolean" } } }
 			}
@@ -242,37 +241,35 @@ func TestGenerate_Input_TaskWithNoOutputSkippedInContext(t *testing.T) {
 	assertJSON(t, out.Tasks["notify"].Input, `{"type": "object"}`)
 }
 
-func TestGenerate_Input_ConditionalBranchUnion(t *testing.T) {
+func TestGenerate_Input_SwitchOnlyStepSkippedInContext(t *testing.T) {
+	// A switch-only step (no action) produces no output and should not appear
+	// in the accumulated context for subsequent steps.
 	out := runGenerate(t, `{
 		"name": "p", "version": 1,
 		"steps": [
 			{
-				"type": "task", "id": "charge",
+				"id": "charge",
 				"transport": "http", "endpoint": "http://x",
 				"output_schema": { "type": "object", "properties": { "charged": { "type": "boolean" } } }
 			},
 			{
-				"type": "conditional", "id": "check", "condition": "true",
-				"then": [{
-					"type": "task", "id": "ship",
-					"transport": "http", "endpoint": "http://x",
-					"output_schema": { "type": "object", "properties": { "tracking": { "type": "string" } } }
-				}],
-				"else": [{
-					"type": "task", "id": "refund",
-					"transport": "http", "endpoint": "http://x",
-					"output_schema": { "type": "object", "properties": { "refunded": { "type": "boolean" } } }
-				}]
+				"id": "route",
+				"switch": {"outputs.charge.charged == true": "ship"}
 			},
 			{
-				"type": "task", "id": "notify",
+				"id": "ship",
 				"transport": "http", "endpoint": "http://x",
-				"output_schema": { "type": "object", "properties": { "sent": { "type": "boolean" } } }
+				"output_schema": { "type": "object", "properties": { "tracking": { "type": "string" } } }
 			}
 		]
 	}`)
-	assertJSON(t, out.Tasks["ship"].Input, `{"type": "object"}`)
-	assertJSON(t, out.Tasks["notify"].Input, `{"type": "object"}`)
+	// ship should see charge's output but not any "route" output (switch-only steps have none)
+	if _, ok := out.Tasks["route"]; ok {
+		t.Error("switch-only step should not appear in tasks")
+	}
+	if out.Tasks["ship"].Output == nil {
+		t.Error("ship should have an output schema")
+	}
 }
 
 func TestGenerate_Input_Params(t *testing.T) {
@@ -287,7 +284,7 @@ func TestGenerate_Input_Params(t *testing.T) {
 			"required": ["order_id", "amount"]
 		},
 		"steps": [{
-			"type": "task", "id": "charge",
+			"id": "charge",
 			"transport": "http", "endpoint": "http://x",
 			"params": {
 				"id":  "input.order_id",
@@ -310,7 +307,7 @@ func TestGenerate_Input_ParamsOnlyTask(t *testing.T) {
 		"name": "p", "version": 1,
 		"input_schema": { "type": "object", "properties": { "user_id": { "type": "string" } }, "required": ["user_id"] },
 		"steps": [{
-			"type": "task", "id": "log",
+			"id": "log",
 			"transport": "http", "endpoint": "http://x",
 			"params": { "uid": "input.user_id" }
 		}]
@@ -333,7 +330,7 @@ func TestGenerate_Input_Params_OneOfOutputPropertyAccess(t *testing.T) {
 		"name": "p", "version": 1,
 		"steps": [
 			{
-				"type": "task", "id": "save_order",
+				"id": "save_order",
 				"transport": "http", "endpoint": "http://x",
 				"output_schema": {
 					"oneOf": [
@@ -343,7 +340,7 @@ func TestGenerate_Input_Params_OneOfOutputPropertyAccess(t *testing.T) {
 				}
 			},
 			{
-				"type": "task", "id": "check_fraud",
+				"id": "check_fraud",
 				"transport": "http", "endpoint": "http://x",
 				"params": { "result": "outputs.save_order.valid" }
 			}
@@ -354,10 +351,57 @@ func TestGenerate_Input_Params_OneOfOutputPropertyAccess(t *testing.T) {
 	assertJSON(t, props["result"], `{"type":["boolean","null"]}`)
 }
 
+func TestGenerate_Switch_SelfExpressionTypeChecked(t *testing.T) {
+	// Switch expressions with "self" should be type-checked against the step's
+	// own OutputSchema.
+	out := runGenerate(t, `{
+		"name": "p", "version": 1,
+		"steps": [
+			{
+				"id": "charge",
+				"transport": "http", "endpoint": "http://x",
+				"output_schema": {
+					"type": "object",
+					"properties": { "charged": { "type": "boolean" } },
+					"required": ["charged"]
+				},
+				"switch": {
+					"self.charged == true": "ship",
+					"self.charged == false": "refund"
+				}
+			},
+			{ "id": "ship",   "transport": "http", "endpoint": "http://x" },
+			{ "id": "refund", "transport": "http", "endpoint": "http://x" }
+		]
+	}`)
+	// All steps present; no error means type inference succeeded
+	assertJSON(t, out.Tasks["charge"].Output, `{"$ref": "#/$defs/charge_output"}`)
+}
+
+func TestGenerate_Switch_OutputsExpressionTypeChecked(t *testing.T) {
+	// Switch expressions can also reference prior outputs without "self".
+	runGenerate(t, `{
+		"name": "p", "version": 1,
+		"steps": [
+			{
+				"id": "charge",
+				"transport": "http", "endpoint": "http://x",
+				"output_schema": {
+					"type": "object",
+					"properties": { "charged": { "type": "boolean" } },
+					"required": ["charged"]
+				},
+				"switch": {"outputs.charge.charged == true": "notify"}
+			},
+			{ "id": "notify", "transport": "http", "endpoint": "http://x" }
+		]
+	}`)
+}
+
 func TestGenerate_InvalidRef(t *testing.T) {
 	err := runGenerateErr(t, `{
 		"name": "p", "version": 1,
-		"steps": [{"type":"task","id":"s1","transport":"http","endpoint":"http://x"}],
+		"steps": [{"id":"s1","transport":"http","endpoint":"http://x"}],
 		"input_schema": {
 			"properties": { "x": { "$ref": "#/$defs/Missing" } }
 		}

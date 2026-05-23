@@ -1,6 +1,8 @@
 package model
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -12,14 +14,6 @@ import (
 	"github.com/xeipuuv/gojsonschema"
 )
 
-// StepType identifies the kind of step.
-type StepType string
-
-const (
-	StepTypeTask        StepType = "task"
-	StepTypeConditional StepType = "conditional"
-)
-
 // Transport identifies how the engine communicates with a service.
 type Transport string
 
@@ -29,22 +23,100 @@ const (
 	TransportUDS  Transport = "uds"
 )
 
+// SwitchCase is a single entry in a Step's switch list: an expression evaluated
+// against the process context (and this step's own output as "self"), and the ID
+// of the step to jump to when the expression is true.
+type SwitchCase struct {
+	When string
+	Goto string
+}
+
+// SwitchMap is an ordered list of SwitchCase entries. It marshals as a plain
+// JSON object so the wire format is readable:
+//
+//	{"self.paid == true": "ship", "self.paid == false": "refund"}
+//
+// JSON object key order is preserved on unmarshal by reading tokens sequentially
+// rather than decoding into a map.
+type SwitchMap []SwitchCase
+
+func (s SwitchMap) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	for i, c := range s {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		key, _ := json.Marshal(c.When)
+		val, _ := json.Marshal(c.Goto)
+		buf.Write(key)
+		buf.WriteByte(':')
+		buf.Write(val)
+	}
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
+}
+
+func (s *SwitchMap) UnmarshalJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	t, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if delim, ok := t.(json.Delim); !ok || delim != '{' {
+		return fmt.Errorf("switch: expected object, got %v", t)
+	}
+	*s = (*s)[:0]
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		when, ok := keyTok.(string)
+		if !ok {
+			return fmt.Errorf("switch: key must be a string")
+		}
+		var goto_ string
+		if err := dec.Decode(&goto_); err != nil {
+			return err
+		}
+		*s = append(*s, SwitchCase{When: when, Goto: goto_})
+	}
+	_, err = dec.Token() // closing '}'
+	return err
+}
+
+// JSONSchemaBytes returns the JSON Schema for SwitchMap so that OpenAPI
+// reflection produces the correct schema for its wire format.
+func (SwitchMap) JSONSchemaBytes() ([]byte, error) {
+	return []byte(`{"type":"object","additionalProperties":{"type":"string"}}`), nil
+}
+
 // Step is a single unit of work in a process definition.
-// Validation rules are expressed as struct tags — the constraints live next to the fields.
+// Each step may have an action, a switch, or both — but at least one is required.
+//
+//   - Action-only (Transport+Endpoint set, Switch empty): executes the action and
+//     advances to the next step in the list.
+//   - Switch-only (Transport+Endpoint empty, Switch non-empty): evaluates the switch
+//     to determine the next step without performing any external call.
+//   - Both: executes the action first, then evaluates the switch.
+//
+// Switch cases are evaluated in order; the first matching expression wins.
+// If no case matches (or Switch is empty), execution continues with the next step.
+// Switch expressions have access to the full context and to this step's own action
+// output under the name "self".
 type Step struct {
-	Type         StepType       `json:"type"                validate:"required,oneof=task conditional"`
-	ID           string         `json:"id"                  validate:"required"`
-	Transport    Transport      `json:"transport,omitempty" validate:"required_if=Type task,omitempty,oneof=http tcp uds"`
-	Endpoint     string         `json:"endpoint,omitempty"  validate:"required_if=Type task"`
-	TimeoutMs    int            `json:"timeout_ms,omitempty"`
-	Retries      int            `json:"retries,omitempty"`
-	Condition    string         `json:"condition,omitempty" validate:"required_if=Type conditional"`
-	Then         []*Step        `json:"then,omitempty"      validate:"omitempty,dive"`
-	Else         []*Step        `json:"else,omitempty"      validate:"omitempty,dive"`
-	OutputSchema map[string]any `json:"output_schema,omitempty"`
-	// Params maps field names to expr-lang expressions evaluated against the context.
-	// When set, only these fields are sent to the task endpoint instead of the full context.
-	Params map[string]string `json:"params,omitempty"`
+	ID           string            `json:"id"                  validate:"required"`
+	Transport    Transport         `json:"transport,omitempty"`
+	Endpoint     string            `json:"endpoint,omitempty"`
+	TimeoutMs    int               `json:"timeout_ms,omitempty"`
+	Retries      int               `json:"retries,omitempty"`
+	OutputSchema map[string]any    `json:"output_schema,omitempty"`
+	Params       map[string]string `json:"params,omitempty"`
+	Switch       SwitchMap         `json:"switch,omitempty"`
+	// Final marks this step as a terminal point. When no switch case matches,
+	// the instance completes here instead of continuing to the next step.
+	Final bool `json:"final,omitempty"`
 }
 
 // ProcessDefinition is the immutable versioned blueprint for a process.
@@ -66,11 +138,7 @@ func (d *ProcessDefinition) Normalize() error {
 		}
 		d.InputSchema = normalized
 	}
-	return normalizeStepSchemas(d.Steps)
-}
-
-func normalizeStepSchemas(steps []*Step) error {
-	for _, s := range steps {
+	for _, s := range d.Steps {
 		if len(s.OutputSchema) > 0 {
 			normalized, err := schema.Normalize(s.OutputSchema)
 			if err != nil {
@@ -78,18 +146,13 @@ func normalizeStepSchemas(steps []*Step) error {
 			}
 			s.OutputSchema = normalized
 		}
-		if err := normalizeStepSchemas(s.Then); err != nil {
-			return err
-		}
-		if err := normalizeStepSchemas(s.Else); err != nil {
-			return err
-		}
 	}
 	return nil
 }
 
 // Validate checks the definition and all its steps against the struct tag rules,
 // and verifies that any attached JSON Schemas are valid schema documents.
+// It also checks statically that all switch goto targets name known steps.
 func (d *ProcessDefinition) Validate() error {
 	if err := fmtValidationErr(v.Struct(d)); err != nil {
 		return err
@@ -97,22 +160,44 @@ func (d *ProcessDefinition) Validate() error {
 	if err := checkSchemaDoc("input_schema", d.InputSchema); err != nil {
 		return err
 	}
-	return validateStepSchemas(d.Steps)
-}
-
-func validateStepSchemas(steps []*Step) error {
-	for _, s := range steps {
-		if err := checkSchemaDoc(fmt.Sprintf("step %q output_schema", s.ID), s.OutputSchema); err != nil {
-			return err
-		}
-		if err := validateStepSchemas(s.Then); err != nil {
-			return err
-		}
-		if err := validateStepSchemas(s.Else); err != nil {
+	stepIDs := make(map[string]struct{}, len(d.Steps))
+	for _, s := range d.Steps {
+		stepIDs[s.ID] = struct{}{}
+	}
+	for _, s := range d.Steps {
+		if err := validateStep(s, stepIDs); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func validateStep(s *Step, stepIDs map[string]struct{}) error {
+	hasAction := s.Transport != "" || s.Endpoint != ""
+	hasSwitch := len(s.Switch) > 0
+
+	if !hasAction && !hasSwitch {
+		return fmt.Errorf("step %q must have an action (transport + endpoint) or a switch", s.ID)
+	}
+	if s.Transport != "" && s.Endpoint == "" {
+		return fmt.Errorf("step %q: endpoint is required", s.ID)
+	}
+	if s.Endpoint != "" && s.Transport == "" {
+		return fmt.Errorf("step %q: transport is required", s.ID)
+	}
+	if s.Transport != "" {
+		switch s.Transport {
+		case TransportHTTP, TransportTCP, TransportUDS:
+		default:
+			return fmt.Errorf("step %q: transport must be one of: http, tcp, uds", s.ID)
+		}
+	}
+	for _, c := range s.Switch {
+		if _, ok := stepIDs[c.Goto]; !ok {
+			return fmt.Errorf("step %q switch: goto %q is not a known step", s.ID, c.Goto)
+		}
+	}
+	return checkSchemaDoc(fmt.Sprintf("step %q output_schema", s.ID), s.OutputSchema)
 }
 
 func checkSchemaDoc(field string, schema map[string]any) error {

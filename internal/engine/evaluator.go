@@ -6,17 +6,18 @@ import (
 	"gent/internal/exprtype"
 )
 
-// Evaluator compiles and evaluates boolean expressions against a context map.
+// Evaluator compiles and evaluates expressions against a context map.
 // Expressions use dot-notation to access context fields, e.g.:
 //
 //	"outputs.payment.success == true"
 //	"input.amount > 1000 && outputs.charge.charged"
+//	"self.status == 'approved'"   (in switch expressions, self = this step's output)
 //
 // Only the subset supported by exprtype is accepted; any other construct
 // returns an error so that expressions are always statically type-checkable.
 type Evaluator struct{}
 
-func evalEnv(contextData map[string]any) map[string]any {
+func evalEnv(contextData map[string]any, self any) map[string]any {
 	outputs, _ := contextData["outputs"].(map[string]any)
 	if outputs == nil {
 		outputs = map[string]any{}
@@ -24,12 +25,14 @@ func evalEnv(contextData map[string]any) map[string]any {
 	return map[string]any{
 		"input":   contextData["input"],
 		"outputs": outputs,
+		"self":    self,
 	}
 }
 
 // EvalAny evaluates an expression and returns the result as any value.
+// self is nil (params are evaluated before the action runs).
 func (Evaluator) EvalAny(expression string, contextData map[string]any) (any, error) {
-	result, err := exprtype.Eval(expression, evalEnv(contextData))
+	result, err := exprtype.Eval(expression, evalEnv(contextData, nil))
 	if err != nil {
 		return nil, fmt.Errorf("eval %q: %w", expression, err)
 	}
@@ -37,8 +40,15 @@ func (Evaluator) EvalAny(expression string, contextData map[string]any) (any, er
 }
 
 // Eval evaluates the expression against contextData and returns the boolean result.
-func (Evaluator) Eval(expression string, contextData map[string]any) (bool, error) {
-	result, err := exprtype.Eval(expression, evalEnv(contextData))
+// self is nil; use EvalBool when the step's own output should be accessible.
+func (e Evaluator) Eval(expression string, contextData map[string]any) (bool, error) {
+	return e.EvalBool(expression, contextData, nil)
+}
+
+// EvalBool evaluates a boolean expression with self available as the step's own
+// action output. Used for switch case expressions.
+func (Evaluator) EvalBool(expression string, contextData map[string]any, self any) (bool, error) {
+	result, err := exprtype.Eval(expression, evalEnv(contextData, self))
 	if err != nil {
 		return false, fmt.Errorf("eval %q: %w", expression, err)
 	}

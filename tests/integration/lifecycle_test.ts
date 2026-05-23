@@ -91,38 +91,31 @@ test("lifecycle — conditional routes to correct branch", async () => {
       steps: [
         {
           id: "start",
-          type: "task",
           transport: "http",
           endpoint: "http://localhost:19994/action",
+          switch: {
+            "input.go_then == true": "then_step",
+            "input.go_then == false": "else_step",
+          },
         },
         {
-          id: "check",
-          type: "conditional" as const,
-          condition: "input.go_then == true",
-          then: [
-            {
-              id: "then_step",
-              type: "task" as const,
-              transport: "http" as const,
-              endpoint: "http://localhost:19994/action",
-              timeout_ms: 1000,
-              retries: 0,
-            },
-          ],
-          else: [
-            {
-              id: "else_step",
-              type: "task" as const,
-              transport: "http" as const,
-              endpoint: "http://localhost:19995/action",
-              timeout_ms: 1000,
-              retries: 0,
-            },
-          ],
+          id: "then_step",
+          transport: "http" as const,
+          endpoint: "http://localhost:19994/action",
+          timeout_ms: 1000,
+          retries: 0,
+          final: true,
+        },
+        {
+          id: "else_step",
+          transport: "http" as const,
+          endpoint: "http://localhost:19995/action",
+          timeout_ms: 1000,
+          retries: 0,
         },
       ],
     },
-  });
+  } as const);
 
   const { data: d1 } = await client.POST("/instances", {
     body: { process: name, input: { go_then: true } },
@@ -133,6 +126,7 @@ test("lifecycle — conditional routes to correct branch", async () => {
   });
 
   expect((r1?.context?.outputs as any)?.then_step?.branch).toBe("then");
+  expect((r1?.context?.outputs as any)?.else_step?.branch).toBe(undefined);
 
   const { data: d2 } = await client.POST("/instances", {
     body: { process: name, input: { go_then: false } },
@@ -142,6 +136,7 @@ test("lifecycle — conditional routes to correct branch", async () => {
     params: { path: { id: d2!.id } },
   });
   expect((r2?.context?.outputs as any)?.else_step?.branch).toBe("else");
+  expect((r2?.context?.outputs as any)?.then_step?.branch).toBe(undefined);
 
   thenMock.stop();
   elseMock.stop();

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"testing"
 
 	"gent/internal/model"
@@ -44,43 +45,62 @@ func TestEvaluator(t *testing.T) {
 	}
 }
 
-func TestStepQueueConditional(t *testing.T) {
-	shipStep := &model.Step{Type: model.StepTypeTask, ID: "ship", Transport: model.TransportHTTP, Endpoint: "http://x"}
-	refundStep := &model.Step{Type: model.StepTypeTask, ID: "refund", Transport: model.TransportHTTP, Endpoint: "http://x"}
-	followUp := &model.Step{Type: model.StepTypeTask, ID: "followup", Transport: model.TransportHTTP, Endpoint: "http://x"}
-
-	conditional := &model.Step{
-		Type:      model.StepTypeConditional,
-		ID:        "check",
-		Condition: "outputs.pay.paid == true",
-		Then:      []*model.Step{shipStep},
-		Else:      []*model.Step{refundStep},
-	}
-
-	inst := &model.ProcessInstance{
-		StepQueue:   []*model.Step{conditional, followUp},
-		ContextData: map[string]interface{}{"outputs": map[string]any{"pay": map[string]any{"paid": true}}},
-	}
-
+func TestEvaluator_EvalBool_WithSelf(t *testing.T) {
 	eval := Evaluator{}
-	result, _ := eval.Eval(conditional.Condition, inst.ContextData)
+	ctx := map[string]any{"outputs": map[string]any{}, "input": map[string]any{}}
 
-	rest := inst.StepQueue[1:]
-	var branch []*model.Step
-	if result {
-		branch = conditional.Then
-	} else {
-		branch = conditional.Else
+	tests := []struct {
+		name string
+		expr string
+		self any
+		want bool
+	}{
+		{"self field true", "self.paid == true", map[string]any{"paid": true}, true},
+		{"self field false", "self.paid == true", map[string]any{"paid": false}, false},
+		{"self nested field", "self.result.ok == true", map[string]any{"result": map[string]any{"ok": true}}, true},
+		{"self nil when no action", "self == nil", nil, true},
 	}
-	inst.StepQueue = append(branch, rest...)
 
-	if len(inst.StepQueue) != 2 {
-		t.Fatalf("expected 2 steps, got %d", len(inst.StepQueue))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := eval.EvalBool(tt.expr, ctx, tt.self)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("EvalBool(%q) = %v, want %v", tt.expr, got, tt.want)
+			}
+		})
 	}
-	if inst.StepQueue[0].ID != "ship" {
-		t.Errorf("expected ship step first, got %q", inst.StepQueue[0].ID)
+}
+
+func TestSwitchMap_JSON_RoundTrip(t *testing.T) {
+	original := model.SwitchMap{
+		{When: "self.paid == true", Goto: "ship"},
+		{When: "self.paid == false", Goto: "refund"},
 	}
-	if inst.StepQueue[1].ID != "followup" {
-		t.Errorf("expected followup second, got %q", inst.StepQueue[1].ID)
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	want := `{"self.paid == true":"ship","self.paid == false":"refund"}`
+	if string(data) != want {
+		t.Errorf("marshal: got %s, want %s", data, want)
+	}
+
+	var decoded model.SwitchMap
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if len(decoded) != len(original) {
+		t.Fatalf("length mismatch: got %d, want %d", len(decoded), len(original))
+	}
+	for i := range original {
+		if decoded[i] != original[i] {
+			t.Errorf("case %d: got %+v, want %+v", i, decoded[i], original[i])
+		}
 	}
 }

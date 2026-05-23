@@ -61,6 +61,10 @@ func (e *Engine) tick(ctx context.Context) {
 }
 
 // advance executes the next step in the instance's queue.
+// Each step may have an action (Transport+Endpoint), a switch, or both.
+// The action runs first; then the switch is evaluated with the action's output
+// available as "self". A matching switch case jumps to the named step; no match
+// advances to the next step in the queue.
 func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) error {
 	if len(inst.StepQueue) == 0 {
 		inst.Status = model.StatusCompleted
@@ -70,43 +74,51 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) error
 	}
 
 	step := inst.StepQueue[0]
+	var selfOutput any
 
-	switch step.Type {
-	case model.StepTypeConditional:
-		return e.evalConditional(inst, step)
-
-	case model.StepTypeTask:
-		return e.execTask(ctx, inst, step)
-
-	default:
-		return fmt.Errorf("unknown step type %q in instance %s", step.Type, inst.ID)
+	if step.Transport != "" {
+		out, done, err := e.executeAction(ctx, inst, step)
+		if done || err != nil {
+			return err
+		}
+		selfOutput = out
 	}
-}
 
-// evalConditional resolves a conditional step immediately (no network call).
-// The appropriate branch is prepended to the queue and persisted.
-func (e *Engine) evalConditional(inst *model.ProcessInstance, step *model.Step) error {
-	result, err := e.eval.Eval(step.Condition, inst.ContextData)
+	gotoID, err := e.evalSwitch(inst, step, selfOutput)
 	if err != nil {
-		return e.failInstance(inst, fmt.Sprintf("eval condition %q: %v", step.Condition, err))
+		return e.failInstance(inst, fmt.Sprintf("step %q switch: %v", step.ID, err))
 	}
 
-	rest := inst.StepQueue[1:]
-	var branch []*model.Step
-	if result {
-		branch = step.Then
+	if gotoID == "" && step.Final {
+		inst.Status = model.StatusCompleted
+		inst.RetryCount = 0
+		inst.NextRetryAt = nil
+		e.log.Info("instance completed at final step", "id", inst.ID, "step", step.ID)
+		return e.db.UpdateInstance(inst)
+	}
+
+	if gotoID == "" {
+		inst.StepQueue = inst.StepQueue[1:]
 	} else {
-		branch = step.Else
+		newQueue, err := e.queueFromStep(inst, gotoID)
+		if err != nil {
+			return e.failInstance(inst, err.Error())
+		}
+		inst.StepQueue = newQueue
 	}
 
-	inst.StepQueue = append(branch, rest...)
+	inst.RetryCount = 0
 	inst.NextRetryAt = nil
-	e.log.Debug("conditional evaluated", "id", inst.ID, "condition", step.Condition, "result", result)
+	e.log.Info("step completed", "id", inst.ID, "step", step.ID)
 	return e.db.UpdateInstance(inst)
 }
 
-// execTask sends a message to the step's endpoint and handles the response.
-func (e *Engine) execTask(ctx context.Context, inst *model.ProcessInstance, step *model.Step) error {
+// executeAction sends a request to the step's endpoint and stores the output in
+// the instance context. Returns (output, done, err):
+//   - done=false, err=nil: action succeeded; output is the step result.
+//   - done=true: instance already persisted (retry scheduled or permanent fail);
+//     caller should return err directly.
+func (e *Engine) executeAction(ctx context.Context, inst *model.ProcessInstance, step *model.Step) (any, bool, error) {
 	timeout := time.Duration(step.TimeoutMs) * time.Millisecond
 	if timeout == 0 {
 		timeout = 30 * time.Second
@@ -117,7 +129,7 @@ func (e *Engine) execTask(ctx context.Context, inst *model.ProcessInstance, step
 
 	data, err := e.buildTaskData(inst, step)
 	if err != nil {
-		return e.failInstance(inst, fmt.Sprintf("step %q params: %v", step.ID, err))
+		return nil, true, e.failInstance(inst, fmt.Sprintf("step %q params: %v", step.ID, err))
 	}
 
 	req := transport.Request{
@@ -130,14 +142,14 @@ func (e *Engine) execTask(ctx context.Context, inst *model.ProcessInstance, step
 
 	resp, err := transport.Send(taskCtx, step, req)
 	if err != nil {
-		return e.handleStepError(inst, step, err.Error())
+		return nil, true, e.retryOrFail(inst, step, err.Error())
 	}
 	if resp.Status != "ok" {
-		return e.handleStepError(inst, step, resp.Error)
+		return nil, true, e.retryOrFail(inst, step, resp.Error)
 	}
 
 	if err := step.ValidateOutput(resp.Output); err != nil {
-		return e.failInstance(inst, fmt.Sprintf("step %q output validation: %v", step.ID, err))
+		return nil, true, e.failInstance(inst, fmt.Sprintf("step %q output validation: %v", step.ID, err))
 	}
 
 	// Store output under outputs.<step_id> for unambiguous addressing.
@@ -159,32 +171,58 @@ func (e *Engine) execTask(ctx context.Context, inst *model.ProcessInstance, step
 		}
 	}
 	inst.ContextData["output_order"] = append(order, step.ID)
-
-	// Step succeeded: pop it from the queue.
-	inst.StepQueue = inst.StepQueue[1:]
 	inst.RetryCount = 0
-	inst.NextRetryAt = nil
 
-	e.log.Info("step completed", "id", inst.ID, "step", step.ID)
-	return e.db.UpdateInstance(inst)
+	return resp.Output, false, nil
 }
 
-// handleStepError either schedules a retry or marks the instance as failed.
-func (e *Engine) handleStepError(inst *model.ProcessInstance, step *model.Step, errMsg string) error {
-	maxRetries := step.Retries
-	if inst.RetryCount < maxRetries {
+// evalSwitch walks the step's switch cases in order and returns the Goto target
+// of the first case whose When expression evaluates to true. Returns "" when no
+// case matches or when the switch list is empty.
+func (e *Engine) evalSwitch(inst *model.ProcessInstance, step *model.Step, selfOutput any) (string, error) {
+	for _, c := range step.Switch {
+		ok, err := e.eval.EvalBool(c.When, inst.ContextData, selfOutput)
+		if err != nil {
+			return "", fmt.Errorf("when %q: %w", c.When, err)
+		}
+		if ok {
+			return c.Goto, nil
+		}
+	}
+	return "", nil
+}
+
+// queueFromStep looks up the process definition and returns all steps starting
+// from the one with the given ID. Used to implement switch goto jumps (including
+// loops back to earlier steps).
+func (e *Engine) queueFromStep(inst *model.ProcessInstance, stepID string) ([]*model.Step, error) {
+	def, err := e.db.GetDefinition(inst.ProcessName, inst.ProcessVersion)
+	if err != nil {
+		return nil, fmt.Errorf("resolve goto: %w", err)
+	}
+	for i, s := range def.Steps {
+		if s.ID == stepID {
+			return def.Steps[i:], nil
+		}
+	}
+	return nil, fmt.Errorf("goto step %q not found in %q v%d", stepID, inst.ProcessName, inst.ProcessVersion)
+}
+
+// retryOrFail either schedules a retry or marks the instance as permanently failed.
+func (e *Engine) retryOrFail(inst *model.ProcessInstance, step *model.Step, errMsg string) error {
+	if inst.RetryCount < step.Retries {
 		inst.RetryCount++
 		next := time.Now().Add(transport.RetryDelay(inst.RetryCount))
 		inst.NextRetryAt = &next
 		e.log.Warn("step failed, scheduling retry",
 			"id", inst.ID, "step", step.ID,
-			"attempt", inst.RetryCount, "max", maxRetries,
+			"attempt", inst.RetryCount, "max", step.Retries,
 			"next_retry", next.Format(time.RFC3339),
 			"err", errMsg,
 		)
 		return e.db.UpdateInstance(inst)
 	}
-	return e.failInstance(inst, fmt.Sprintf("step %q failed after %d retries: %s", step.ID, maxRetries, errMsg))
+	return e.failInstance(inst, fmt.Sprintf("step %q failed after %d retries: %s", step.ID, step.Retries, errMsg))
 }
 
 func (e *Engine) buildTaskData(inst *model.ProcessInstance, step *model.Step) (map[string]any, error) {

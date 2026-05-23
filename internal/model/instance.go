@@ -20,7 +20,7 @@ type ProcessInstance struct {
 	ProcessVersion int
 
 	// StepQueue holds the remaining steps to execute, serialized as JSON.
-	// Conditional steps expand into their branch inline when evaluated.
+	// A switch goto replaces this slice with the target step and all steps after it.
 	StepQueue []*Step
 
 	// ContextData is the accumulated key/value state passed between steps.

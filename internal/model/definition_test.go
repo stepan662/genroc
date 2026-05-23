@@ -5,12 +5,12 @@ import (
 )
 
 func TestProcessDefinition_Normalize(t *testing.T) {
-	validTask := func(id string) *Step {
-		return &Step{Type: StepTypeTask, ID: id, Transport: TransportHTTP, Endpoint: "http://localhost/x"}
+	validStep := func(id string) *Step {
+		return &Step{ID: id, Transport: TransportHTTP, Endpoint: "http://localhost/x"}
 	}
 
 	t.Run("no schemas is a no-op", func(t *testing.T) {
-		d := ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{validTask("s1")}}
+		d := ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{validStep("s1")}}
 		if err := d.Normalize(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -18,7 +18,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 
 	t.Run("simple InputSchema without refs is unchanged", func(t *testing.T) {
 		d := ProcessDefinition{
-			Name: "p", Version: 1, Steps: []*Step{validTask("s1")},
+			Name: "p", Version: 1, Steps: []*Step{validStep("s1")},
 			InputSchema: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"id": map[string]any{"type": "integer"}},
@@ -35,7 +35,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 
 	t.Run("InputSchema $defs are flattened to root", func(t *testing.T) {
 		d := ProcessDefinition{
-			Name: "p", Version: 1, Steps: []*Step{validTask("s1")},
+			Name: "p", Version: 1, Steps: []*Step{validStep("s1")},
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -64,7 +64,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 	})
 
 	t.Run("step OutputSchema $defs are flattened to root", func(t *testing.T) {
-		step := validTask("charge")
+		step := validStep("charge")
 		step.OutputSchema = map[string]any{
 			"type": "object",
 			"$defs": map[string]any{
@@ -86,9 +86,9 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 		}
 	})
 
-	t.Run("nested step OutputSchema is normalized", func(t *testing.T) {
-		inner := validTask("ship")
-		inner.OutputSchema = map[string]any{
+	t.Run("all step OutputSchemas are normalized", func(t *testing.T) {
+		step1 := validStep("charge")
+		step1.OutputSchema = map[string]any{
 			"type": "object",
 			"$defs": map[string]any{
 				"Tracking": map[string]any{"type": "object"},
@@ -97,23 +97,33 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 				"tracking": map[string]any{"$ref": "#/$defs/Tracking"},
 			},
 		}
-		cond := &Step{
-			Type: StepTypeConditional, ID: "check", Condition: "true",
-			Then: []*Step{inner},
+		step2 := validStep("notify")
+		step2.OutputSchema = map[string]any{
+			"type": "object",
+			"$defs": map[string]any{
+				"Result": map[string]any{"type": "object"},
+			},
+			"properties": map[string]any{
+				"result": map[string]any{"$ref": "#/$defs/Result"},
+			},
 		}
-		d := ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{cond}}
+		d := ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{step1, step2}}
 		if err := d.Normalize(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		defs, _ := inner.OutputSchema["$defs"].(map[string]any)
-		if defs == nil || defs["Tracking"] == nil {
-			t.Fatal("nested step $defs/Tracking missing after normalize")
+		defs1, _ := step1.OutputSchema["$defs"].(map[string]any)
+		if defs1 == nil || defs1["Tracking"] == nil {
+			t.Fatal("step1 $defs/Tracking missing after normalize")
+		}
+		defs2, _ := step2.OutputSchema["$defs"].(map[string]any)
+		if defs2 == nil || defs2["Result"] == nil {
+			t.Fatal("step2 $defs/Result missing after normalize")
 		}
 	})
 
 	t.Run("invalid $ref in InputSchema returns error", func(t *testing.T) {
 		d := ProcessDefinition{
-			Name: "p", Version: 1, Steps: []*Step{validTask("s1")},
+			Name: "p", Version: 1, Steps: []*Step{validStep("s1")},
 			InputSchema: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"x": map[string]any{"$ref": "#/$defs/Missing"}},
@@ -125,7 +135,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 	})
 
 	t.Run("invalid $ref in step OutputSchema returns error with step ID", func(t *testing.T) {
-		step := validTask("charge")
+		step := validStep("charge")
 		step.OutputSchema = map[string]any{
 			"type":       "object",
 			"properties": map[string]any{"x": map[string]any{"$ref": "#/$defs/Missing"}},
@@ -142,7 +152,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 
 	t.Run("unused $defs are removed from InputSchema", func(t *testing.T) {
 		d := ProcessDefinition{
-			Name: "p", Version: 1, Steps: []*Step{validTask("s1")},
+			Name: "p", Version: 1, Steps: []*Step{validStep("s1")},
 			InputSchema: map[string]any{
 				"type": "object",
 				"$defs": map[string]any{
@@ -168,8 +178,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 }
 
 func TestProcessDefinition_Validate(t *testing.T) {
-	validTask := &Step{
-		Type:      StepTypeTask,
+	validStep := &Step{
 		ID:        "step1",
 		Transport: TransportHTTP,
 		Endpoint:  "http://localhost/action",
@@ -181,18 +190,37 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "valid definition",
-			def:     ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{validTask}},
+			name:    "valid action-only step",
+			def:     ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{validStep}},
+			wantErr: "",
+		},
+		{
+			name: "valid switch-only step",
+			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
+				{ID: "router", Switch: SwitchMap{{When: "input.ok == true", Goto: "act"}}},
+				{ID: "act", Transport: TransportHTTP, Endpoint: "http://x"},
+			}},
+			wantErr: "",
+		},
+		{
+			name: "valid step with both action and switch",
+			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
+				{
+					ID: "charge", Transport: TransportHTTP, Endpoint: "http://x",
+					Switch: SwitchMap{{When: "self.ok == true", Goto: "ship"}},
+				},
+				{ID: "ship", Transport: TransportHTTP, Endpoint: "http://x"},
+			}},
 			wantErr: "",
 		},
 		{
 			name:    "missing name",
-			def:     ProcessDefinition{Version: 1, Steps: []*Step{validTask}},
+			def:     ProcessDefinition{Version: 1, Steps: []*Step{validStep}},
 			wantErr: "name is required",
 		},
 		{
 			name:    "version zero",
-			def:     ProcessDefinition{Name: "p", Version: 0, Steps: []*Step{validTask}},
+			def:     ProcessDefinition{Name: "p", Version: 0, Steps: []*Step{validStep}},
 			wantErr: "version must have at least 1 item(s)",
 		},
 		{
@@ -201,42 +229,42 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			wantErr: "steps",
 		},
 		{
-			name: "task missing endpoint",
+			name: "step with neither action nor switch",
 			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
-				{Type: StepTypeTask, ID: "s1", Transport: TransportHTTP},
+				{ID: "empty"},
+			}},
+			wantErr: "must have an action",
+		},
+		{
+			name: "transport set but endpoint missing",
+			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
+				{ID: "s1", Transport: TransportHTTP},
 			}},
 			wantErr: "endpoint is required",
 		},
 		{
-			name: "task unknown transport",
+			name: "endpoint set but transport missing",
 			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
-				{Type: StepTypeTask, ID: "s1", Transport: "ftp", Endpoint: "ftp://x"},
+				{ID: "s1", Endpoint: "http://x"},
+			}},
+			wantErr: "transport is required",
+		},
+		{
+			name: "unknown transport",
+			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
+				{ID: "s1", Transport: "ftp", Endpoint: "ftp://x"},
 			}},
 			wantErr: "transport must be one of: http, tcp, uds",
 		},
 		{
-			name: "conditional missing condition",
-			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
-				{Type: StepTypeConditional, ID: "c1"},
-			}},
-			wantErr: "condition is required",
-		},
-		{
-			name: "unknown step type",
-			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
-				{Type: "parallel", ID: "p1"},
-			}},
-			wantErr: "type must be one of: task, conditional",
-		},
-		{
-			name: "nested step invalid",
+			name: "switch goto references unknown step",
 			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
 				{
-					Type: StepTypeConditional, ID: "c1", Condition: "context.ok == true",
-					Then: []*Step{{Type: StepTypeTask, ID: "t1"}}, // missing transport+endpoint
+					ID: "charge", Transport: TransportHTTP, Endpoint: "http://x",
+					Switch: SwitchMap{{When: "self.ok == true", Goto: "nonexistent"}},
 				},
 			}},
-			wantErr: "endpoint is required",
+			wantErr: `goto "nonexistent" is not a known step`,
 		},
 	}
 
@@ -272,7 +300,7 @@ func TestProcessDefinition_ValidateInput_Nullable(t *testing.T) {
 	def := ProcessDefinition{
 		Name: "p", Version: 1,
 		InputSchema: schema,
-		Steps:       []*Step{{Type: StepTypeTask, ID: "s", Transport: TransportHTTP, Endpoint: "http://x"}},
+		Steps:       []*Step{{ID: "s", Transport: TransportHTTP, Endpoint: "http://x"}},
 	}
 
 	tests := []struct {
@@ -324,7 +352,6 @@ func TestProcessDefinition_ValidateInput_Nullable(t *testing.T) {
 
 func TestStep_ValidateOutput_Nullable(t *testing.T) {
 	step := &Step{
-		Type:      StepTypeTask,
 		ID:        "charge",
 		Transport: TransportHTTP,
 		Endpoint:  "http://x",
@@ -382,6 +409,37 @@ func TestStep_ValidateOutput_Nullable(t *testing.T) {
 				t.Errorf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestSwitchMap_MarshalUnmarshal(t *testing.T) {
+	original := SwitchMap{
+		{When: "self.paid == true", Goto: "ship"},
+		{When: "self.paid == false", Goto: "refund"},
+	}
+
+	data, err := original.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	want := `{"self.paid == true":"ship","self.paid == false":"refund"}`
+	if string(data) != want {
+		t.Errorf("marshal: got %s, want %s", data, want)
+	}
+
+	var decoded SwitchMap
+	if err := decoded.UnmarshalJSON(data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if len(decoded) != len(original) {
+		t.Fatalf("length mismatch: got %d, want %d", len(decoded), len(original))
+	}
+	for i := range original {
+		if decoded[i] != original[i] {
+			t.Errorf("case %d: got %+v, want %+v", i, decoded[i], original[i])
+		}
 	}
 }
 
