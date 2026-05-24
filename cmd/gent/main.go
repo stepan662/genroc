@@ -4,6 +4,8 @@ import (
 	"context"
 	"flag"
 	"log/slog"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"sync"
@@ -21,6 +23,7 @@ func main() {
 	tcpAddr := flag.String("tcp", "", "TCP listen address, e.g. 127.0.0.1:9090 (empty to disable)")
 	udsPath := flag.String("uds", "", "Unix socket path, e.g. /tmp/gent.sock (empty to disable)")
 	pollMs := flag.Int("poll", 500, "Engine poll interval in milliseconds")
+	pprofAddr := flag.String("pprof", "", "pprof listen address, e.g. localhost:6060 (empty to disable)")
 	logLevel := flag.String("log", "debug", "Log level: debug, info, warn, error")
 	flag.Parse()
 
@@ -48,6 +51,17 @@ func main() {
 		defer wg.Done()
 		eng.Run(ctx)
 	}()
+
+	if *pprofAddr != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			log.Info("pprof listening", "addr", *pprofAddr)
+			if err := http.ListenAndServe(*pprofAddr, nil); err != nil {
+				log.Error("pprof server", "err", err)
+			}
+		}()
+	}
 
 	if *httpAddr != "" {
 		wg.Add(1)
