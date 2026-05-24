@@ -399,9 +399,9 @@ func TestGenerate_Switch_OutputsExpressionTypeChecked(t *testing.T) {
 }
 
 func TestGenerate_RecursiveStep_OwnOutputOptionalInParams(t *testing.T) {
-	// A step that switches back to itself (final loop) must be able to reference
-	// its own previous output in params. The output is optional (nullable) because
-	// it doesn't exist on the first iteration.
+	// A step that switches back to itself must be able to reference its own previous
+	// output in params. The output is optional (nullable) because it doesn't exist
+	// on the first iteration.
 	out := runGenerate(t, `{
 		"name": "p", "version": 1,
 		"input_schema": {
@@ -424,8 +424,7 @@ func TestGenerate_RecursiveStep_OwnOutputOptionalInParams(t *testing.T) {
 				},
 				"required": ["finished_index", "done"]
 			},
-			"switch": { "!self.done": "loop" },
-			"final": true
+			"switch": { "!self.done": "loop", "default": "$end" }
 		}]
 	}`)
 	input := out.Tasks["loop"].Input
@@ -443,10 +442,10 @@ func TestGenerate_RecursiveStep_OwnOutputOptionalInParams(t *testing.T) {
 	}
 }
 
-func TestGenerate_FinalStep_NextStepNotReachableViaFallthrough(t *testing.T) {
-	// A step with final:true does not fall through to the next step in the list.
-	// The next step's required context must not include the final step's output
-	// unless it is also reachable from a non-final predecessor.
+func TestGenerate_SwitchStep_NextStepNotReachableViaFallthrough(t *testing.T) {
+	// A step with a switch does not fall through to the next step in the list.
+	// The next step's required context must not include that step's output unless
+	// it is also reachable from a non-switch predecessor.
 	out := runGenerate(t, `{
 		"name": "p", "version": 1,
 		"steps": [
@@ -454,8 +453,7 @@ func TestGenerate_FinalStep_NextStepNotReachableViaFallthrough(t *testing.T) {
 				"id": "decide",
 				"transport": "http", "endpoint": "http://x",
 				"output_schema": { "type": "object", "properties": { "ok": { "type": "boolean" } }, "required": ["ok"] },
-				"switch": { "self.ok": "work" },
-				"final": true
+				"switch": { "self.ok": "work", "default": "$end" }
 			},
 			{
 				"id": "work",
@@ -471,6 +469,161 @@ func TestGenerate_FinalStep_NextStepNotReachableViaFallthrough(t *testing.T) {
 	if props == nil {
 		t.Fatal("work input should have properties")
 	}
+	assertJSON(t, props["flag"], `{"type": "boolean"}`)
+}
+
+// ─── context-set / CFG tests ──────────────────────────────────────────────────
+//
+// These tests verify that computeContextSets correctly classifies step outputs as
+// required (always present before a step runs) or optional (present only on some
+// paths), and that param type inference reflects that distinction:
+//   - required output → field access is non-nullable
+//   - optional output → field access is nullable (anyOf / type array with null)
+
+func TestGenerate_ContextSets_LinearChain_RequiredOutputNonNullable(t *testing.T) {
+	// A always runs before B (no branching). B's param accesses a required field
+	// of A's output; the inferred type must be non-nullable.
+	out := runGenerate(t, `{
+		"name": "p", "version": 1,
+		"steps": [
+			{
+				"id": "A",
+				"transport": "http", "endpoint": "http://x",
+				"output_schema": {
+					"type": "object",
+					"properties": { "ok": { "type": "boolean" } },
+					"required": ["ok"]
+				}
+			},
+			{
+				"id": "B",
+				"transport": "http", "endpoint": "http://x",
+				"params": { "flag": "outputs.A.ok" }
+			}
+		]
+	}`)
+	props, _ := out.Tasks["B"].Input["properties"].(map[string]any)
+	if props == nil {
+		t.Fatal("B input should have properties")
+	}
+	// A is required before B → outputs.A is required → .ok is non-nullable boolean.
+	assertJSON(t, props["flag"], `{"type": "boolean"}`)
+}
+
+func TestGenerate_ContextSets_ExclusiveBranch_SkippedStepOutputNullable(t *testing.T) {
+	// gate(switch) → fast  (one path)
+	//              → slow  (other path, default)
+	// fast falls through to slow; slow falls through to merge.
+	//
+	// fast is only on the gate→fast→slow→merge path, not the gate→slow→merge path,
+	// so its output is optional at merge. Accessing it in params must yield a
+	// nullable type.
+	out := runGenerate(t, `{
+		"name": "p", "version": 1,
+		"input_schema": {
+			"type": "object",
+			"properties": { "take_fast": { "type": "boolean" } },
+			"required": ["take_fast"]
+		},
+		"steps": [
+			{
+				"id": "gate",
+				"switch": { "input.take_fast": "fast", "default": "slow" }
+			},
+			{
+				"id": "fast",
+				"transport": "http", "endpoint": "http://x",
+				"output_schema": {
+					"type": "object",
+					"properties": { "speed": { "type": "number" } },
+					"required": ["speed"]
+				}
+			},
+			{ "id": "slow", "transport": "http", "endpoint": "http://x" },
+			{
+				"id": "merge",
+				"transport": "http", "endpoint": "http://x",
+				"params": { "s": "outputs.fast.speed" }
+			}
+		]
+	}`)
+	props, _ := out.Tasks["merge"].Input["properties"].(map[string]any)
+	if props == nil {
+		t.Fatal("merge input should have properties")
+	}
+	// fast is optional at merge → outputs.fast is nullable → .speed is nullable number.
+	assertJSON(t, props["s"], `{"type": ["number", "null"]}`)
+}
+
+func TestGenerate_ContextSets_PreBranchStepRequiredAtAllMergePoints(t *testing.T) {
+	// pre always runs before gate; gate branches to path_a or path_b (default);
+	// path_a falls through to path_b; path_b falls through to post.
+	//
+	// Every path to post goes through pre, so pre's output must be required
+	// (non-nullable) in post's params even though a branch intervenes.
+	out := runGenerate(t, `{
+		"name": "p", "version": 1,
+		"steps": [
+			{
+				"id": "pre",
+				"transport": "http", "endpoint": "http://x",
+				"output_schema": {
+					"type": "object",
+					"properties": { "id": { "type": "integer" } },
+					"required": ["id"]
+				}
+			},
+			{
+				"id": "gate",
+				"switch": { "outputs.pre.id == 1": "path_a", "default": "path_b" }
+			},
+			{ "id": "path_a", "transport": "http", "endpoint": "http://x" },
+			{ "id": "path_b", "transport": "http", "endpoint": "http://x" },
+			{
+				"id": "post",
+				"transport": "http", "endpoint": "http://x",
+				"params": { "pre_id": "outputs.pre.id" }
+			}
+		]
+	}`)
+	props, _ := out.Tasks["post"].Input["properties"].(map[string]any)
+	if props == nil {
+		t.Fatal("post input should have properties")
+	}
+	// pre is required on every path to post → outputs.pre.id is non-nullable integer.
+	assertJSON(t, props["pre_id"], `{"type": "integer"}`)
+}
+
+func TestGenerate_ContextSets_DefaultEndSwitch_SuccessorRequiredNotOptional(t *testing.T) {
+	// decide has switch: self.ok→work, default→$end.
+	// work is reachable only from decide's explicit switch case.
+	// Because every path to work goes through decide, decide's output is required
+	// (not optional) at work — the $end branch does not create an edge to work.
+	out := runGenerate(t, `{
+		"name": "p", "version": 1,
+		"steps": [
+			{
+				"id": "decide",
+				"transport": "http", "endpoint": "http://x",
+				"output_schema": {
+					"type": "object",
+					"properties": { "ok": { "type": "boolean" } },
+					"required": ["ok"]
+				},
+				"switch": { "self.ok": "work", "default": "$end" }
+			},
+			{
+				"id": "work",
+				"transport": "http", "endpoint": "http://x",
+				"params": { "flag": "outputs.decide.ok" }
+			}
+		]
+	}`)
+	props, _ := out.Tasks["work"].Input["properties"].(map[string]any)
+	if props == nil {
+		t.Fatal("work input should have properties")
+	}
+	// decide is required for work (only path: decide→work); output is non-nullable.
 	assertJSON(t, props["flag"], `{"type": "boolean"}`)
 }
 

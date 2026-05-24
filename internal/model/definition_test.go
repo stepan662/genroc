@@ -197,7 +197,10 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		{
 			name: "valid switch-only step",
 			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
-				{ID: "router", Switch: SwitchMap{{When: "input.ok == true", Goto: "act"}}},
+				{ID: "router", Switch: SwitchMap{
+					{When: "input.ok == true", Goto: "act"},
+					{When: "default", Goto: GotoEnd},
+				}},
 				{ID: "act", Transport: TransportHTTP, Endpoint: "http://x"},
 			}},
 			wantErr: "",
@@ -207,7 +210,10 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
 				{
 					ID: "charge", Transport: TransportHTTP, Endpoint: "http://x",
-					Switch: SwitchMap{{When: "self.ok == true", Goto: "ship"}},
+					Switch: SwitchMap{
+						{When: "self.ok == true", Goto: "ship"},
+						{When: "default", Goto: GotoEnd},
+					},
 				},
 				{ID: "ship", Transport: TransportHTTP, Endpoint: "http://x"},
 			}},
@@ -257,11 +263,53 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			wantErr: "transport must be one of: http, tcp, uds",
 		},
 		{
+			name: "switch missing default case",
+			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
+				{
+					ID: "charge", Transport: TransportHTTP, Endpoint: "http://x",
+					Switch: SwitchMap{{When: "self.ok == true", Goto: "ship"}},
+				},
+				{ID: "ship", Transport: TransportHTTP, Endpoint: "http://x"},
+			}},
+			wantErr: `last case must be "default"`,
+		},
+		{
+			name: "switch default is not the last case",
+			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
+				{
+					ID: "charge", Transport: TransportHTTP, Endpoint: "http://x",
+					Switch: SwitchMap{
+						{When: "default", Goto: GotoEnd},
+						{When: "self.ok == true", Goto: "ship"},
+					},
+				},
+				{ID: "ship", Transport: TransportHTTP, Endpoint: "http://x"},
+			}},
+			wantErr: `last case must be "default"`,
+		},
+		{
+			name: "switch $end in non-default case is valid",
+			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
+				{
+					ID: "charge", Transport: TransportHTTP, Endpoint: "http://x",
+					Switch: SwitchMap{
+						{When: "self.error == true", Goto: GotoEnd},
+						{When: "default", Goto: "ship"},
+					},
+				},
+				{ID: "ship", Transport: TransportHTTP, Endpoint: "http://x"},
+			}},
+			wantErr: "",
+		},
+		{
 			name: "switch goto references unknown step",
 			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
 				{
 					ID: "charge", Transport: TransportHTTP, Endpoint: "http://x",
-					Switch: SwitchMap{{When: "self.ok == true", Goto: "nonexistent"}},
+					Switch: SwitchMap{
+						{When: "self.ok == true", Goto: "nonexistent"},
+						{When: "default", Goto: GotoEnd},
+					},
 				},
 			}},
 			wantErr: `goto "nonexistent" is not a known step`,

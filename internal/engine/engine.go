@@ -89,11 +89,11 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) error
 		return e.failInstance(inst, fmt.Sprintf("step %q switch: %v", step.ID, err))
 	}
 
-	if gotoID == "" && step.Final {
+	if gotoID == model.GotoEnd {
 		inst.Status = model.StatusCompleted
 		inst.RetryCount = 0
 		inst.NextRetryAt = nil
-		e.log.Info("instance completed at final step", "id", inst.ID, "step", step.ID)
+		e.log.Info("instance completed", "id", inst.ID, "step", step.ID)
 		return e.db.UpdateInstance(inst)
 	}
 
@@ -177,10 +177,14 @@ func (e *Engine) executeAction(ctx context.Context, inst *model.ProcessInstance,
 }
 
 // evalSwitch walks the step's switch cases in order and returns the Goto target
-// of the first case whose When expression evaluates to true. Returns "" when no
-// case matches or when the switch list is empty.
+// of the first case whose When expression evaluates to true. The "default" case
+// always matches and must be the last entry when present. Returns "" when the
+// switch list is empty or no case matches (fall-through to next step).
 func (e *Engine) evalSwitch(inst *model.ProcessInstance, step *model.Step, selfOutput any) (string, error) {
 	for _, c := range step.Switch {
+		if c.When == "default" {
+			return c.Goto, nil
+		}
 		ok, err := e.eval.EvalBool(c.When, inst.ContextData, selfOutput)
 		if err != nil {
 			return "", fmt.Errorf("when %q: %w", c.When, err)

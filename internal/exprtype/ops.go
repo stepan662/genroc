@@ -327,6 +327,10 @@ func nullableSchema(a, b map[string]any) (map[string]any, bool) {
 // tryNullable checks if other is {type:"null"} and self can be made nullable.
 // Returns (nullable schema, true) on success.
 // All keys of self are preserved — only the "type" field is widened to include "null".
+// Schemas with "properties" are intentionally excluded: merging null into their
+// type array would mislead property lookups (the properties would still appear
+// present even when the value is null). Those schemas are wrapped in oneOf by
+// withNull instead.
 func tryNullable(self, other map[string]any) (map[string]any, bool) {
 	if !isNullType(other) {
 		return nil, false
@@ -334,6 +338,11 @@ func tryNullable(self, other map[string]any) (map[string]any, bool) {
 	// self is already a nullable type array → return as-is.
 	if types, ok := self["type"].([]any); ok && typeArrayContainsNull(types) {
 		return self, true
+	}
+	// Schemas with properties need oneOf wrapping so that property access after
+	// null-check narrowing works correctly (handled by withNull's fallback).
+	if _, hasProps := self["properties"]; hasProps {
+		return nil, false
 	}
 	// self has a simple non-null type → widen to [type, "null"], preserving all other keys.
 	if t, ok := self["type"].(string); ok && t != "null" {

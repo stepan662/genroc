@@ -47,6 +47,7 @@ export const processDefinition = {
       },
       switch: {
         "!outputs.loop.done": "loop",
+        default: "$end",
       },
     },
   ],

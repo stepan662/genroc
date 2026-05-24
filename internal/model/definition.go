@@ -14,6 +14,10 @@ import (
 	"github.com/xeipuuv/gojsonschema"
 )
 
+// GotoEnd is the reserved switch Goto target that terminates the process instance.
+// Use it as the target of a switch case (including "default") to signal completion.
+const GotoEnd = "$end"
+
 // Transport identifies how the engine communicates with a service.
 type Transport string
 
@@ -96,13 +100,16 @@ func (SwitchMap) JSONSchemaBytes() ([]byte, error) {
 // Each step may have an action, a switch, or both — but at least one is required.
 //
 //   - Action-only (Transport+Endpoint set, Switch empty): executes the action and
-//     advances to the next step in the list.
+//     advances to the next step in the list. If it is the last step, the instance
+//     completes.
 //   - Switch-only (Transport+Endpoint empty, Switch non-empty): evaluates the switch
 //     to determine the next step without performing any external call.
 //   - Both: executes the action first, then evaluates the switch.
 //
+// When Switch is present it must contain a "default" case as the last entry.
 // Switch cases are evaluated in order; the first matching expression wins.
-// If no case matches (or Switch is empty), execution continues with the next step.
+// The "default" case always matches and must be present to make control flow explicit.
+// A Goto value of GotoEnd ("$end") terminates the instance rather than jumping to a step.
 // Switch expressions have access to the full context and to this step's own action
 // output under the name "self".
 type Step struct {
@@ -114,9 +121,6 @@ type Step struct {
 	OutputSchema map[string]any    `json:"output_schema,omitempty"`
 	Params       map[string]string `json:"params,omitempty"`
 	Switch       SwitchMap         `json:"switch,omitempty"`
-	// Final marks this step as a terminal point. When no switch case matches,
-	// the instance completes here instead of continuing to the next step.
-	Final bool `json:"final,omitempty"`
 }
 
 // ProcessDefinition is the immutable versioned blueprint for a process.
@@ -192,9 +196,17 @@ func validateStep(s *Step, stepIDs map[string]struct{}) error {
 			return fmt.Errorf("step %q: transport must be one of: http, tcp, uds", s.ID)
 		}
 	}
-	for _, c := range s.Switch {
-		if _, ok := stepIDs[c.Goto]; !ok {
-			return fmt.Errorf("step %q switch: goto %q is not a known step", s.ID, c.Goto)
+	if hasSwitch {
+		last := s.Switch[len(s.Switch)-1]
+		if last.When != "default" {
+			return fmt.Errorf("step %q switch: last case must be \"default\"", s.ID)
+		}
+		for _, c := range s.Switch {
+			if c.Goto != GotoEnd {
+				if _, ok := stepIDs[c.Goto]; !ok {
+					return fmt.Errorf("step %q switch: goto %q is not a known step", s.ID, c.Goto)
+				}
+			}
 		}
 	}
 	return checkSchemaDoc(fmt.Sprintf("step %q output_schema", s.ID), s.OutputSchema)

@@ -84,7 +84,7 @@ test("lifecycle — conditional routes to correct branch", async () => {
   });
 
   const name = `lifecycle_cond_${crypto.randomUUID()}`;
-  await client.PUT("/definitions", {
+  const def = await client.PUT("/definitions", {
     body: {
       name,
       version: 1,
@@ -95,7 +95,7 @@ test("lifecycle — conditional routes to correct branch", async () => {
           endpoint: "http://localhost:19994/action",
           switch: {
             "input.go_then == true": "then_step",
-            "input.go_then == false": "else_step",
+            default: "else_step",
           },
         },
         {
@@ -104,7 +104,7 @@ test("lifecycle — conditional routes to correct branch", async () => {
           endpoint: "http://localhost:19994/action",
           timeout_ms: 1000,
           retries: 0,
-          final: true,
+          switch: { default: "$end" },
         },
         {
           id: "else_step",
@@ -112,31 +112,38 @@ test("lifecycle — conditional routes to correct branch", async () => {
           endpoint: "http://localhost:19995/action",
           timeout_ms: 1000,
           retries: 0,
+          switch: { default: "$end" },
         },
       ],
     },
   } as const);
 
-  const { data: d1 } = await client.POST("/instances", {
+  expect(def.error).toBeUndefined();
+
+  let i1Create = await client.POST("/instances", {
     body: { process: name, input: { go_then: true } },
   });
-  await waitForInstance(d1!.id);
-  const { data: r1 } = await client.GET("/instances/{id}", {
-    params: { path: { id: d1!.id } },
+  expect(i1Create.error).toBeUndefined();
+  await waitForInstance(i1Create.data!.id);
+
+  const i1 = await client.GET("/instances/{id}", {
+    params: { path: { id: i1Create.data!.id } },
   });
 
-  expect((r1?.context?.outputs as any)?.then_step?.branch).toBe("then");
-  expect((r1?.context?.outputs as any)?.else_step?.branch).toBe(undefined);
+  expect((i1.data?.context?.outputs as any)?.then_step?.branch).toBe("then");
+  expect((i1.data?.context?.outputs as any)?.else_step?.branch).toBe(undefined);
 
-  const { data: d2 } = await client.POST("/instances", {
+  const i2Create = await client.POST("/instances", {
     body: { process: name, input: { go_then: false } },
   });
-  await waitForInstance(d2!.id);
-  const { data: r2 } = await client.GET("/instances/{id}", {
-    params: { path: { id: d2!.id } },
+  expect(i2Create.error).toBeUndefined();
+
+  await waitForInstance(i2Create.data!.id);
+  const i2 = await client.GET("/instances/{id}", {
+    params: { path: { id: i2Create.data!.id } },
   });
-  expect((r2?.context?.outputs as any)?.else_step?.branch).toBe("else");
-  expect((r2?.context?.outputs as any)?.then_step?.branch).toBe(undefined);
+  expect((i2.data?.context?.outputs as any)?.else_step?.branch).toBe("else");
+  expect((i2.data?.context?.outputs as any)?.then_step?.branch).toBe(undefined);
 
   thenMock.stop();
   elseMock.stop();

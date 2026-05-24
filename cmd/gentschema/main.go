@@ -213,6 +213,9 @@ func buildInputs(steps []*model.Step, _ []string, tasks map[string]TaskSchemas, 
 				switchCtx["$defs"] = defs
 			}
 			for _, c := range s.Switch {
+				if c.When == "default" {
+					continue // always matches; no expression to type-check
+				}
 				if _, err := exprtype.InferType(c.When, switchCtx); err != nil {
 					return nil, fmt.Errorf("step %q switch when %q: %w", s.ID, c.When, err)
 				}
@@ -249,11 +252,14 @@ func computeContextSets(steps []*model.Step) (required, optional map[string][]st
 	preds[0] = append(preds[0], -1)
 	for i, s := range steps {
 		for _, c := range s.Switch {
-			if j, ok := idx[c.Goto]; ok {
-				preds[j] = append(preds[j], i)
+			if c.Goto != model.GotoEnd {
+				if j, ok := idx[c.Goto]; ok {
+					preds[j] = append(preds[j], i)
+				}
 			}
 		}
-		if !s.Final && i+1 < n {
+		// Steps with no switch fall through to the next step in the list.
+		if len(s.Switch) == 0 && i+1 < n {
 			preds[i+1] = append(preds[i+1], i)
 		}
 	}
