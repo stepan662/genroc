@@ -1,116 +1,156 @@
 package db
 
 import (
+	"context"
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"time"
 
-	"gent/internal/model"
-
+	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/dialect"
+	"github.com/uptrace/bun/dialect/pgdialect"
+	"github.com/uptrace/bun/dialect/sqlitedialect"
+	"github.com/uptrace/bun/driver/pgdriver"
+	"github.com/uptrace/bun/migrate"
 	_ "github.com/mattn/go-sqlite3"
+
+	"gent/internal/model"
 )
 
-// DB wraps a SQLite connection and provides all persistence operations.
+//go:embed migrations/*.sql
+var sqlMigrations embed.FS
+
+// DB wraps a bun.DB and implements Store for both SQLite and PostgreSQL.
 type DB struct {
-	conn *sql.DB
+	bun *bun.DB
 }
 
-// Open opens (or creates) the SQLite database at path and runs migrations.
-func Open(path string) (*DB, error) {
-	conn, err := sql.Open("sqlite3", path)
+// OpenSQLite opens (or creates) the SQLite database at path and runs migrations.
+func OpenSQLite(path string) (*DB, error) {
+	dsn := path + "?_journal_mode=WAL&_synchronous=NORMAL&_foreign_keys=ON&_busy_timeout=5000"
+	sqldb, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	// Single writer; WAL allows concurrent readers.
-	conn.SetMaxOpenConns(1)
+	sqldb.SetMaxOpenConns(1) // SQLite supports only one writer at a time.
+	return open(bun.NewDB(sqldb, sqlitedialect.New()))
+}
 
-	db := &DB{conn: conn}
+// OpenPostgres opens a PostgreSQL connection using the given DSN and runs migrations.
+// DSN format: postgres://user:password@host:port/database?sslmode=disable
+func OpenPostgres(dsn string) (*DB, error) {
+	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
+	return open(bun.NewDB(sqldb, pgdialect.New()))
+}
+
+// Open is an alias for OpenSQLite kept for backward compatibility.
+func Open(path string) (*DB, error) { return OpenSQLite(path) }
+
+func open(bundb *bun.DB) (*DB, error) {
+	db := &DB{bun: bundb}
 	if err := db.migrate(); err != nil {
-		conn.Close()
+		bundb.Close()
 		return nil, err
 	}
 	return db, nil
 }
 
 func (db *DB) migrate() error {
-	_, err := db.conn.Exec(`
-		PRAGMA journal_mode=WAL;
-		PRAGMA synchronous=NORMAL;
-		PRAGMA foreign_keys=ON;
-		PRAGMA busy_timeout=5000;
-
-		CREATE TABLE IF NOT EXISTS process_definitions (
-			name       TEXT    NOT NULL,
-			version    INTEGER NOT NULL,
-			definition TEXT    NOT NULL,
-			created_at TEXT    NOT NULL,
-			PRIMARY KEY (name, version)
-		);
-
-		CREATE TABLE IF NOT EXISTS process_instances (
-			id               TEXT    NOT NULL PRIMARY KEY,
-			process_name     TEXT    NOT NULL,
-			process_version  INTEGER NOT NULL,
-			step_queue       TEXT    NOT NULL DEFAULT '[]',
-			context_data     TEXT    NOT NULL DEFAULT '{}',
-			retry_count      INTEGER NOT NULL DEFAULT 0,
-			next_retry_at    TEXT,
-			status           TEXT    NOT NULL DEFAULT 'running',
-			error            TEXT    NOT NULL DEFAULT '',
-			created_at       TEXT    NOT NULL,
-			updated_at       TEXT    NOT NULL,
-			worker_id        TEXT,
-			lease_expires_at TEXT
-		);
-
-		CREATE INDEX IF NOT EXISTS idx_instances_pending
-			ON process_instances (status, next_retry_at);
-	`)
-	return err
+	ctx := context.Background()
+	subFS, err := fs.Sub(sqlMigrations, "migrations")
+	if err != nil {
+		return fmt.Errorf("migrations fs: %w", err)
+	}
+	ms := migrate.NewMigrations()
+	if err := ms.Discover(subFS); err != nil {
+		return fmt.Errorf("discover migrations: %w", err)
+	}
+	migrator := migrate.NewMigrator(db.bun, ms)
+	if err := migrator.Init(ctx); err != nil {
+		return fmt.Errorf("init migrator: %w", err)
+	}
+	if _, err := migrator.Migrate(ctx); err != nil {
+		return fmt.Errorf("run migrations: %w", err)
+	}
+	return nil
 }
 
-// Close closes the underlying database connection.
-func (db *DB) Close() error { return db.conn.Close() }
+func (db *DB) Close() error { return db.bun.Close() }
 
-// --- Process Definitions ---
+// ── bun row models ────────────────────────────────────────────────────────────
 
-// SaveDefinition inserts or replaces a process definition.
+type definitionRow struct {
+	bun.BaseModel `bun:"table:process_definitions"`
+	Name          string    `bun:"name,pk"`
+	Version       int       `bun:"version,pk"`
+	Definition    string    `bun:"definition,notnull"`
+	CreatedAt     time.Time `bun:"created_at,notnull"`
+}
+
+type instanceRow struct {
+	bun.BaseModel  `bun:"table:process_instances"`
+	ID             string     `bun:"id,pk"`
+	ProcessName    string     `bun:"process_name,notnull"`
+	ProcessVersion int        `bun:"process_version,notnull"`
+	StepQueue      string     `bun:"step_queue,notnull"`
+	ContextData    string     `bun:"context_data,notnull"`
+	RetryCount     int        `bun:"retry_count,notnull"`
+	NextRetryAt    *time.Time `bun:"next_retry_at"`
+	Status         string     `bun:"status,notnull"`
+	Error          string     `bun:"error,notnull"`
+	CreatedAt      time.Time  `bun:"created_at,notnull"`
+	UpdatedAt      time.Time  `bun:"updated_at,notnull"`
+	WorkerID       *string    `bun:"worker_id"`
+	LeaseExpiresAt *time.Time `bun:"lease_expires_at"`
+}
+
+// ── Process Definitions ───────────────────────────────────────────────────────
+
 func (db *DB) SaveDefinition(def *model.ProcessDefinition) error {
 	data, err := json.Marshal(def)
 	if err != nil {
 		return err
 	}
-	_, err = db.conn.Exec(
-		`INSERT OR REPLACE INTO process_definitions (name, version, definition, created_at) VALUES (?, ?, ?, ?)`,
-		def.Name, def.Version, string(data), time.Now().UTC().Format(time.RFC3339),
-	)
+	row := &definitionRow{
+		Name:       def.Name,
+		Version:    def.Version,
+		Definition: string(data),
+		CreatedAt:  time.Now().UTC(),
+	}
+	_, err = db.bun.NewInsert().
+		Model(row).
+		On("CONFLICT (name, version) DO UPDATE SET definition = EXCLUDED.definition").
+		Exec(context.Background())
 	return err
 }
 
-// GetDefinition loads a specific version of a process definition.
 func (db *DB) GetDefinition(name string, version int) (*model.ProcessDefinition, error) {
-	row := db.conn.QueryRow(
-		`SELECT definition FROM process_definitions WHERE name = ? AND version = ?`,
-		name, version,
-	)
-	var raw string
-	if err := row.Scan(&raw); err == sql.ErrNoRows {
+	var row definitionRow
+	err := db.bun.NewSelect().
+		Model(&row).
+		Where("name = ? AND version = ?", name, version).
+		Scan(context.Background())
+	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("definition %q v%d not found", name, version)
-	} else if err != nil {
+	}
+	if err != nil {
 		return nil, err
 	}
 	var def model.ProcessDefinition
-	return &def, json.Unmarshal([]byte(raw), &def)
+	return &def, json.Unmarshal([]byte(row.Definition), &def)
 }
 
-// LatestVersion returns the highest registered version for a process name.
 func (db *DB) LatestVersion(name string) (int, error) {
-	row := db.conn.QueryRow(
-		`SELECT MAX(version) FROM process_definitions WHERE name = ?`, name,
-	)
 	var v sql.NullInt64
-	if err := row.Scan(&v); err != nil {
+	err := db.bun.NewSelect().
+		TableExpr("process_definitions").
+		ColumnExpr("MAX(version)").
+		Where("name = ?", name).
+		Scan(context.Background(), &v)
+	if err != nil {
 		return 0, err
 	}
 	if !v.Valid {
@@ -119,34 +159,26 @@ func (db *DB) LatestVersion(name string) (int, error) {
 	return int(v.Int64), nil
 }
 
-// ListDefinitions returns a summary (name + version) of every registered definition.
 func (db *DB) ListDefinitions() ([]model.ProcessDefinition, error) {
-	rows, err := db.conn.Query(
-		`SELECT definition FROM process_definitions ORDER BY name, version`,
-	)
+	var rows []definitionRow
+	err := db.bun.NewSelect().
+		Model(&rows).
+		OrderExpr("name, version").
+		Scan(context.Background())
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var out []model.ProcessDefinition
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
+	out := make([]model.ProcessDefinition, len(rows))
+	for i, r := range rows {
+		if err := json.Unmarshal([]byte(r.Definition), &out[i]); err != nil {
 			return nil, err
 		}
-		var def model.ProcessDefinition
-		if err := json.Unmarshal([]byte(raw), &def); err != nil {
-			return nil, err
-		}
-		out = append(out, def)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
-// --- Process Instances ---
+// ── Process Instances ─────────────────────────────────────────────────────────
 
-// SaveInstance inserts a new process instance.
 func (db *DB) SaveInstance(inst *model.ProcessInstance) error {
 	queue, err := json.Marshal(inst.StepQueue)
 	if err != nil {
@@ -156,22 +188,24 @@ func (db *DB) SaveInstance(inst *model.ProcessInstance) error {
 	if err != nil {
 		return err
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err = db.conn.Exec(
-		`INSERT INTO process_instances
-		 (id, process_name, process_version, step_queue, context_data, retry_count, next_retry_at, status, error, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		inst.ID, inst.ProcessName, inst.ProcessVersion,
-		string(queue), string(ctx),
-		inst.RetryCount, nullTime(inst.NextRetryAt),
-		string(inst.Status), inst.Error, now, now,
-	)
+	now := time.Now().UTC()
+	row := &instanceRow{
+		ID:             inst.ID,
+		ProcessName:    inst.ProcessName,
+		ProcessVersion: inst.ProcessVersion,
+		StepQueue:      string(queue),
+		ContextData:    string(ctx),
+		RetryCount:     inst.RetryCount,
+		NextRetryAt:    inst.NextRetryAt,
+		Status:         string(inst.Status),
+		Error:          inst.Error,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	_, err = db.bun.NewInsert().Model(row).Exec(context.Background())
 	return err
 }
 
-// UpdateInstance persists the mutable fields of an instance and releases the lease.
-// Every code path through advance() ends with UpdateInstance, so releasing the lease
-// here ensures a completed/failed/retrying instance is never considered held by any worker.
 func (db *DB) UpdateInstance(inst *model.ProcessInstance) error {
 	queue, err := json.Marshal(inst.StepQueue)
 	if err != nil {
@@ -181,177 +215,125 @@ func (db *DB) UpdateInstance(inst *model.ProcessInstance) error {
 	if err != nil {
 		return err
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err = db.conn.Exec(
-		`UPDATE process_instances
-		 SET step_queue=?, context_data=?, retry_count=?, next_retry_at=?,
-		     status=?, error=?, updated_at=?,
-		     worker_id=NULL, lease_expires_at=NULL
-		 WHERE id=?`,
-		string(queue), string(ctx),
-		inst.RetryCount, nullTime(inst.NextRetryAt),
-		string(inst.Status), inst.Error, now,
-		inst.ID,
-	)
+	_, err = db.bun.NewUpdate().
+		TableExpr("process_instances").
+		Set("step_queue = ?", string(queue)).
+		Set("context_data = ?", string(ctx)).
+		Set("retry_count = ?", inst.RetryCount).
+		Set("next_retry_at = ?", inst.NextRetryAt).
+		Set("status = ?", string(inst.Status)).
+		Set("error = ?", inst.Error).
+		Set("updated_at = ?", time.Now().UTC()).
+		Set("worker_id = NULL").
+		Set("lease_expires_at = NULL").
+		Where("id = ?", inst.ID).
+		Exec(context.Background())
 	return err
 }
 
-// RenewWorkerLeases extends the lease expiry for every instance currently held by
-// workerID in a single query, regardless of how many are being processed.
 func (db *DB) RenewWorkerLeases(workerID string, leaseDur time.Duration) error {
-	expiry := time.Now().UTC().Add(leaseDur).Format(time.RFC3339Nano)
-	_, err := db.conn.Exec(
-		`UPDATE process_instances SET lease_expires_at=? WHERE worker_id=?`,
-		expiry, workerID,
-	)
+	expiry := time.Now().UTC().Add(leaseDur)
+	_, err := db.bun.NewUpdate().
+		TableExpr("process_instances").
+		Set("lease_expires_at = ?", expiry).
+		Where("worker_id = ?", workerID).
+		Exec(context.Background())
 	return err
 }
 
-// ClaimInstances atomically finds up to limit unclaimed (or lease-expired) running
-// instances and marks them as owned by workerID for leaseDur. The UPDATE + RETURNING
-// approach is atomic on SQLite (single-writer lock) and on PostgreSQL (READ COMMITTED
-// re-evaluates the WHERE per row after a lock wait, so racing workers claim 0 rows).
 func (db *DB) ClaimInstances(workerID string, leaseDur time.Duration, limit int) ([]*model.ProcessInstance, error) {
 	now := time.Now().UTC()
-	nowStr := now.Format(time.RFC3339Nano)
-	leaseExpiry := now.Add(leaseDur).Format(time.RFC3339Nano)
+	leaseExpiry := now.Add(leaseDur)
 
-	rows, err := db.conn.Query(
-		`UPDATE process_instances
-		 SET worker_id = ?, lease_expires_at = ?
-		 WHERE id IN (
-		   SELECT id FROM process_instances
-		   WHERE status = 'running'
-		     AND (next_retry_at IS NULL OR next_retry_at <= ?)
-		     AND (worker_id IS NULL OR lease_expires_at <= ?)
-		   LIMIT ?
-		 )
-		 RETURNING id, process_name, process_version, step_queue, context_data,
-		           retry_count, next_retry_at, status, error, created_at, updated_at,
-		           worker_id, lease_expires_at`,
-		workerID, leaseExpiry, nowStr, nowStr, limit,
-	)
+	subq := db.bun.NewSelect().
+		TableExpr("process_instances").
+		Column("id").
+		Where("status = 'running'").
+		Where("(next_retry_at IS NULL OR next_retry_at <= ?)", now).
+		Where("(worker_id IS NULL OR lease_expires_at <= ?)", now).
+		Limit(limit)
+
+	// PostgreSQL needs FOR UPDATE SKIP LOCKED to prevent concurrent workers
+	// from racing to claim the same instance. SQLite's single-writer model
+	// makes this unnecessary there.
+	if db.bun.Dialect().Name() == dialect.PG {
+		subq = subq.For("UPDATE SKIP LOCKED")
+	}
+
+	var rows []instanceRow
+	_, err := db.bun.NewUpdate().
+		TableExpr("process_instances").
+		Set("worker_id = ?", workerID).
+		Set("lease_expires_at = ?", leaseExpiry).
+		Where("id IN (?)", subq).
+		Returning("*").
+		Exec(context.Background(), &rows)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var instances []*model.ProcessInstance
-	for rows.Next() {
-		inst, err := scanInstance(rows)
-		if err != nil {
-			return nil, err
-		}
-		instances = append(instances, inst)
-	}
-	return instances, rows.Err()
+	return toInstances(rows)
 }
 
-// GetInstance loads a single instance by ID.
 func (db *DB) GetInstance(id string) (*model.ProcessInstance, error) {
-	row := db.conn.QueryRow(
-		`SELECT id, process_name, process_version, step_queue, context_data,
-		        retry_count, next_retry_at, status, error, created_at, updated_at,
-		        worker_id, lease_expires_at
-		 FROM process_instances WHERE id = ?`, id,
-	)
-	return scanInstance(row)
-}
-
-// ListInstances returns all instances, optionally filtered by status (empty = all).
-func (db *DB) ListInstances(status string) ([]*model.ProcessInstance, error) {
-	var rows *sql.Rows
-	var err error
-	if status == "" {
-		rows, err = db.conn.Query(
-			`SELECT id, process_name, process_version, step_queue, context_data,
-			        retry_count, next_retry_at, status, error, created_at, updated_at,
-			        worker_id, lease_expires_at
-			 FROM process_instances ORDER BY created_at DESC`,
-		)
-	} else {
-		rows, err = db.conn.Query(
-			`SELECT id, process_name, process_version, step_queue, context_data,
-			        retry_count, next_retry_at, status, error, created_at, updated_at,
-			        worker_id, lease_expires_at
-			 FROM process_instances WHERE status = ? ORDER BY created_at DESC`, status,
-		)
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []*model.ProcessInstance
-	for rows.Next() {
-		inst, err := scanInstance(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, inst)
-	}
-	return out, rows.Err()
-}
-
-type scanner interface {
-	Scan(dest ...any) error
-}
-
-func scanInstance(s scanner) (*model.ProcessInstance, error) {
-	var (
-		inst           model.ProcessInstance
-		queueRaw       string
-		ctxRaw         string
-		nextRetry      sql.NullString
-		statusStr      string
-		createdStr     string
-		updatedStr     string
-		workerID       sql.NullString
-		leaseExpiresAt sql.NullString
-	)
-	err := s.Scan(
-		&inst.ID, &inst.ProcessName, &inst.ProcessVersion,
-		&queueRaw, &ctxRaw,
-		&inst.RetryCount, &nextRetry,
-		&statusStr, &inst.Error,
-		&createdStr, &updatedStr,
-		&workerID, &leaseExpiresAt,
-	)
+	var row instanceRow
+	err := db.bun.NewSelect().
+		Model(&row).
+		Where("id = ?", id).
+		Scan(context.Background())
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("instance not found")
 	}
 	if err != nil {
 		return nil, err
 	}
-
-	inst.Status = model.Status(statusStr)
-
-	if err := json.Unmarshal([]byte(queueRaw), &inst.StepQueue); err != nil {
-		return nil, fmt.Errorf("unmarshal step_queue: %w", err)
-	}
-	if err := json.Unmarshal([]byte(ctxRaw), &inst.ContextData); err != nil {
-		return nil, fmt.Errorf("unmarshal context_data: %w", err)
-	}
-	if nextRetry.Valid {
-		t, _ := time.Parse(time.RFC3339Nano, nextRetry.String)
-		inst.NextRetryAt = &t
-	}
-	if workerID.Valid {
-		wid := workerID.String
-		inst.WorkerID = &wid
-	}
-	if leaseExpiresAt.Valid {
-		t, _ := time.Parse(time.RFC3339Nano, leaseExpiresAt.String)
-		inst.LeaseExpiresAt = &t
-	}
-	inst.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdStr)
-	inst.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedStr)
-	return &inst, nil
+	return toInstance(row)
 }
 
-func nullTime(t *time.Time) interface{} {
-	if t == nil {
-		return nil
+func (db *DB) ListInstances(status string) ([]*model.ProcessInstance, error) {
+	var rows []instanceRow
+	q := db.bun.NewSelect().Model(&rows).OrderExpr("created_at DESC")
+	if status != "" {
+		q = q.Where("status = ?", status)
 	}
-	return t.UTC().Format(time.RFC3339Nano)
+	if err := q.Scan(context.Background()); err != nil {
+		return nil, err
+	}
+	return toInstances(rows)
+}
+
+// ── row → model conversion ────────────────────────────────────────────────────
+
+func toInstance(r instanceRow) (*model.ProcessInstance, error) {
+	inst := &model.ProcessInstance{
+		ID:             r.ID,
+		ProcessName:    r.ProcessName,
+		ProcessVersion: r.ProcessVersion,
+		RetryCount:     r.RetryCount,
+		NextRetryAt:    r.NextRetryAt,
+		Status:         model.Status(r.Status),
+		Error:          r.Error,
+		CreatedAt:      r.CreatedAt,
+		UpdatedAt:      r.UpdatedAt,
+		WorkerID:       r.WorkerID,
+		LeaseExpiresAt: r.LeaseExpiresAt,
+	}
+	if err := json.Unmarshal([]byte(r.StepQueue), &inst.StepQueue); err != nil {
+		return nil, fmt.Errorf("unmarshal step_queue: %w", err)
+	}
+	if err := json.Unmarshal([]byte(r.ContextData), &inst.ContextData); err != nil {
+		return nil, fmt.Errorf("unmarshal context_data: %w", err)
+	}
+	return inst, nil
+}
+
+func toInstances(rows []instanceRow) ([]*model.ProcessInstance, error) {
+	out := make([]*model.ProcessInstance, len(rows))
+	for i, r := range rows {
+		inst, err := toInstance(r)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = inst
+	}
+	return out, nil
 }

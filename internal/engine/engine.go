@@ -18,8 +18,8 @@ const (
 	leaseRenewInterval = 3 * time.Second
 )
 
-// Engine is the main orchestration loop. It polls SQLite for pending instances
-// and advances each one step at a time.
+// Engine is the main orchestration loop. It polls the database for pending
+// instances and advances each one step at a time.
 type Engine struct {
 	db        *db.DB
 	eval      Evaluator

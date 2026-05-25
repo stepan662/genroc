@@ -19,6 +19,7 @@ import (
 
 func main() {
 	dbPath := flag.String("db", "gent.db", "SQLite database file path")
+	pgDSN := flag.String("pg", "", "PostgreSQL DSN (e.g. postgres://user:pass@host/db). When set, --db is ignored.")
 	httpAddr := flag.String("http", ":8080", "HTTP listen address (empty to disable)")
 	tcpAddr := flag.String("tcp", "", "TCP listen address, e.g. 127.0.0.1:9090 (empty to disable)")
 	udsPath := flag.String("uds", "", "Unix socket path, e.g. /tmp/gent.sock (empty to disable)")
@@ -30,13 +31,20 @@ func main() {
 
 	log := newLogger(*logLevel)
 
-	database, err := db.Open(*dbPath)
-	if err != nil {
-		log.Error("open database", "err", err)
+	var database *db.DB
+	var dbErr error
+	if *pgDSN != "" {
+		database, dbErr = db.OpenPostgres(*pgDSN)
+		log.Info("database opened", "driver", "postgres")
+	} else {
+		database, dbErr = db.OpenSQLite(*dbPath)
+		log.Info("database opened", "driver", "sqlite", "path", *dbPath)
+	}
+	if dbErr != nil {
+		log.Error("open database", "err", dbErr)
 		os.Exit(1)
 	}
 	defer database.Close()
-	log.Info("database opened", "path", *dbPath)
 
 	eng := engine.New(database, time.Duration(*pollMs)*time.Millisecond, *maxConcurrent, log)
 	handlers := api.NewHandlers(database)
