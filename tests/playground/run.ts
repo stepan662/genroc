@@ -5,9 +5,11 @@
 //
 // Usage: bun run playground:run
 
-import { client } from "../helpers/client.ts";
 import { processDefinition } from "./process.ts";
 import type { ProcessInput } from "./generated/types.ts";
+import { createClientTyped } from "../helpers/client.ts";
+
+const client = createClientTyped({ baseUrl: "http://localhost:8888" });
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -22,8 +24,8 @@ const { error: defErr } = await client.PUT("/definitions", {
 if (defErr) throw new Error(`registration failed: ${JSON.stringify(defErr)}`);
 console.log("  registered");
 
-const rounds = 100_000;
-const maxInterval = 0;
+const rounds = 10;
+const maxInterval = 100;
 
 for (let i = 0; i < rounds; i++) {
   startInstance();
@@ -41,7 +43,7 @@ async function startInstance() {
     start_time,
   };
 
-  const { data: startData, error: startErr } = await client.POST("/instances", {
+  const { error: startErr } = await client.POST("/instances", {
     body: { process: processDefinition.name, input },
   });
   if (startErr) throw new Error(`start failed: ${JSON.stringify(startErr)}`);

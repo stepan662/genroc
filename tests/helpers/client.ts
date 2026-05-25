@@ -4,6 +4,9 @@ import type { paths } from "../generated/api.ts";
 import { BASE_URL } from "./constants.ts";
 
 export const client = createClient<paths>({ baseUrl: BASE_URL });
+export const createClientTyped: typeof createClient<paths> = (options) => {
+  return createClient<paths>(options);
+};
 
 export async function waitForInstance(
   id: string,
@@ -17,7 +20,7 @@ export async function waitForInstance(
     if (error) throw new Error(`get_instance failed: ${JSON.stringify(error)}`);
     const status = data?.status;
     if (status === "completed" || status === "failed") return status!;
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 100));
   }
   throw new Error(`instance ${id} did not complete within ${timeoutMs}ms`);
 }

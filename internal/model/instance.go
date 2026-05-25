@@ -26,10 +26,12 @@ type ProcessInstance struct {
 	// ContextData is the accumulated key/value state passed between steps.
 	ContextData map[string]any
 
-	RetryCount  int
-	NextRetryAt *time.Time
-	Status      Status
-	Error       string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	RetryCount    int
+	NextRetryAt   *time.Time
+	Status        Status
+	Error         string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	WorkerID      *string
+	LeaseExpiresAt *time.Time
 }

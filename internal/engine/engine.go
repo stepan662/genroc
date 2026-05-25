@@ -4,12 +4,18 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
 	"gent/internal/db"
 	"gent/internal/model"
 	"gent/internal/transport"
+)
+
+const (
+	leaseDuration      = 10 * time.Second
+	leaseRenewInterval = 3 * time.Second
 )
 
 // Engine is the main orchestration loop. It polls SQLite for pending instances
@@ -20,18 +26,22 @@ type Engine struct {
 	pollEvery time.Duration
 	log       *slog.Logger
 	sem       chan struct{}
+	workerID  string
 }
 
 // New creates an Engine. pollEvery controls how often SQLite is checked for work.
 // maxConcurrent limits how many instances are processed in parallel and how many
 // are fetched per tick.
 func New(database *db.DB, pollEvery time.Duration, maxConcurrent int, log *slog.Logger) *Engine {
+	hostname, _ := os.Hostname()
+	workerID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
 	return &Engine{
 		db:        database,
 		eval:      Evaluator{},
 		pollEvery: pollEvery,
 		log:       log,
 		sem:       make(chan struct{}, maxConcurrent),
+		workerID:  workerID,
 	}
 }
 
@@ -40,7 +50,10 @@ func (e *Engine) Run(ctx context.Context) {
 	ticker := time.NewTicker(e.pollEvery)
 	defer ticker.Stop()
 
-	e.log.Info("engine started", "poll_interval", e.pollEvery, "max_concurrent", cap(e.sem))
+	e.log.Info("engine started", "poll_interval", e.pollEvery, "max_concurrent", cap(e.sem), "worker_id", e.workerID)
+
+	go e.leaseRenewer(ctx)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -52,13 +65,31 @@ func (e *Engine) Run(ctx context.Context) {
 	}
 }
 
-// tick fetches pending instances and processes each in its own goroutine.
+// leaseRenewer renews all leases held by this worker in a single query every
+// leaseRenewInterval. Running as its own goroutine means renewals are never
+// blocked by a long tick.
+func (e *Engine) leaseRenewer(ctx context.Context) {
+	ticker := time.NewTicker(leaseRenewInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := e.db.RenewWorkerLeases(e.workerID, leaseDuration); err != nil {
+				e.log.Error("renew worker leases", "err", err)
+			}
+		}
+	}
+}
+
+// tick claims pending instances and processes each in its own goroutine.
 // It blocks until all goroutines finish, so ticks never overlap and the same
 // instance is never advanced twice concurrently.
 func (e *Engine) tick(ctx context.Context) {
-	instances, err := e.db.PendingInstances(cap(e.sem))
+	instances, err := e.db.ClaimInstances(e.workerID, leaseDuration, cap(e.sem))
 	if err != nil {
-		e.log.Error("poll instances", "err", err)
+		e.log.Error("claim instances", "err", err)
 		return
 	}
 	var wg sync.WaitGroup
@@ -184,7 +215,7 @@ func (e *Engine) executeAction(ctx context.Context, inst *model.ProcessInstance,
 	switch v := inst.ContextData["output_order"].(type) {
 	case []string:
 		order = v
-	case []interface{}:
+	case []any:
 		for _, item := range v {
 			if s, ok := item.(string); ok {
 				order = append(order, s)

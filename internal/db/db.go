@@ -38,6 +38,7 @@ func (db *DB) migrate() error {
 		PRAGMA journal_mode=WAL;
 		PRAGMA synchronous=NORMAL;
 		PRAGMA foreign_keys=ON;
+		PRAGMA busy_timeout=5000;
 
 		CREATE TABLE IF NOT EXISTS process_definitions (
 			name       TEXT    NOT NULL,
@@ -48,17 +49,19 @@ func (db *DB) migrate() error {
 		);
 
 		CREATE TABLE IF NOT EXISTS process_instances (
-			id              TEXT    NOT NULL PRIMARY KEY,
-			process_name    TEXT    NOT NULL,
-			process_version INTEGER NOT NULL,
-			step_queue      TEXT    NOT NULL DEFAULT '[]',
-			context_data    TEXT    NOT NULL DEFAULT '{}',
-			retry_count     INTEGER NOT NULL DEFAULT 0,
-			next_retry_at   TEXT,
-			status          TEXT    NOT NULL DEFAULT 'running',
-			error           TEXT    NOT NULL DEFAULT '',
-			created_at      TEXT    NOT NULL,
-			updated_at      TEXT    NOT NULL
+			id               TEXT    NOT NULL PRIMARY KEY,
+			process_name     TEXT    NOT NULL,
+			process_version  INTEGER NOT NULL,
+			step_queue       TEXT    NOT NULL DEFAULT '[]',
+			context_data     TEXT    NOT NULL DEFAULT '{}',
+			retry_count      INTEGER NOT NULL DEFAULT 0,
+			next_retry_at    TEXT,
+			status           TEXT    NOT NULL DEFAULT 'running',
+			error            TEXT    NOT NULL DEFAULT '',
+			created_at       TEXT    NOT NULL,
+			updated_at       TEXT    NOT NULL,
+			worker_id        TEXT,
+			lease_expires_at TEXT
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_instances_pending
@@ -166,7 +169,9 @@ func (db *DB) SaveInstance(inst *model.ProcessInstance) error {
 	return err
 }
 
-// UpdateInstance persists the mutable fields of an instance after a step executes.
+// UpdateInstance persists the mutable fields of an instance and releases the lease.
+// Every code path through advance() ends with UpdateInstance, so releasing the lease
+// here ensures a completed/failed/retrying instance is never considered held by any worker.
 func (db *DB) UpdateInstance(inst *model.ProcessInstance) error {
 	queue, err := json.Marshal(inst.StepQueue)
 	if err != nil {
@@ -179,7 +184,9 @@ func (db *DB) UpdateInstance(inst *model.ProcessInstance) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err = db.conn.Exec(
 		`UPDATE process_instances
-		 SET step_queue=?, context_data=?, retry_count=?, next_retry_at=?, status=?, error=?, updated_at=?
+		 SET step_queue=?, context_data=?, retry_count=?, next_retry_at=?,
+		     status=?, error=?, updated_at=?,
+		     worker_id=NULL, lease_expires_at=NULL
 		 WHERE id=?`,
 		string(queue), string(ctx),
 		inst.RetryCount, nullTime(inst.NextRetryAt),
@@ -189,11 +196,63 @@ func (db *DB) UpdateInstance(inst *model.ProcessInstance) error {
 	return err
 }
 
+// RenewWorkerLeases extends the lease expiry for every instance currently held by
+// workerID in a single query, regardless of how many are being processed.
+func (db *DB) RenewWorkerLeases(workerID string, leaseDur time.Duration) error {
+	expiry := time.Now().UTC().Add(leaseDur).Format(time.RFC3339Nano)
+	_, err := db.conn.Exec(
+		`UPDATE process_instances SET lease_expires_at=? WHERE worker_id=?`,
+		expiry, workerID,
+	)
+	return err
+}
+
+// ClaimInstances atomically finds up to limit unclaimed (or lease-expired) running
+// instances and marks them as owned by workerID for leaseDur. The UPDATE + RETURNING
+// approach is atomic on SQLite (single-writer lock) and on PostgreSQL (READ COMMITTED
+// re-evaluates the WHERE per row after a lock wait, so racing workers claim 0 rows).
+func (db *DB) ClaimInstances(workerID string, leaseDur time.Duration, limit int) ([]*model.ProcessInstance, error) {
+	now := time.Now().UTC()
+	nowStr := now.Format(time.RFC3339Nano)
+	leaseExpiry := now.Add(leaseDur).Format(time.RFC3339Nano)
+
+	rows, err := db.conn.Query(
+		`UPDATE process_instances
+		 SET worker_id = ?, lease_expires_at = ?
+		 WHERE id IN (
+		   SELECT id FROM process_instances
+		   WHERE status = 'running'
+		     AND (next_retry_at IS NULL OR next_retry_at <= ?)
+		     AND (worker_id IS NULL OR lease_expires_at <= ?)
+		   LIMIT ?
+		 )
+		 RETURNING id, process_name, process_version, step_queue, context_data,
+		           retry_count, next_retry_at, status, error, created_at, updated_at,
+		           worker_id, lease_expires_at`,
+		workerID, leaseExpiry, nowStr, nowStr, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var instances []*model.ProcessInstance
+	for rows.Next() {
+		inst, err := scanInstance(rows)
+		if err != nil {
+			return nil, err
+		}
+		instances = append(instances, inst)
+	}
+	return instances, rows.Err()
+}
+
 // GetInstance loads a single instance by ID.
 func (db *DB) GetInstance(id string) (*model.ProcessInstance, error) {
 	row := db.conn.QueryRow(
 		`SELECT id, process_name, process_version, step_queue, context_data,
-		        retry_count, next_retry_at, status, error, created_at, updated_at
+		        retry_count, next_retry_at, status, error, created_at, updated_at,
+		        worker_id, lease_expires_at
 		 FROM process_instances WHERE id = ?`, id,
 	)
 	return scanInstance(row)
@@ -206,43 +265,18 @@ func (db *DB) ListInstances(status string) ([]*model.ProcessInstance, error) {
 	if status == "" {
 		rows, err = db.conn.Query(
 			`SELECT id, process_name, process_version, step_queue, context_data,
-			        retry_count, next_retry_at, status, error, created_at, updated_at
+			        retry_count, next_retry_at, status, error, created_at, updated_at,
+			        worker_id, lease_expires_at
 			 FROM process_instances ORDER BY created_at DESC`,
 		)
 	} else {
 		rows, err = db.conn.Query(
 			`SELECT id, process_name, process_version, step_queue, context_data,
-			        retry_count, next_retry_at, status, error, created_at, updated_at
+			        retry_count, next_retry_at, status, error, created_at, updated_at,
+			        worker_id, lease_expires_at
 			 FROM process_instances WHERE status = ? ORDER BY created_at DESC`, status,
 		)
 	}
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []*model.ProcessInstance
-	for rows.Next() {
-		inst, err := scanInstance(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, inst)
-	}
-	return out, rows.Err()
-}
-
-// PendingInstances returns up to limit running instances whose next_retry_at is in the past (or null).
-func (db *DB) PendingInstances(limit int) ([]*model.ProcessInstance, error) {
-	rows, err := db.conn.Query(
-		`SELECT id, process_name, process_version, step_queue, context_data,
-		        retry_count, next_retry_at, status, error, created_at, updated_at
-		 FROM process_instances
-		 WHERE status = 'running'
-		   AND (next_retry_at IS NULL OR next_retry_at <= ?)
-		 LIMIT ?`,
-		time.Now().UTC().Format(time.RFC3339Nano), limit,
-	)
 	if err != nil {
 		return nil, err
 	}
@@ -265,13 +299,15 @@ type scanner interface {
 
 func scanInstance(s scanner) (*model.ProcessInstance, error) {
 	var (
-		inst       model.ProcessInstance
-		queueRaw   string
-		ctxRaw     string
-		nextRetry  sql.NullString
-		statusStr  string
-		createdStr string
-		updatedStr string
+		inst           model.ProcessInstance
+		queueRaw       string
+		ctxRaw         string
+		nextRetry      sql.NullString
+		statusStr      string
+		createdStr     string
+		updatedStr     string
+		workerID       sql.NullString
+		leaseExpiresAt sql.NullString
 	)
 	err := s.Scan(
 		&inst.ID, &inst.ProcessName, &inst.ProcessVersion,
@@ -279,6 +315,7 @@ func scanInstance(s scanner) (*model.ProcessInstance, error) {
 		&inst.RetryCount, &nextRetry,
 		&statusStr, &inst.Error,
 		&createdStr, &updatedStr,
+		&workerID, &leaseExpiresAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("instance not found")
@@ -298,6 +335,14 @@ func scanInstance(s scanner) (*model.ProcessInstance, error) {
 	if nextRetry.Valid {
 		t, _ := time.Parse(time.RFC3339Nano, nextRetry.String)
 		inst.NextRetryAt = &t
+	}
+	if workerID.Valid {
+		wid := workerID.String
+		inst.WorkerID = &wid
+	}
+	if leaseExpiresAt.Valid {
+		t, _ := time.Parse(time.RFC3339Nano, leaseExpiresAt.String)
+		inst.LeaseExpiresAt = &t
 	}
 	inst.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdStr)
 	inst.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedStr)
