@@ -1,5 +1,6 @@
 import createClient from "openapi-fetch";
 import { createServer } from "http";
+import type { AddressInfo } from "net";
 import type { paths } from "../generated/api.ts";
 import { BASE_URL } from "./constants.ts";
 
@@ -36,7 +37,7 @@ interface MockServiceOptions {
   firstRequestDelayMs?: number;
 }
 
-export function startMockService(port: number, options: MockServiceOptions = {}) {
+export async function startMockService(port: number, options: MockServiceOptions = {}) {
   const { response = { status: "ok", output: {} }, firstRequestDelayMs = 0 } =
     options;
   const body = JSON.stringify(response);
@@ -67,9 +68,11 @@ export function startMockService(port: number, options: MockServiceOptions = {})
     }
   });
   server.on("clientError", () => {});
-  server.listen(port);
+  await new Promise<void>((r) => server.listen(port, r));
+  const boundPort = (server.address() as AddressInfo).port;
 
   return {
+    port: boundPort,
     firstRequestReceived,
     requestCount: () => count,
     stop: () => new Promise<void>((r) => server.close(() => r())),

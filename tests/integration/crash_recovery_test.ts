@@ -4,9 +4,6 @@ import { tmpdir } from "os";
 import { buildGentBinary, startGent } from "../helpers/server.ts";
 import { startMockService, waitForInstance } from "../helpers/client.ts";
 
-// Ports in the 20xxx range, away from lifecycle_test.ts (19992-19996)
-// and the shared test server (8888).
-const MOCK_PORT = 20010;
 const GENT1_PORT = 20011;
 const GENT2_PORT = 20012;
 
@@ -21,7 +18,7 @@ test("crash recovery — new worker re-executes an unconfirmed step after the pr
 
   // firstRequestDelayMs: Infinity keeps the connection open so the step
   // stays in-flight when we crash the worker.
-  const mock = startMockService(MOCK_PORT, {
+  const mock = await startMockService(0, {
     response: { status: "ok", output: { done: true } },
     firstRequestDelayMs: Infinity,
   });
@@ -37,7 +34,7 @@ test("crash recovery — new worker re-executes an unconfirmed step after the pr
           {
             id: "work",
             transport: "http",
-            endpoint: `http://localhost:${MOCK_PORT}/action`,
+            endpoint: `http://localhost:${mock.port}/action`,
             // Long enough that the step never times out before the crash.
             timeout_ms: 120_000,
             retries: 0,

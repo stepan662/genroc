@@ -17,8 +17,14 @@ export async function buildGentBinary(): Promise<string> {
   return bin;
 }
 
-function spawnProc(bin: string, port: number, db: string): ChildProcess {
-  return spawn(bin, ["--db", db, "--http", `:${port}`, "--log", "error"], {
+function spawnProc(
+  bin: string,
+  port: number,
+  db: string,
+  pgDSN?: string,
+): ChildProcess {
+  const dbArgs = pgDSN ? ["--pg", pgDSN] : ["--db", db];
+  return spawn(bin, [...dbArgs, "--http", `:${port}`, "--log", "error"], {
     stdio: "ignore",
   });
 }
@@ -46,8 +52,9 @@ export async function startGent(
   bin: string,
   port: number,
   db: string,
+  pgDSN?: string,
 ): Promise<GentProcess> {
-  const proc = spawnProc(bin, port, db);
+  const proc = spawnProc(bin, port, db, pgDSN);
   await waitUntilReady(port);
   return {
     client: createClientTyped({ baseUrl: `http://localhost:${port}` }),

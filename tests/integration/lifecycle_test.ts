@@ -6,7 +6,7 @@ import {
 } from "../helpers/client.ts";
 
 test("lifecycle — task step completes when service returns ok", async () => {
-  const mock = startMockService(19992, {
+  const mock = await startMockService(0, {
     response: { status: "ok", output: { done: true } },
   });
 
@@ -20,7 +20,7 @@ test("lifecycle — task step completes when service returns ok", async () => {
           type: "task" as const,
           id: "call",
           transport: "http" as const,
-          endpoint: "http://localhost:19992/action",
+          endpoint: `http://localhost:${mock.port}/action`,
           timeout_ms: 2000,
           retries: 0,
         },
@@ -44,7 +44,7 @@ test("lifecycle — task step completes when service returns ok", async () => {
 });
 
 test("lifecycle — task step fails and retries then marks failed", async () => {
-  const mock = startMockService(19993, { response: { status: "error", error: "boom" } });
+  const mock = await startMockService(0, { response: { status: "error", error: "boom" } });
 
   const name = `lifecycle_fail_${crypto.randomUUID()}`;
   await client.PUT("/definitions", {
@@ -56,7 +56,7 @@ test("lifecycle — task step fails and retries then marks failed", async () => 
           type: "task" as const,
           id: "call",
           transport: "http" as const,
-          endpoint: "http://localhost:19993/action",
+          endpoint: `http://localhost:${mock.port}/action`,
           timeout_ms: 500,
           retries: 1,
         },
@@ -73,10 +73,10 @@ test("lifecycle — task step fails and retries then marks failed", async () => 
 });
 
 test("lifecycle — conditional routes to correct branch", async () => {
-  const thenMock = startMockService(19994, {
+  const thenMock = await startMockService(0, {
     response: { status: "ok", output: { branch: "then" } },
   });
-  const elseMock = startMockService(19995, {
+  const elseMock = await startMockService(0, {
     response: { status: "ok", output: { branch: "else" } },
   });
 
@@ -96,7 +96,7 @@ test("lifecycle — conditional routes to correct branch", async () => {
         {
           id: "start",
           transport: "http",
-          endpoint: "http://localhost:19994/action",
+          endpoint: `http://localhost:${thenMock.port}/action`,
           switch: {
             "{{input.go_then}}": "#then_step",
             default: "#else_step",
@@ -105,7 +105,7 @@ test("lifecycle — conditional routes to correct branch", async () => {
         {
           id: "then_step",
           transport: "http" as const,
-          endpoint: "http://localhost:19994/action",
+          endpoint: `http://localhost:${thenMock.port}/action`,
           timeout_ms: 1000,
           retries: 0,
           switch: { default: "$end" },
@@ -113,7 +113,7 @@ test("lifecycle — conditional routes to correct branch", async () => {
         {
           id: "else_step",
           transport: "http" as const,
-          endpoint: "http://localhost:19995/action",
+          endpoint: `http://localhost:${elseMock.port}/action`,
           timeout_ms: 1000,
           retries: 0,
           switch: { default: "$end" },
@@ -156,7 +156,7 @@ test("lifecycle — conditional routes to correct branch", async () => {
 });
 
 test("lifecycle — task fails when output violates output_schema", async () => {
-  const mock = startMockService(19996, {
+  const mock = await startMockService(0, {
     response: { status: "ok", output: { wrong_field: true } },
   });
 
@@ -169,7 +169,7 @@ test("lifecycle — task fails when output violates output_schema", async () => 
         {
           id: "charge",
           transport: "http" as const,
-          endpoint: "http://localhost:19996/action",
+          endpoint: `http://localhost:${mock.port}/action`,
           timeout_ms: 2000,
           retries: 0,
           output_schema: {
