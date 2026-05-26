@@ -8,7 +8,7 @@ import (
 func TestGenerate_NoSchemas(t *testing.T) {
 	out := runGenerate(t, `{
 		"name": "p", "version": 1,
-		"steps": [{"id":"s1","transport":"http","endpoint":"http://x"}]
+		"steps": [{"id":"s1","call":{"type":"rest","endpoint":"http://x"}}]
 	}`)
 	if out.Process != "p" || out.Version != 1 {
 		t.Errorf("metadata: got process=%q version=%d", out.Process, out.Version)
@@ -27,7 +27,7 @@ func TestGenerate_NoSchemas(t *testing.T) {
 func TestGenerate_ProcessInput(t *testing.T) {
 	out := runGenerate(t, `{
 		"name": "order", "version": 2,
-		"steps": [{"id":"s1","transport":"http","endpoint":"http://x"}],
+		"steps": [{"id":"s1","call":{"type":"rest","endpoint":"http://x"}}],
 		"input_schema": {
 			"type": "object",
 			"properties": { "order_id": { "type": "integer" } },
@@ -48,13 +48,13 @@ func TestGenerate_TaskOutput(t *testing.T) {
 		"steps": [
 			{
 				"id": "charge",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"output_schema": {
 					"type": "object",
 					"properties": { "charged": { "type": "boolean" } }
 				}
 			},
-			{ "id": "notify", "transport": "http", "endpoint": "http://x" }
+			{ "id": "notify", "call": {"type": "rest", "endpoint": "http://x"} }
 		]
 	}`)
 	assertJSON(t, out.Tasks["charge"].Output, `{"$ref": "#/$defs/charge_output"}`)
@@ -73,18 +73,18 @@ func TestGenerate_FlatStepsWithOutputs(t *testing.T) {
 		"steps": [
 			{
 				"id": "charge",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"switch": {"{{self.charged == true}}": "#ship"},
 				"output_schema": { "type": "object", "properties": { "charged": { "type": "boolean" } } }
 			},
 			{
 				"id": "ship",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"output_schema": { "type": "object", "properties": { "tracking": { "type": "string" } } }
 			},
 			{
 				"id": "refund",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"output_schema": { "type": "object", "properties": { "refunded": { "type": "boolean" } } }
 			}
 		]
@@ -99,7 +99,7 @@ func TestGenerate_InnerDefsPromotedToRoot(t *testing.T) {
 	// should be promoted to the root $defs with scoped names.
 	out := runGenerate(t, `{
 		"name": "p", "version": 1,
-		"steps": [{"id":"s1","transport":"http","endpoint":"http://x"}],
+		"steps": [{"id":"s1","call":{"type":"rest","endpoint":"http://x"}}],
 		"input_schema": {
 			"type": "object",
 			"$defs": {
@@ -137,7 +137,7 @@ func TestGenerate_InnerDefsConflictRenamed(t *testing.T) {
 		},
 		"steps": [{
 			"id": "charge",
-			"transport": "http", "endpoint": "http://x",
+			"call": {"type": "rest", "endpoint": "http://x"},
 			"output_schema": {
 				"type": "object",
 				"$defs": { "Item": { "type": "integer" } },
@@ -162,7 +162,7 @@ func TestGenerate_UnusedDefsRemoved(t *testing.T) {
 		"name": "p", "version": 1,
 		"steps": [{
 			"id": "charge",
-			"transport": "http", "endpoint": "http://x",
+			"call": {"type": "rest", "endpoint": "http://x"},
 			"output_schema": {
 				"type": "object",
 				"$defs": {
@@ -186,7 +186,7 @@ func TestGenerate_Input_FirstTaskNoInput(t *testing.T) {
 		"name": "p", "version": 1,
 		"steps": [{
 			"id": "charge",
-			"transport": "http", "endpoint": "http://x",
+			"call": {"type": "rest", "endpoint": "http://x"},
 			"output_schema": { "type": "object", "properties": { "ok": { "type": "boolean" } } }
 		}]
 	}`)
@@ -199,7 +199,7 @@ func TestGenerate_Input_WithProcessInput(t *testing.T) {
 		"input_schema": { "type": "object", "properties": { "order_id": { "type": "integer" } } },
 		"steps": [{
 			"id": "charge",
-			"transport": "http", "endpoint": "http://x",
+			"call": {"type": "rest", "endpoint": "http://x"},
 			"output_schema": { "type": "object", "properties": { "ok": { "type": "boolean" } } }
 		}]
 	}`)
@@ -212,12 +212,12 @@ func TestGenerate_Input_PrecedingTaskOutput(t *testing.T) {
 		"steps": [
 			{
 				"id": "charge",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"output_schema": { "type": "object", "properties": { "charged": { "type": "boolean" } } }
 			},
 			{
 				"id": "notify",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"output_schema": { "type": "object", "properties": { "sent": { "type": "boolean" } } }
 			}
 		]
@@ -230,10 +230,10 @@ func TestGenerate_Input_TaskWithNoOutputSkippedInContext(t *testing.T) {
 	out := runGenerate(t, `{
 		"name": "p", "version": 1,
 		"steps": [
-			{ "id": "log", "transport": "http", "endpoint": "http://x" },
+			{ "id": "log", "call": {"type": "rest", "endpoint": "http://x"} },
 			{
 				"id": "notify",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"output_schema": { "type": "object", "properties": { "sent": { "type": "boolean" } } }
 			}
 		]
@@ -249,7 +249,7 @@ func TestGenerate_Input_SwitchOnlyStepSkippedInContext(t *testing.T) {
 		"steps": [
 			{
 				"id": "charge",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"output_schema": { "type": "object", "properties": { "charged": { "type": "boolean" } } }
 			},
 			{
@@ -258,7 +258,7 @@ func TestGenerate_Input_SwitchOnlyStepSkippedInContext(t *testing.T) {
 			},
 			{
 				"id": "ship",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"output_schema": { "type": "object", "properties": { "tracking": { "type": "string" } } }
 			}
 		]
@@ -285,7 +285,7 @@ func TestGenerate_Input_Params(t *testing.T) {
 		},
 		"steps": [{
 			"id": "charge",
-			"transport": "http", "endpoint": "http://x",
+			"call": {"type": "rest", "endpoint": "http://x"},
 			"params": {
 				"id":  "{{input.order_id}}",
 				"sum": "{{input.amount}}"
@@ -308,7 +308,7 @@ func TestGenerate_Input_ParamsOnlyTask(t *testing.T) {
 		"input_schema": { "type": "object", "properties": { "user_id": { "type": "string" } }, "required": ["user_id"] },
 		"steps": [{
 			"id": "log",
-			"transport": "http", "endpoint": "http://x",
+			"call": {"type": "rest", "endpoint": "http://x"},
 			"params": { "uid": "{{input.user_id}}" }
 		}]
 	}`)
@@ -331,7 +331,7 @@ func TestGenerate_Input_Params_OneOfOutputPropertyAccess(t *testing.T) {
 		"steps": [
 			{
 				"id": "save_order",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"output_schema": {
 					"oneOf": [
 						{"type":"object","properties":{"valid":{"type":"boolean"}}},
@@ -341,7 +341,7 @@ func TestGenerate_Input_Params_OneOfOutputPropertyAccess(t *testing.T) {
 			},
 			{
 				"id": "check_fraud",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"params": { "result": "{{outputs.save_order.valid}}" }
 			}
 		]
@@ -359,7 +359,7 @@ func TestGenerate_Switch_SelfExpressionTypeChecked(t *testing.T) {
 		"steps": [
 			{
 				"id": "charge",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"output_schema": {
 					"type": "object",
 					"properties": { "charged": { "type": "boolean" } },
@@ -370,8 +370,8 @@ func TestGenerate_Switch_SelfExpressionTypeChecked(t *testing.T) {
 					"{{self.charged == false}}": "#refund"
 				}
 			},
-			{ "id": "ship",   "transport": "http", "endpoint": "http://x" },
-			{ "id": "refund", "transport": "http", "endpoint": "http://x" }
+			{ "id": "ship",   "call": {"type": "rest", "endpoint": "http://x"} },
+			{ "id": "refund", "call": {"type": "rest", "endpoint": "http://x"} }
 		]
 	}`)
 	// All steps present; no error means type inference succeeded
@@ -385,7 +385,7 @@ func TestGenerate_Switch_OutputsExpressionTypeChecked(t *testing.T) {
 		"steps": [
 			{
 				"id": "charge",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"output_schema": {
 					"type": "object",
 					"properties": { "charged": { "type": "boolean" } },
@@ -393,7 +393,7 @@ func TestGenerate_Switch_OutputsExpressionTypeChecked(t *testing.T) {
 				},
 				"switch": {"{{outputs.charge.charged == true}}": "#notify"}
 			},
-			{ "id": "notify", "transport": "http", "endpoint": "http://x" }
+			{ "id": "notify", "call": {"type": "rest", "endpoint": "http://x"} }
 		]
 	}`)
 }
@@ -411,7 +411,7 @@ func TestGenerate_RecursiveStep_OwnOutputOptionalInParams(t *testing.T) {
 		},
 		"steps": [{
 			"id": "loop",
-			"transport": "http", "endpoint": "http://x",
+			"call": {"type": "rest", "endpoint": "http://x"},
 			"params": {
 				"tasks": "{{input.tasks}}",
 				"task_index": "{{outputs.loop.finished_index ? outputs.loop.finished_index : 0}}"
@@ -451,13 +451,13 @@ func TestGenerate_SwitchStep_NextStepNotReachableViaFallthrough(t *testing.T) {
 		"steps": [
 			{
 				"id": "decide",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"output_schema": { "type": "object", "properties": { "ok": { "type": "boolean" } }, "required": ["ok"] },
 				"switch": { "{{self.ok}}": "#work", "default": "$end" }
 			},
 			{
 				"id": "work",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"params": { "flag": "{{outputs.decide.ok}}" },
 				"output_schema": { "type": "object", "properties": { "done": { "type": "boolean" } } }
 			}
@@ -488,7 +488,7 @@ func TestGenerate_ContextSets_LinearChain_RequiredOutputNonNullable(t *testing.T
 		"steps": [
 			{
 				"id": "A",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"output_schema": {
 					"type": "object",
 					"properties": { "ok": { "type": "boolean" } },
@@ -497,7 +497,7 @@ func TestGenerate_ContextSets_LinearChain_RequiredOutputNonNullable(t *testing.T
 			},
 			{
 				"id": "B",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"params": { "flag": "{{outputs.A.ok}}" }
 			}
 		]
@@ -532,17 +532,17 @@ func TestGenerate_ContextSets_ExclusiveBranch_SkippedStepOutputNullable(t *testi
 			},
 			{
 				"id": "fast",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"output_schema": {
 					"type": "object",
 					"properties": { "speed": { "type": "number" } },
 					"required": ["speed"]
 				}
 			},
-			{ "id": "slow", "transport": "http", "endpoint": "http://x" },
+			{ "id": "slow", "call": {"type": "rest", "endpoint": "http://x"} },
 			{
 				"id": "merge",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"params": { "s": "{{outputs.fast.speed}}" }
 			}
 		]
@@ -566,7 +566,7 @@ func TestGenerate_ContextSets_PreBranchStepRequiredAtAllMergePoints(t *testing.T
 		"steps": [
 			{
 				"id": "pre",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"output_schema": {
 					"type": "object",
 					"properties": { "id": { "type": "integer" } },
@@ -577,11 +577,11 @@ func TestGenerate_ContextSets_PreBranchStepRequiredAtAllMergePoints(t *testing.T
 				"id": "gate",
 				"switch": { "{{outputs.pre.id == 1}}": "#path_a", "default": "#path_b" }
 			},
-			{ "id": "path_a", "transport": "http", "endpoint": "http://x" },
-			{ "id": "path_b", "transport": "http", "endpoint": "http://x" },
+			{ "id": "path_a", "call": {"type": "rest", "endpoint": "http://x"} },
+			{ "id": "path_b", "call": {"type": "rest", "endpoint": "http://x"} },
 			{
 				"id": "post",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"params": { "pre_id": "{{outputs.pre.id}}" }
 			}
 		]
@@ -604,7 +604,7 @@ func TestGenerate_ContextSets_DefaultEndSwitch_SuccessorRequiredNotOptional(t *t
 		"steps": [
 			{
 				"id": "decide",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"output_schema": {
 					"type": "object",
 					"properties": { "ok": { "type": "boolean" } },
@@ -614,7 +614,7 @@ func TestGenerate_ContextSets_DefaultEndSwitch_SuccessorRequiredNotOptional(t *t
 			},
 			{
 				"id": "work",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"params": { "flag": "{{outputs.decide.ok}}" }
 			}
 		]
@@ -634,7 +634,7 @@ func TestGenerate_Switch_OneOfAllBooleanAccepted(t *testing.T) {
 		"name": "p", "version": 1,
 		"steps": [{
 			"id": "check",
-			"transport": "http", "endpoint": "http://x",
+			"call": {"type": "rest", "endpoint": "http://x"},
 			"output_schema": {
 				"type": "object",
 				"properties": {
@@ -644,7 +644,7 @@ func TestGenerate_Switch_OneOfAllBooleanAccepted(t *testing.T) {
 			},
 			"switch": { "{{self.ok}}": "#next", "default": "$end" }
 		},
-		{ "id": "next", "transport": "http", "endpoint": "http://x" }]
+		{ "id": "next", "call": {"type": "rest", "endpoint": "http://x"} }]
 	}`)
 }
 
@@ -662,7 +662,7 @@ func TestGenerate_Switch_OneOfBooleanOptionalFieldRejected(t *testing.T) {
 				"id": "route",
 				"switch": { "{{input.go_then}}": "#next", "default": "$end" }
 			},
-			{ "id": "next", "transport": "http", "endpoint": "http://x" }
+			{ "id": "next", "call": {"type": "rest", "endpoint": "http://x"} }
 		]
 	}`)
 	if err == nil {
@@ -684,7 +684,7 @@ func TestGenerate_Switch_NullableBooleanRejected(t *testing.T) {
 				"id": "route",
 				"switch": { "{{input.go_then}}": "#work", "default": "$end" }
 			},
-			{ "id": "work", "transport": "http", "endpoint": "http://x" }
+			{ "id": "work", "call": {"type": "rest", "endpoint": "http://x"} }
 		]
 	}`)
 	if err == nil {
@@ -703,7 +703,7 @@ func TestGenerate_Switch_MixedTemplateRejectsStringResult(t *testing.T) {
 		"steps": [
 			{
 				"id": "check",
-				"transport": "http", "endpoint": "http://x",
+				"call": {"type": "rest", "endpoint": "http://x"},
 				"output_schema": {
 					"type": "object",
 					"properties": { "ok": { "type": "boolean" } },
@@ -711,7 +711,7 @@ func TestGenerate_Switch_MixedTemplateRejectsStringResult(t *testing.T) {
 				},
 				"switch": { "{{self.ok}}_": "#next", "default": "$end" }
 			},
-			{ "id": "next", "transport": "http", "endpoint": "http://x" }
+			{ "id": "next", "call": {"type": "rest", "endpoint": "http://x"} }
 		]
 	}`)
 	if err == nil {
@@ -725,7 +725,7 @@ func TestGenerate_Switch_MixedTemplateRejectsStringResult(t *testing.T) {
 func TestGenerate_InvalidRef(t *testing.T) {
 	err := runGenerateErr(t, `{
 		"name": "p", "version": 1,
-		"steps": [{"id":"s1","transport":"http","endpoint":"http://x"}],
+		"steps": [{"id":"s1","call":{"type":"rest","endpoint":"http://x"}}],
 		"input_schema": {
 			"properties": { "x": { "$ref": "#/$defs/Missing" } }
 		}

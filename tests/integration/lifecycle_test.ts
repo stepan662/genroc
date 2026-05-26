@@ -19,8 +19,7 @@ test("lifecycle — task step completes when service returns ok", async () => {
         {
           type: "task" as const,
           id: "call",
-          transport: "http" as const,
-          endpoint: `http://localhost:${mock.port}/action`,
+          call: { type: "rest" as const, endpoint: `http://localhost:${mock.port}/action` },
           timeout_ms: 2000,
           retries: 0,
         },
@@ -55,8 +54,7 @@ test("lifecycle — task step fails and retries then marks failed", async () => 
         {
           type: "task" as const,
           id: "call",
-          transport: "http" as const,
-          endpoint: `http://localhost:${mock.port}/action`,
+          call: { type: "rest" as const, endpoint: `http://localhost:${mock.port}/action` },
           timeout_ms: 500,
           retries: 1,
         },
@@ -95,8 +93,7 @@ test("lifecycle — conditional routes to correct branch", async () => {
       steps: [
         {
           id: "start",
-          transport: "http",
-          endpoint: `http://localhost:${thenMock.port}/action`,
+          call: { type: "rest" as const, endpoint: `http://localhost:${thenMock.port}/action` },
           switch: {
             "{{input.go_then}}": "#then_step",
             default: "#else_step",
@@ -104,16 +101,14 @@ test("lifecycle — conditional routes to correct branch", async () => {
         },
         {
           id: "then_step",
-          transport: "http" as const,
-          endpoint: `http://localhost:${thenMock.port}/action`,
+          call: { type: "rest" as const, endpoint: `http://localhost:${thenMock.port}/action` },
           timeout_ms: 1000,
           retries: 0,
           switch: { default: "$end" },
         },
         {
           id: "else_step",
-          transport: "http" as const,
-          endpoint: `http://localhost:${elseMock.port}/action`,
+          call: { type: "rest" as const, endpoint: `http://localhost:${elseMock.port}/action` },
           timeout_ms: 1000,
           retries: 0,
           switch: { default: "$end" },
@@ -168,8 +163,7 @@ test("lifecycle — task fails when output violates output_schema", async () => 
       steps: [
         {
           id: "charge",
-          transport: "http" as const,
-          endpoint: `http://localhost:${mock.port}/action`,
+          call: { type: "rest" as const, endpoint: `http://localhost:${mock.port}/action` },
           timeout_ms: 2000,
           retries: 0,
           output_schema: {

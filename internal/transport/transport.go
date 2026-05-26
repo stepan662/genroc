@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
+	"os/exec"
 	"time"
 
 	"gent/internal/model"
@@ -26,31 +26,33 @@ type Response struct {
 	Error  string `json:"error,omitempty"`
 }
 
-// Send dispatches a request to the appropriate endpoint based on the step's transport.
-func Send(ctx context.Context, step *model.Step, req Request) (*Response, error) {
+// Send dispatches a request to the appropriate endpoint based on the step's call config.
+// headers contains pre-resolved header values (for rest calls).
+func Send(ctx context.Context, call *model.Call, headers map[string]string, req Request) (*Response, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	switch step.Transport {
-	case model.TransportHTTP:
-		return sendHTTP(ctx, step.Endpoint, body)
-	case model.TransportTCP:
-		return sendStream(ctx, "tcp", step.Endpoint, body)
-	case model.TransportUDS:
-		return sendStream(ctx, "unix", step.Endpoint, body)
-	default:
-		return nil, fmt.Errorf("unknown transport: %q", step.Transport)
+	switch call.Type {
+	case model.CallTypeREST:
+		return sendHTTP(ctx, call.Endpoint, headers, body)
+	case model.CallTypeScript:
+		return sendScript(ctx, call.Exec, body)
+default:
+		return nil, fmt.Errorf("unknown call type: %q", call.Type)
 	}
 }
 
-func sendHTTP(ctx context.Context, endpoint string, body []byte) (*Response, error) {
+func sendHTTP(ctx context.Context, endpoint string, headers map[string]string, body []byte) (*Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build http request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -65,29 +67,20 @@ func sendHTTP(ctx context.Context, endpoint string, body []byte) (*Response, err
 	return &r, nil
 }
 
-// sendStream handles both TCP and Unix Domain Socket transports.
-// Protocol: write newline-terminated JSON, read newline-terminated JSON.
-func sendStream(ctx context.Context, network, address string, body []byte) (*Response, error) {
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, network, address)
+// sendScript runs exec via sh -c, writes newline-terminated JSON to stdin,
+// and reads a newline-terminated JSON response from stdout.
+func sendScript(ctx context.Context, command string, body []byte) (*Response, error) {
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.Stdin = bytes.NewReader(append(body, '\n'))
+
+	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("dial %s %s: %w", network, address, err)
-	}
-	defer conn.Close()
-
-	if deadline, ok := ctx.Deadline(); ok {
-		conn.SetDeadline(deadline)
-	}
-
-	body = append(body, '\n')
-	if _, err := conn.Write(body); err != nil {
-		return nil, fmt.Errorf("write: %w", err)
+		return nil, fmt.Errorf("script: %w", err)
 	}
 
 	var r Response
-	dec := json.NewDecoder(conn)
-	if err := dec.Decode(&r); err != nil {
-		return nil, fmt.Errorf("decode stream response: %w", err)
+	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&r); err != nil {
+		return nil, fmt.Errorf("decode script response: %w", err)
 	}
 	return &r, nil
 }

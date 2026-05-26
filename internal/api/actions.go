@@ -8,10 +8,8 @@ import (
 )
 
 // actionDef is the single source of truth for one API action.
-// It drives three things simultaneously:
-//   - HTTP routing (Method + Path)
-//   - TCP/UDS envelope dispatch (Name)
-//   - OpenAPI documentation (schemas reflected from Go types)
+// It drives HTTP routing (Method + Path) and OpenAPI documentation
+// (schemas reflected from Go types).
 type actionDef struct {
 	Name    string
 	Method  string
@@ -74,7 +72,7 @@ var registry = func() []actionDef {
 				Steps: []*model.Step{
 					{
 						ID:        "charge",
-						Transport: model.TransportHTTP, Endpoint: "http://localhost:9001/charge",
+						Call:      &model.Call{Type: model.CallTypeREST, Endpoint: "http://localhost:9001/charge"},
 						TimeoutMs: 5000, Retries: 3,
 						OutputSchema: map[string]any{
 							"type": "object",
@@ -83,18 +81,18 @@ var registry = func() []actionDef {
 							},
 						},
 						Switch: model.SwitchMap{
-							{When: "{{self.charged == true}}", Goto: "ship"},
-							{When: "{{self.charged == false}}", Goto: "refund"},
+							{When: "self.charged == true", Goto: "ship"},
+							{When: "self.charged == false", Goto: "refund"},
 						},
 					},
 					{
 						ID:        "ship",
-						Transport: model.TransportHTTP, Endpoint: "http://localhost:9002/ship",
+						Call:      &model.Call{Type: model.CallTypeREST, Endpoint: "http://localhost:9002/ship"},
 						TimeoutMs: 3000, Retries: 2,
 					},
 					{
 						ID:        "refund",
-						Transport: model.TransportHTTP, Endpoint: "http://localhost:9003/refund",
+						Call:      &model.Call{Type: model.CallTypeREST, Endpoint: "http://localhost:9003/refund"},
 						TimeoutMs: 3000, Retries: 1,
 					},
 				},

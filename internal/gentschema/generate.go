@@ -108,7 +108,7 @@ func buildInputs(steps []*model.Step, _ []string, tasks map[string]TaskSchemas, 
 	required, optional := computeContextSets(steps)
 	var accumulated []string
 	for _, s := range steps {
-		if s.Transport != "" {
+		if s.Call != nil {
 			ctx := contextSchema(required[s.ID], optional[s.ID], tasks, processInput)
 			if len(defs) > 0 {
 				ctx["$defs"] = defs
@@ -128,7 +128,7 @@ func buildInputs(steps []*model.Step, _ []string, tasks map[string]TaskSchemas, 
 		if len(s.Switch) > 0 {
 			req := required[s.ID]
 			opt := optional[s.ID]
-			if s.Transport != "" && len(s.OutputSchema) > 0 {
+			if s.Call != nil && len(s.OutputSchema) > 0 {
 				req = append(req, s.ID)
 				var filtered []string
 				for _, id := range opt {
@@ -139,7 +139,7 @@ func buildInputs(steps []*model.Step, _ []string, tasks map[string]TaskSchemas, 
 				opt = filtered
 			}
 			switchCtx := contextSchema(req, opt, tasks, processInput)
-			if s.Transport != "" {
+			if s.Call != nil {
 				addSelfSchema(switchCtx, s)
 			}
 			if len(defs) > 0 {

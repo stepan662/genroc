@@ -43,7 +43,7 @@ func TestHandle_PutAndListDefinitions(t *testing.T) {
 	payload, _ := json.Marshal(map[string]interface{}{
 		"name": "pipeline", "version": 1,
 		"steps": []map[string]interface{}{
-			{"id": "s1", "transport": "http", "endpoint": "http://localhost/x"},
+			{"id": "s1", "call": map[string]interface{}{"type": "rest", "endpoint": "http://localhost/x"}},
 		},
 	})
 
@@ -74,7 +74,7 @@ func TestHandle_StartAndGetInstance(t *testing.T) {
 	defPayload, _ := json.Marshal(map[string]interface{}{
 		"name": "p", "version": 1,
 		"steps": []map[string]interface{}{
-			{"id": "s1", "transport": "http", "endpoint": "http://localhost/x"},
+			{"id": "s1", "call": map[string]interface{}{"type": "rest", "endpoint": "http://localhost/x"}},
 		},
 	})
 	h.Handle(Envelope{Action: "put_definition", Payload: defPayload})
@@ -118,14 +118,14 @@ func TestHandle_ValidationErrors(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "task without endpoint",
-			payload: `{"name":"p","version":1,"steps":[{"id":"s1","transport":"http"}]}`,
-			wantErr: "endpoint is required",
+			name:    "rest call without endpoint",
+			payload: `{"name":"p","version":1,"steps":[{"id":"s1","call":{"type":"rest"}}]}`,
+			wantErr: "call.endpoint is required",
 		},
 		{
-			name:    "unknown transport",
-			payload: `{"name":"p","version":1,"steps":[{"id":"s1","transport":"ftp","endpoint":"x"}]}`,
-			wantErr: "transport must be one of",
+			name:    "unknown call type",
+			payload: `{"name":"p","version":1,"steps":[{"id":"s1","call":{"type":"ftp","endpoint":"x"}}]}`,
+			wantErr: "call.type must be one of",
 		},
 		{
 			name:    "missing process name",

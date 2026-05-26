@@ -8,8 +8,7 @@ const validDef = {
     {
       type: "task" as const,
       id: "step1",
-      transport: "http" as const,
-      endpoint: "http://localhost:19990/action",
+      call: { type: "rest" as const, endpoint: "http://localhost:19990/action" },
       timeout_ms: 1000,
       retries: 0,
     },
@@ -40,8 +39,7 @@ test("PUT /definitions — rejects task step without endpoint", async () => {
         {
           type: "task" as const,
           id: "s1",
-          transport: "http" as const,
-          endpoint: "http://localhost:19990/action",
+          call: { type: "rest" as const, endpoint: "http://localhost:19990/action" },
         },
       ],
     },

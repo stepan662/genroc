@@ -113,8 +113,8 @@ func (e *Engine) tick(ctx context.Context) {
 }
 
 // advance executes the next step in the instance's queue.
-// Each step may have an action (Transport+Endpoint), a switch, or both.
-// The action runs first; then the switch is evaluated with the action's output
+// Each step may have a call, a switch, or both.
+// The call runs first; then the switch is evaluated with the call's output
 // available as "self". A matching switch case jumps to the named step; no match
 // advances to the next step in the queue.
 func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) error {
@@ -128,7 +128,7 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) error
 	step := inst.StepQueue[0]
 	var selfOutput any
 
-	if step.Transport != "" {
+	if step.Call != nil {
 		out, done, err := e.executeAction(ctx, inst, step)
 		if done || err != nil {
 			return err
@@ -190,9 +190,14 @@ func (e *Engine) executeAction(ctx context.Context, inst *model.ProcessInstance,
 		Data:       data,
 	}
 
-	e.log.Debug("executing step", "id", inst.ID, "step", step.ID, "transport", step.Transport)
+	e.log.Debug("executing step", "id", inst.ID, "step", step.ID, "call_type", step.Call.Type)
 
-	resp, err := transport.Send(taskCtx, step, req)
+	resolvedHeaders, err := e.resolveHeaders(inst, step.Call)
+	if err != nil {
+		return nil, true, e.failInstance(inst, fmt.Sprintf("step %q headers: %v", step.ID, err))
+	}
+
+	resp, err := transport.Send(taskCtx, step.Call, resolvedHeaders, req)
 	if err != nil {
 		return nil, true, e.retryOrFail(inst, step, err.Error())
 	}
@@ -302,4 +307,21 @@ func (e *Engine) failInstance(inst *model.ProcessInstance, reason string) error 
 	inst.NextRetryAt = nil
 	e.log.Error("instance failed", "id", inst.ID, "reason", reason)
 	return e.db.UpdateInstance(inst)
+}
+
+// resolveHeaders evaluates each header value expression against the instance
+// context and coerces the result to a string. Returns nil for calls without headers.
+func (e *Engine) resolveHeaders(inst *model.ProcessInstance, call *model.Call) (map[string]string, error) {
+	if len(call.Headers) == 0 {
+		return nil, nil
+	}
+	resolved := make(map[string]string, len(call.Headers))
+	for k, expr := range call.Headers {
+		val, err := e.eval.EvalAny(expr, inst.ContextData)
+		if err != nil {
+			return nil, fmt.Errorf("header %q: %w", k, err)
+		}
+		resolved[k] = fmt.Sprintf("%v", val)
+	}
+	return resolved, nil
 }

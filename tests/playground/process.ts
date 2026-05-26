@@ -31,8 +31,7 @@ export const processDefinition = {
   steps: [
     {
       id: "loop",
-      transport: "http" as const,
-      endpoint: `http://localhost:${PORT}/loop`,
+      call: { type: "rest" as const, endpoint: `http://localhost:${PORT}/loop` },
       params: {
         tasks: "{{input.tasks}}",
         task_index:
@@ -53,8 +52,7 @@ export const processDefinition = {
     },
     {
       id: "finish",
-      transport: "http" as const,
-      endpoint: `http://localhost:${PORT}/finish`,
+      call: { type: "rest" as const, endpoint: `http://localhost:${PORT}/finish` },
       params: {
         start_time: "{{input.start_time}}",
       },

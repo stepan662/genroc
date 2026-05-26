@@ -6,7 +6,7 @@ import (
 
 func TestProcessDefinition_Normalize(t *testing.T) {
 	validStep := func(id string) *Step {
-		return &Step{ID: id, Transport: TransportHTTP, Endpoint: "http://localhost/x"}
+		return &Step{ID: id, Call: &Call{Type: CallTypeREST, Endpoint: "http://localhost/x"}}
 	}
 
 	t.Run("no schemas is a no-op", func(t *testing.T) {
@@ -178,10 +178,8 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 }
 
 func TestProcessDefinition_Validate(t *testing.T) {
-	validStep := &Step{
-		ID:        "step1",
-		Transport: TransportHTTP,
-		Endpoint:  "http://localhost/action",
+	restStep := func(id, endpoint string) *Step {
+		return &Step{ID: id, Call: &Call{Type: CallTypeREST, Endpoint: endpoint}}
 	}
 
 	tests := []struct {
@@ -190,8 +188,15 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "valid action-only step",
-			def:     ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{validStep}},
+			name:    "valid rest call step",
+			def:     ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{restStep("step1", "http://localhost/action")}},
+			wantErr: "",
+		},
+		{
+			name: "valid script call step",
+			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
+				{ID: "run", Call: &Call{Type: CallTypeScript, Exec: "python3 foo.py"}},
+			}},
 			wantErr: "",
 		},
 		{
@@ -201,32 +206,32 @@ func TestProcessDefinition_Validate(t *testing.T) {
 					{When: "input.ok == true", Goto: "act"},
 					{When: "default", Goto: GotoEnd},
 				}},
-				{ID: "act", Transport: TransportHTTP, Endpoint: "http://x"},
+				restStep("act", "http://x"),
 			}},
 			wantErr: "",
 		},
 		{
-			name: "valid step with both action and switch",
+			name: "valid step with both call and switch",
 			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
 				{
-					ID: "charge", Transport: TransportHTTP, Endpoint: "http://x",
+					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
 						{When: "self.ok == true", Goto: "ship"},
 						{When: "default", Goto: GotoEnd},
 					},
 				},
-				{ID: "ship", Transport: TransportHTTP, Endpoint: "http://x"},
+				restStep("ship", "http://x"),
 			}},
 			wantErr: "",
 		},
 		{
 			name:    "missing name",
-			def:     ProcessDefinition{Version: 1, Steps: []*Step{validStep}},
+			def:     ProcessDefinition{Version: 1, Steps: []*Step{restStep("step1", "http://x")}},
 			wantErr: "name is required",
 		},
 		{
 			name:    "version zero",
-			def:     ProcessDefinition{Name: "p", Version: 0, Steps: []*Step{validStep}},
+			def:     ProcessDefinition{Name: "p", Version: 0, Steps: []*Step{restStep("step1", "http://x")}},
 			wantErr: "version must have at least 1 item(s)",
 		},
 		{
@@ -235,41 +240,41 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			wantErr: "steps",
 		},
 		{
-			name: "step with neither action nor switch",
+			name: "step with neither call nor switch",
 			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
 				{ID: "empty"},
 			}},
-			wantErr: "must have an action",
+			wantErr: "must have a call or a switch",
 		},
 		{
-			name: "transport set but endpoint missing",
+			name: "rest call missing endpoint",
 			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
-				{ID: "s1", Transport: TransportHTTP},
+				{ID: "s1", Call: &Call{Type: CallTypeREST}},
 			}},
-			wantErr: "endpoint is required",
+			wantErr: "call.endpoint is required",
 		},
 		{
-			name: "endpoint set but transport missing",
+			name: "script call missing exec",
 			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
-				{ID: "s1", Endpoint: "http://x"},
+				{ID: "s1", Call: &Call{Type: CallTypeScript}},
 			}},
-			wantErr: "transport is required",
+			wantErr: "call.exec is required",
 		},
 		{
-			name: "unknown transport",
+			name: "unknown call type",
 			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
-				{ID: "s1", Transport: "ftp", Endpoint: "ftp://x"},
+				{ID: "s1", Call: &Call{Type: "ftp", Endpoint: "ftp://x"}},
 			}},
-			wantErr: "transport must be one of: http, tcp, uds",
+			wantErr: "call.type must be one of: rest, script",
 		},
 		{
 			name: "switch missing default case",
 			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
 				{
-					ID: "charge", Transport: TransportHTTP, Endpoint: "http://x",
+					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{{When: "self.ok == true", Goto: "ship"}},
 				},
-				{ID: "ship", Transport: TransportHTTP, Endpoint: "http://x"},
+				restStep("ship", "http://x"),
 			}},
 			wantErr: `last case must be "default"`,
 		},
@@ -277,13 +282,13 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "switch default is not the last case",
 			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
 				{
-					ID: "charge", Transport: TransportHTTP, Endpoint: "http://x",
+					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
 						{When: "default", Goto: GotoEnd},
 						{When: "self.ok == true", Goto: "ship"},
 					},
 				},
-				{ID: "ship", Transport: TransportHTTP, Endpoint: "http://x"},
+				restStep("ship", "http://x"),
 			}},
 			wantErr: `last case must be "default"`,
 		},
@@ -291,13 +296,13 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "switch $end in non-default case is valid",
 			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
 				{
-					ID: "charge", Transport: TransportHTTP, Endpoint: "http://x",
+					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
 						{When: "self.error == true", Goto: GotoEnd},
 						{When: "default", Goto: "ship"},
 					},
 				},
-				{ID: "ship", Transport: TransportHTTP, Endpoint: "http://x"},
+				restStep("ship", "http://x"),
 			}},
 			wantErr: "",
 		},
@@ -305,7 +310,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "switch goto references unknown step",
 			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
 				{
-					ID: "charge", Transport: TransportHTTP, Endpoint: "http://x",
+					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
 						{When: "self.ok == true", Goto: "nonexistent"},
 						{When: "default", Goto: GotoEnd},
@@ -348,7 +353,7 @@ func TestProcessDefinition_ValidateInput_Nullable(t *testing.T) {
 	def := ProcessDefinition{
 		Name: "p", Version: 1,
 		InputSchema: schema,
-		Steps:       []*Step{{ID: "s", Transport: TransportHTTP, Endpoint: "http://x"}},
+		Steps:       []*Step{{ID: "s", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"}}},
 	}
 
 	tests := []struct {
@@ -400,9 +405,8 @@ func TestProcessDefinition_ValidateInput_Nullable(t *testing.T) {
 
 func TestStep_ValidateOutput_Nullable(t *testing.T) {
 	step := &Step{
-		ID:        "charge",
-		Transport: TransportHTTP,
-		Endpoint:  "http://x",
+		ID:   "charge",
+		Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 		OutputSchema: map[string]any{
 			"type":     "object",
 			"required": []any{"charged"},

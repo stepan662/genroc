@@ -33,8 +33,7 @@ test("crash recovery — new worker re-executes an unconfirmed step after the pr
         steps: [
           {
             id: "work",
-            transport: "http",
-            endpoint: `http://localhost:${mock.port}/action`,
+            call: { type: "rest" as const, endpoint: `http://localhost:${mock.port}/action` },
             // Long enough that the step never times out before the crash.
             timeout_ms: 120_000,
             retries: 0,

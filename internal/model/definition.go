@@ -18,14 +18,52 @@ import (
 // Use it as the target of a switch case (including "default") to signal completion.
 const GotoEnd = "$end"
 
-// Transport identifies how the engine communicates with a service.
-type Transport string
+// CallType identifies how the engine invokes a step's action.
+type CallType string
 
 const (
-	TransportHTTP Transport = "http"
-	TransportTCP  Transport = "tcp"
-	TransportUDS  Transport = "uds"
+	CallTypeREST   CallType = "rest"
+	CallTypeScript CallType = "script"
 )
+
+// Call describes how to invoke a step's action. It is a discriminated union on Type.
+//   - "rest":   Endpoint (required), Headers (optional, expression-evaluated)
+//   - "script": Exec (required)
+type Call struct {
+	Type     CallType          `json:"type"`
+	Endpoint string            `json:"endpoint,omitempty"` // rest
+	Headers  map[string]string `json:"headers,omitempty"`  // rest, values are expressions
+	Exec     string            `json:"exec,omitempty"`     // script
+}
+
+// JSONSchemaBytes returns the JSON Schema for Call as a discriminated union
+// so that OpenAPI reflection produces a proper oneOf instead of a flat object.
+func (Call) JSONSchemaBytes() ([]byte, error) {
+	return []byte(`{
+		"oneOf": [
+			{
+				"type": "object",
+				"properties": {
+					"type":     {"type": "string", "const": "rest"},
+					"endpoint": {"type": "string"},
+					"headers":  {"type": "object", "additionalProperties": {"type": "string"}}
+				},
+				"required": ["type", "endpoint"],
+				"additionalProperties": false
+			},
+			{
+				"type": "object",
+				"properties": {
+					"type": {"type": "string", "const": "script"},
+					"exec": {"type": "string"}
+				},
+				"required": ["type", "exec"],
+				"additionalProperties": false
+			}
+		],
+		"discriminator": {"propertyName": "type"}
+	}`), nil
+}
 
 // SwitchCase is a single entry in a Step's switch list: an expression evaluated
 // against the process context (and this step's own output as "self"), and the ID
@@ -107,14 +145,13 @@ func (SwitchMap) JSONSchemaBytes() ([]byte, error) {
 }
 
 // Step is a single unit of work in a process definition.
-// Each step may have an action, a switch, or both — but at least one is required.
+// Each step may have a call, a switch, or both — but at least one is required.
 //
-//   - Action-only (Transport+Endpoint set, Switch empty): executes the action and
-//     advances to the next step in the list. If it is the last step, the instance
-//     completes.
-//   - Switch-only (Transport+Endpoint empty, Switch non-empty): evaluates the switch
-//     to determine the next step without performing any external call.
-//   - Both: executes the action first, then evaluates the switch.
+//   - Call-only (Call set, Switch empty): executes the call and advances to the
+//     next step in the list. If it is the last step, the instance completes.
+//   - Switch-only (Call nil, Switch non-empty): evaluates the switch to determine
+//     the next step without performing any external call.
+//   - Both: executes the call first, then evaluates the switch.
 //
 // When Switch is present it must contain a "default" case as the last entry.
 // Switch cases are evaluated in order; the first matching expression wins.
@@ -124,8 +161,7 @@ func (SwitchMap) JSONSchemaBytes() ([]byte, error) {
 // output under the name "self".
 type Step struct {
 	ID           string            `json:"id"                  validate:"required"`
-	Transport    Transport         `json:"transport,omitempty"`
-	Endpoint     string            `json:"endpoint,omitempty"`
+	Call         *Call             `json:"call,omitempty"`
 	TimeoutMs    int               `json:"timeout_ms,omitempty"`
 	Retries      int               `json:"retries,omitempty"`
 	OutputSchema map[string]any    `json:"output_schema,omitempty"`
@@ -187,23 +223,24 @@ func (d *ProcessDefinition) Validate() error {
 }
 
 func validateStep(s *Step, stepIDs map[string]struct{}) error {
-	hasAction := s.Transport != "" || s.Endpoint != ""
+	hasAction := s.Call != nil
 	hasSwitch := len(s.Switch) > 0
 
 	if !hasAction && !hasSwitch {
-		return fmt.Errorf("step %q must have an action (transport + endpoint) or a switch", s.ID)
+		return fmt.Errorf("step %q must have a call or a switch", s.ID)
 	}
-	if s.Transport != "" && s.Endpoint == "" {
-		return fmt.Errorf("step %q: endpoint is required", s.ID)
-	}
-	if s.Endpoint != "" && s.Transport == "" {
-		return fmt.Errorf("step %q: transport is required", s.ID)
-	}
-	if s.Transport != "" {
-		switch s.Transport {
-		case TransportHTTP, TransportTCP, TransportUDS:
-		default:
-			return fmt.Errorf("step %q: transport must be one of: http, tcp, uds", s.ID)
+	if hasAction {
+		switch s.Call.Type {
+		case CallTypeREST:
+			if s.Call.Endpoint == "" {
+				return fmt.Errorf("step %q: call.endpoint is required for type %q", s.ID, s.Call.Type)
+			}
+		case CallTypeScript:
+			if s.Call.Exec == "" {
+				return fmt.Errorf("step %q: call.exec is required for type %q", s.ID, s.Call.Type)
+			}
+default:
+			return fmt.Errorf("step %q: call.type must be one of: rest, script, grpc", s.ID)
 		}
 	}
 	if hasSwitch {
