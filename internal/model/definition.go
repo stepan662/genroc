@@ -66,7 +66,7 @@ func (Call) JSONSchemaBytes() ([]byte, error) {
 					"type":          {"type": "string", "const": "rest"},
 					"endpoint":      {"type": "string"},
 					"headers":       {"type": "object", "additionalProperties": {"type": "string"}},
-					"output_schema": {"type": "object"}
+					"output_schema": {"type": "object", "additionalProperties": true}
 				},
 				"required": ["type", "endpoint"],
 				"additionalProperties": false
@@ -76,7 +76,7 @@ func (Call) JSONSchemaBytes() ([]byte, error) {
 				"properties": {
 					"type":          {"type": "string", "const": "script"},
 					"exec":          {"type": "string"},
-					"output_schema": {"type": "object"}
+					"output_schema": {"type": "object", "additionalProperties": true}
 				},
 				"required": ["type", "exec"],
 				"additionalProperties": false
@@ -99,7 +99,7 @@ func (Call) JSONSchemaBytes() ([]byte, error) {
 						},
 						"minItems": 1
 					},
-					"child_output_schema": {"type": "object"}
+					"child_output_schema": {"type": "object", "additionalProperties": true}
 				},
 				"required": ["type", "processes"],
 				"additionalProperties": false
@@ -219,8 +219,7 @@ type ProcessDefinition struct {
 	Version     int               `json:"version"              validate:"min=1"`
 	Steps       []*Step           `json:"steps"                validate:"required,min=1,dive"`
 	InputSchema map[string]any    `json:"input_schema,omitempty"`
-	Output      map[string]string `json:"output,omitempty"`        // expression map evaluated at completion, like Step.Params
-	OutputSchema map[string]any   `json:"output_schema,omitempty"` // JSON Schema validating the computed output
+	Output map[string]string `json:"output,omitempty"` // expression map evaluated at completion, like Step.Params
 }
 
 // Normalize normalizes InputSchema and all step OutputSchemas in-place using the
@@ -232,13 +231,6 @@ func (d *ProcessDefinition) Normalize() error {
 			return fmt.Errorf("input_schema: %w", err)
 		}
 		d.InputSchema = normalized
-	}
-	if len(d.OutputSchema) > 0 {
-		normalized, err := schema.Normalize(d.OutputSchema)
-		if err != nil {
-			return fmt.Errorf("output_schema: %w", err)
-		}
-		d.OutputSchema = normalized
 	}
 	for _, s := range d.Steps {
 		if s.Call == nil {
@@ -270,9 +262,6 @@ func (d *ProcessDefinition) Validate() error {
 		return err
 	}
 	if err := checkSchemaDoc("input_schema", d.InputSchema); err != nil {
-		return err
-	}
-	if err := checkSchemaDoc("output_schema", d.OutputSchema); err != nil {
 		return err
 	}
 	stepIDs := make(map[string]struct{}, len(d.Steps))
@@ -354,11 +343,6 @@ func checkSchemaDoc(field string, schema map[string]any) error {
 // ValidateInput checks input data against InputSchema. No-op if InputSchema is nil.
 func (d *ProcessDefinition) ValidateInput(input any) error {
 	return validateSchema(d.InputSchema, input)
-}
-
-// ValidateOutput checks output data against OutputSchema. No-op if OutputSchema is nil.
-func (d *ProcessDefinition) ValidateOutput(output any) error {
-	return validateSchema(d.OutputSchema, output)
 }
 
 // ValidateOutput checks output data against call.OutputSchema. No-op if unset.

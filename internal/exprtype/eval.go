@@ -65,9 +65,12 @@ func evalMember(n *ast.MemberNode, ctx map[string]any) (any, error) {
 		}
 		return v, nil
 	case *ast.IntegerNode:
+		if base == nil {
+			return nil, nil
+		}
 		slice, ok := base.([]any)
 		if !ok {
-			return nil, fmt.Errorf("index access [%d] requires a slice, got %T", prop.Value, base)
+			return nil, nil // non-array value → null, mirrors property access on non-objects
 		}
 		if prop.Value < 0 || prop.Value >= len(slice) {
 			return nil, nil // out of bounds → null

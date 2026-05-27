@@ -18,7 +18,32 @@ export interface Handlers {
 
 // Output schemas baked in for runtime validation via AJV.
 const stepSchemas: Record<string, object> = {
-
+  "recursion": {
+    "items": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "output": {
+          "properties": {
+            "processes": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "processes"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "output"
+      ],
+      "type": "object"
+    },
+    "type": "array"
+  }
 }
 
 const ajv = new Ajv()

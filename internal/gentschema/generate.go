@@ -17,19 +17,21 @@ import (
 // Output is a $ref into $defs; Input is inferred from params expressions or
 // equals the full context schema when the task has no params.
 type TaskSchemas struct {
-	Input  map[string]any `json:"input,omitempty"`
-	Output map[string]any `json:"output,omitempty"`
+	CallType model.CallType `json:"call_type"`
+	Input    map[string]any `json:"input,omitempty"`
+	Output   map[string]any `json:"output,omitempty"`
 }
 
 // SchemaFile is the top-level output. $defs collects every named schema so
 // that code generators (e.g. json-schema-to-typescript) can emit one type per
 // entry. All other schema fields are $ref pointers into $defs.
 type SchemaFile struct {
-	Process      string                 `json:"process"`
-	Version      int                    `json:"version"`
-	ProcessInput map[string]any         `json:"process_input,omitempty"`
-	Tasks        map[string]TaskSchemas `json:"tasks,omitempty"`
-	Defs         map[string]any         `json:"$defs,omitempty"`
+	Process       string                 `json:"process"`
+	Version       int                    `json:"version"`
+	ProcessInput  map[string]any         `json:"process_input,omitempty"`
+	ProcessOutput map[string]any         `json:"process_output,omitempty"`
+	Tasks         map[string]TaskSchemas `json:"tasks,omitempty"`
+	Defs          map[string]any         `json:"$defs,omitempty"`
 }
 
 // Generate normalises all schemas in def and builds the SchemaFile output.
@@ -67,12 +69,157 @@ func Generate(def *model.ProcessDefinition) (SchemaFile, error) {
 	if len(tasks) > 0 {
 		result.Tasks = tasks
 	}
+	if len(def.Output) > 0 {
+		outputSchema, err := inferProcessOutput(def, tasks, result.ProcessInput, result.Defs)
+		if err != nil {
+			return SchemaFile{}, err
+		}
+		result.ProcessOutput = outputSchema
+	}
 	return result, nil
+}
+
+func inferProcessOutput(def *model.ProcessDefinition, tasks map[string]TaskSchemas, processInput map[string]any, defs map[string]any) (map[string]any, error) {
+	req, opt := outputContextSets(def)
+	ctx := contextSchema(req, opt, tasks, processInput)
+	if len(defs) > 0 {
+		ctx["$defs"] = defs
+	}
+	return inferObjectSchema(def.Output, ctx, func(name string) string {
+		return fmt.Sprintf("output %q", name)
+	})
+}
+
+// outputContextSets computes which step outputs are guaranteed (required) vs. possible
+// (optional) at every process completion point, using the same CFG analysis as params.
+// Terminal steps are those with a switch case to GotoEnd, or the last step with no switch.
+func outputContextSets(def *model.ProcessDefinition) (required, optional []string) {
+	steps := def.Steps
+	n := len(steps)
+	if n == 0 {
+		return
+	}
+
+	reqMap, optMap := computeContextSets(steps)
+
+	// Derive mustOut/mayOut for each step from computeContextSets results.
+	// mustOut[s] = required[s] ∪ {s if s has output}
+	// mayOut[s]  = required[s] ∪ optional[s] ∪ {s if s has output}
+	type endSet struct {
+		must map[string]bool
+		may  map[string]bool
+	}
+
+	var terminals []endSet
+	for i, s := range steps {
+		isTerminal := false
+		if len(s.Switch) == 0 && i == n-1 {
+			isTerminal = true
+		}
+		for _, c := range s.Switch {
+			if c.Goto == model.GotoEnd {
+				isTerminal = true
+				break
+			}
+		}
+		if !isTerminal {
+			continue
+		}
+
+		must := make(map[string]bool)
+		for _, id := range reqMap[s.ID] {
+			must[id] = true
+		}
+		if stepHasOutput(s) {
+			must[s.ID] = true
+		}
+
+		may := make(map[string]bool)
+		for id := range must {
+			may[id] = true
+		}
+		for _, id := range optMap[s.ID] {
+			may[id] = true
+		}
+
+		terminals = append(terminals, endSet{must: must, may: may})
+	}
+
+	if len(terminals) == 0 {
+		return
+	}
+
+	// required at end = intersection of mustOut across all terminals
+	mustAtEnd := make(map[string]bool)
+	for id := range terminals[0].must {
+		mustAtEnd[id] = true
+	}
+	for _, t := range terminals[1:] {
+		for id := range mustAtEnd {
+			if !t.must[id] {
+				delete(mustAtEnd, id)
+			}
+		}
+	}
+
+	// optional at end = (union of mayOut) minus required at end
+	mayAtEnd := make(map[string]bool)
+	for _, t := range terminals {
+		for id := range t.may {
+			mayAtEnd[id] = true
+		}
+	}
+
+	for id := range mustAtEnd {
+		required = append(required, id)
+	}
+	for id := range mayAtEnd {
+		if !mustAtEnd[id] {
+			optional = append(optional, id)
+		}
+	}
+	return
+}
+
+// stepHasOutput reports whether a step always produces a storable output.
+// rest/script require an explicit output_schema; child_process always stores results.
+func stepHasOutput(s *model.Step) bool {
+	if s.Call == nil {
+		return false
+	}
+	if s.Call.Type == model.CallTypeChildProcess {
+		return true
+	}
+	return len(s.Call.OutputSchema) > 0
+}
+
+// childProcessOutputSchema returns the JSON Schema for the output of a child_process step:
+// an array of {id: string} objects, with an optional output field when child_output_schema is set.
+func childProcessOutputSchema(s *model.Step) map[string]any {
+	itemProps := map[string]any{"id": map[string]any{"type": "string"}}
+	itemRequired := []any{"id"}
+	if len(s.Call.ChildOutputSchema) > 0 {
+		itemProps["output"] = s.Call.ChildOutputSchema
+		itemRequired = append(itemRequired, "output")
+	}
+	return map[string]any{
+		"type": "array",
+		"items": map[string]any{
+			"type":       "object",
+			"properties": itemProps,
+			"required":   itemRequired,
+		},
+	}
 }
 
 func collectNamedOutputs(steps []*model.Step, named map[string]map[string]any) {
 	for _, s := range steps {
-		if s.Call != nil && len(s.Call.OutputSchema) > 0 {
+		if !stepHasOutput(s) {
+			continue
+		}
+		if s.Call.Type == model.CallTypeChildProcess {
+			named[s.ID+"_output"] = childProcessOutputSchema(s)
+		} else {
 			named[s.ID+"_output"] = s.Call.OutputSchema
 		}
 	}
@@ -80,8 +227,8 @@ func collectNamedOutputs(steps []*model.Step, named map[string]map[string]any) {
 
 func collectTaskRefs(steps []*model.Step, out map[string]TaskSchemas) {
 	for _, s := range steps {
-		if s.Call != nil && len(s.Call.OutputSchema) > 0 {
-			out[s.ID] = TaskSchemas{Output: schemaRef(s.ID + "_output")}
+		if stepHasOutput(s) {
+			out[s.ID] = TaskSchemas{CallType: s.Call.Type, Output: schemaRef(s.ID + "_output")}
 		}
 	}
 }
@@ -119,6 +266,9 @@ func buildInputs(steps []*model.Step, _ []string, tasks map[string]TaskSchemas, 
 				if err != nil {
 					return nil, err
 				}
+				if !inMap {
+					ts.CallType = s.Call.Type
+				}
 				ts.Input = input
 				tasks[s.ID] = ts
 			}
@@ -128,7 +278,7 @@ func buildInputs(steps []*model.Step, _ []string, tasks map[string]TaskSchemas, 
 		if len(s.Switch) > 0 {
 			req := required[s.ID]
 			opt := optional[s.ID]
-			if s.Call != nil && len(s.Call.OutputSchema) > 0 {
+			if stepHasOutput(s) {
 				req = append(req, s.ID)
 				var filtered []string
 				for _, id := range opt {
@@ -192,7 +342,7 @@ func computeContextSets(steps []*model.Step) (required, optional map[string][]st
 
 	hasOutput := make([]bool, n)
 	for i, s := range steps {
-		hasOutput[i] = s.Call != nil && len(s.Call.OutputSchema) > 0
+		hasOutput[i] = stepHasOutput(s)
 	}
 
 	allTrue := func() []bool { s := make([]bool, n); for i := range s { s[i] = true }; return s }
@@ -319,6 +469,22 @@ func addSelfSchema(ctx map[string]any, s *model.Step) {
 	ctx["required"] = append(req, "self")
 }
 
+// inferObjectSchema infers a JSON Schema object from an expression map by type-checking
+// each value expression against ctx. errFmt formats the error prefix for each key.
+func inferObjectSchema(exprs map[string]string, ctx map[string]any, errFmt func(string) string) (map[string]any, error) {
+	props := make(map[string]any, len(exprs))
+	required := make([]string, 0, len(exprs))
+	for name, expr := range exprs {
+		inferred, err := template.InferType(expr, ctx)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", errFmt(name), err)
+		}
+		props[name] = inferred
+		required = append(required, name)
+	}
+	return map[string]any{"type": "object", "properties": props, "required": required}, nil
+}
+
 func inferInput(s *model.Step, ctx map[string]any, defs map[string]any) (map[string]any, error) {
 	if len(s.Params) == 0 {
 		return map[string]any{"type": "object"}, nil
@@ -326,17 +492,9 @@ func inferInput(s *model.Step, ctx map[string]any, defs map[string]any) (map[str
 	if len(defs) > 0 {
 		ctx["$defs"] = defs
 	}
-	props := make(map[string]any, len(s.Params))
-	required := make([]string, 0, len(s.Params))
-	for name, expr := range s.Params {
-		inferred, err := template.InferType(expr, ctx)
-		if err != nil {
-			return nil, fmt.Errorf("task %q param %q: %w", s.ID, name, err)
-		}
-		props[name] = inferred
-		required = append(required, name)
-	}
-	return map[string]any{"type": "object", "properties": props, "required": required}, nil
+	return inferObjectSchema(s.Params, ctx, func(name string) string {
+		return fmt.Sprintf("task %q param %q", s.ID, name)
+	})
 }
 
 func contextSchema(preceding []string, optional []string, tasks map[string]TaskSchemas, processInput map[string]any) map[string]any {

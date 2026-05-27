@@ -4,3 +4,12 @@
 export interface ProcessInput {
   ttl: number;
 }
+
+export interface RecursionInput {}
+
+export type RecursionOutput = {
+  id: string;
+  output: {
+    processes: number;
+  };
+}[];

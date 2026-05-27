@@ -38,7 +38,11 @@ if (result.status !== 0) {
   throw new Error(`gentschema: ${result.stderr.trim()}`);
 }
 
-type TaskEntry = { input?: object; output?: { $ref: string } };
+type TaskEntry = {
+  input?: object;
+  output?: { $ref: string };
+  call_type: string;
+};
 type SchemaFile = {
   process_input?: { $ref: string };
   tasks?: Record<string, TaskEntry>;
@@ -98,6 +102,9 @@ function buildServerFile(): string {
   for (const id of taskIds) {
     const pascal = toPascalCase(id);
     const task = tasks[id];
+    if (task.call_type !== "rest") {
+      continue;
+    }
     const inputType = task.input ? `${pascal}Input` : "Record<string, never>";
     const outputType = task.output
       ? `${pascal}Output`

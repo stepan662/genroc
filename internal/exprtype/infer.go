@@ -99,7 +99,7 @@ func inferMember(n *ast.MemberNode, ictx inferCtx) (map[string]any, error) {
 	case *ast.StringNode:
 		return lookupProperty(base, prop.Value, ictx.defs)
 	case *ast.IntegerNode:
-		return inferIndex(base)
+		return inferIndex(base, ictx.defs)
 	default:
 		return nil, ErrUnsupported{Detail: "computed member access [expr]"}
 	}
@@ -107,12 +107,59 @@ func inferMember(n *ast.MemberNode, ictx inferCtx) (map[string]any, error) {
 
 // inferIndex returns the nullable element type for a static index into an array schema.
 // The result is always nullable because the index may be out of bounds at runtime.
-func inferIndex(arraySchema map[string]any) (map[string]any, error) {
-	t, _ := arraySchema["type"].(string)
+// anyOf/oneOf schemas are handled variant-by-variant, mirroring lookupProperty.
+func inferIndex(arraySchema map[string]any, defs map[string]any) (map[string]any, error) {
+	resolved, err := deref(arraySchema, defs)
+	if err != nil {
+		return nil, err
+	}
+	// Collapse nullable wrappers ({type:[X,"null"]} and {oneOf:[X,null]}) before
+	// type-checking so that optional array outputs can be indexed.
+	resolved = stripNull(resolved)
+
+	for _, kw := range []string{"anyOf", "oneOf"} {
+		variants, ok := resolved[kw].([]any)
+		if !ok {
+			continue
+		}
+		results := make([]any, 0, len(variants))
+		hadNull := false
+		for _, v := range variants {
+			varSchema, ok := v.(map[string]any)
+			if !ok {
+				continue
+			}
+			if isNullType(varSchema) {
+				hadNull = true
+				continue
+			}
+			r, err := inferIndex(varSchema, defs)
+			if err != nil {
+				hadNull = true // non-array variant → null at runtime
+				continue
+			}
+			results = append(results, r)
+		}
+		if len(results) == 0 {
+			return typeSchema("null"), nil
+		}
+		var result map[string]any
+		if allSameSchema(results) {
+			result = results[0].(map[string]any)
+		} else {
+			result = map[string]any{kw: results}
+		}
+		if hadNull && !hasNullType(result) {
+			return withNull(result), nil
+		}
+		return result, nil
+	}
+
+	t, _ := resolved["type"].(string)
 	if t != "array" {
 		return nil, fmt.Errorf("index access [n] requires an array schema, got type %q", t)
 	}
-	items, _ := arraySchema["items"].(map[string]any)
+	items, _ := resolved["items"].(map[string]any)
 	if items == nil {
 		return map[string]any{}, nil // no items constraint → any element, including null
 	}
@@ -225,9 +272,9 @@ func isLiteralNode(n ast.Node) bool {
 	return false
 }
 
-// nodePath extracts a dot-notation path string from a simple member/identifier
-// chain, e.g. "input.amount" for MemberNode{IdentifierNode{"input"}, "amount"}.
-// Returns "" for any other node form.
+// nodePath extracts a path string from a simple member/identifier chain,
+// e.g. "input.amount" or "outputs.items[0].value".
+// Returns "" for any other node form (dynamic index, function call, etc.).
 func nodePath(node ast.Node) string {
 	if node == nil {
 		return ""
@@ -237,8 +284,11 @@ func nodePath(node ast.Node) string {
 		return n.Value
 	case *ast.MemberNode:
 		if base := nodePath(n.Node); base != "" {
-			if prop, ok := n.Property.(*ast.StringNode); ok {
+			switch prop := n.Property.(type) {
+			case *ast.StringNode:
 				return base + "." + prop.Value
+			case *ast.IntegerNode:
+				return fmt.Sprintf("%s[%d]", base, prop.Value)
 			}
 		}
 	}

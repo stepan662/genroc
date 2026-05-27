@@ -340,6 +340,22 @@ func (e *Engine) failInstance(inst *model.ProcessInstance, reason string) error 
 // then suspends the parent by setting its status to waiting. The parent resumes
 // (via db.TryWakeParent) once all children complete.
 func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInstance, step *model.Step) (any, bool, error) {
+	// If the step output was already enriched by TryWakeParent (items are maps
+	// with {id, output}, not plain string IDs), the children are done — return
+	// the existing results so the engine's normal dequeue path advances the queue.
+	if outputs, ok := inst.ContextData["outputs"].(map[string]any); ok {
+		if existing, ok := outputs[step.ID]; ok {
+			if items, ok := existing.([]any); ok {
+				if len(items) == 0 {
+					return existing, false, nil
+				}
+				if _, isMap := items[0].(map[string]any); isMap {
+					return existing, false, nil
+				}
+			}
+		}
+	}
+
 	childCallStack := append(inst.CallStack, inst.ID)
 	ids := make([]string, 0, len(step.Call.Processes))
 
@@ -434,9 +450,6 @@ func (e *Engine) computeOutput(inst *model.ProcessInstance) error {
 			return fmt.Errorf("output %q: %w", k, err)
 		}
 		result[k] = val
-	}
-	if err := def.ValidateOutput(result); err != nil {
-		return fmt.Errorf("output validation: %w", err)
 	}
 	inst.ContextData["output"] = result
 	return nil

@@ -46,8 +46,23 @@ export const processDefinition = {
               ttl: "{{input.ttl - 1}}",
             },
           },
+          {
+            name: "order-pipeline",
+            input: {
+              ttl: "{{input.ttl - 1}}",
+            },
+          },
         ],
+        child_output_schema: {
+          type: "object",
+          properties: { processes: { type: "number" } },
+          required: ["processes"],
+        },
       },
     },
   ],
+  output: {
+    processes:
+      "{{(outputs.recursion[0].output.processes != nil ? outputs.recursion[0].output.processes : 0) + (outputs.recursion[1].output.processes != nil ? outputs.recursion[1].output.processes : 0) + 1}}",
+  },
 } as const satisfies PutDefinitionBody;

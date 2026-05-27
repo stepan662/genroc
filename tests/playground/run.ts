@@ -7,7 +7,7 @@
 
 import { processDefinition } from "./process.ts";
 import type { ProcessInput } from "./generated/types.ts";
-import { createClientTyped } from "../helpers/client.ts";
+import { createClientTyped, waitForInstance } from "../helpers/client.ts";
 
 const client = createClientTyped({ baseUrl: "http://localhost:8888" });
 
@@ -38,26 +38,26 @@ async function startInstance() {
   // ─── 2. start an instance ──────────────────────────────────────────────────
 
   const input: ProcessInput = {
-    ttl: 5,
+    ttl: 13,
   };
 
-  const { error: startErr } = await client.POST("/instances", {
+  const { data: startData, error: startErr } = await client.POST("/instances", {
     body: { process: processDefinition.name, input },
   });
   if (startErr) throw new Error(`start failed: ${JSON.stringify(startErr)}`);
 
-  // const id = startData!.id;
+  const id = startData!.id;
 
   // ─── 3. wait for completion ────────────────────────────────────────────────
 
-  // const status = await waitForInstance(id, 15_000);
+  const status = await waitForInstance(id, Infinity);
 
-  // const { data } = await client.GET("/instances/{id}", {
-  //   params: { path: { id } },
-  // });
-  // if (data?.error) {
-  //   console.log("Error:  ", data.error);
-  // } else {
-  //   console.log(`finished in ${Date.now() - start_time}`);
-  // }
+  const { data } = await client.GET("/instances/{id}", {
+    params: { path: { id } },
+  });
+  if (data?.error) {
+    console.log(status, data?.error);
+  } else {
+    console.log(status, (data?.context as any).output?.processes);
+  }
 }

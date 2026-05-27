@@ -191,8 +191,13 @@ func TestEval_Index_OutOfBounds_ReturnsNil(t *testing.T) {
 	assertEq(t, evalOK(t, "tags[5]", c), nil)
 }
 
-func TestEval_Index_NonSliceFails(t *testing.T) {
-	evalErr(t, "input.order_id[0]", richCtx)
+func TestEval_Index_NonSlice_ReturnsNil(t *testing.T) {
+	assertEq(t, evalOK(t, "input.order_id[0]", richCtx), nil)
+}
+
+func TestEval_Index_NilSubject_ReturnsNil(t *testing.T) {
+	c := map[string]any{"arr": nil}
+	assertEq(t, evalOK(t, "arr[0]", c), nil)
 }
 
 // --- Unsupported ---

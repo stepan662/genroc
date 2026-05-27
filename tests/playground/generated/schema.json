@@ -4,6 +4,28 @@
   "process_input": {
     "$ref": "#/$defs/input"
   },
+  "process_output": {
+    "properties": {
+      "processes": {
+        "type": "number"
+      }
+    },
+    "required": [
+      "processes"
+    ],
+    "type": "object"
+  },
+  "tasks": {
+    "recursion": {
+      "call_type": "child_process",
+      "input": {
+        "type": "object"
+      },
+      "output": {
+        "$ref": "#/$defs/recursion_output"
+      }
+    }
+  },
   "$defs": {
     "input": {
       "properties": {
@@ -15,6 +37,32 @@
         "ttl"
       ],
       "type": "object"
+    },
+    "recursion_output": {
+      "items": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "output": {
+            "properties": {
+              "processes": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "processes"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "output"
+        ],
+        "type": "object"
+      },
+      "type": "array"
     }
   }
 }

@@ -129,6 +129,85 @@ func TestInfer_Array_DynamicIndexUnsupported(t *testing.T) {
 	assertUnsupported(t, inferErr(t, "input.tags[input.counts[0]]", c, ""))
 }
 
+// Indexing a nullable array (type-array form: {"type":["array","null"]}) returns
+// the nullable item type — the main regression target for the optional-output fix.
+func TestInfer_Array_Index_NullableTypeArrayForm(t *testing.T) {
+	c := ctx(t, `{
+		"type": "object",
+		"properties": {
+			"tags": { "type": ["array", "null"], "items": { "type": "string" } }
+		},
+		"required": ["tags"]
+	}`)
+	assertSchema(t, infer(t, "tags[0]", c), `{"type":["string","null"]}`)
+}
+
+// Indexing an optional array field (not in "required") works: lookupProperty
+// wraps it in withNull, producing the type-array form, and inferIndex handles it.
+func TestInfer_Array_Index_OptionalField(t *testing.T) {
+	c := ctx(t, `{
+		"type": "object",
+		"properties": {
+			"outputs": {
+				"type": "object",
+				"properties": {
+					"results": {
+						"type": "array",
+						"items": {
+							"type": "object",
+							"properties": { "score": { "type": "number" } },
+							"required": ["score"]
+						}
+					}
+				}
+			}
+		},
+		"required": ["outputs"]
+	}`)
+	assertSchema(t, infer(t, "outputs.results[0].score", c), `{"type":["number","null"]}`)
+}
+
+// optionalArrayCtxJSON is shared by the null-narrowing tests below.
+// "results" is optional (not in required) so index access returns nullable items.
+const optionalArrayCtxJSON = `{
+	"type": "object",
+	"properties": {
+		"outputs": {
+			"type": "object",
+			"properties": {
+				"results": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": { "score": { "type": "number" } },
+						"required": ["score"]
+					}
+				}
+			}
+		}
+	},
+	"required": ["outputs"]
+}`
+
+// x[0].score is nullable; "!= nil" narrows the then-branch to non-nullable number.
+// The else literal 0 is integer, so the ternary is oneOf[number, integer].
+// The key assertion is that the result is NOT nullable — narrowing worked.
+func TestInfer_Array_Index_NullNarrowing_TernaryReturnsNumber(t *testing.T) {
+	c := ctx(t, optionalArrayCtxJSON)
+	assertSchema(t, infer(t, "outputs.results[0].score != nil ? outputs.results[0].score : 0", c), `{
+		"oneOf": [{"type":"number"}, {"type":"integer"}]
+	}`)
+}
+
+// Adding two null-coalesced index expressions should produce a number.
+// This is the direct regression target: nodePath must include [n] so that
+// narrowCondition can guard paths like "outputs.results[0].score".
+func TestInfer_Array_Index_NullNarrowing_ArithmeticOnTwoElements(t *testing.T) {
+	c := ctx(t, optionalArrayCtxJSON)
+	expr := "(outputs.results[0].score != nil ? outputs.results[0].score : 0) + (outputs.results[1].score != nil ? outputs.results[1].score : 0)"
+	assertSchema(t, infer(t, expr, c), `{"type":"number"}`)
+}
+
 // --- Already-nullable array combined with nil stays the same.
 func TestInfer_Array_AlreadyNullableStable(t *testing.T) {
 	c := ctx(t, `{

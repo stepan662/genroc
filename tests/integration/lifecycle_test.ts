@@ -19,7 +19,7 @@ test("lifecycle — task step completes when service returns ok", async () => {
         {
           type: "task" as const,
           id: "call",
-          call: { type: "rest" as const, endpoint: `http://localhost:${mock.port}/action` },
+          call: { type: "rest" as const, endpoint: `http://localhost:${mock.port}/action`, output_schema: { type: "object" } },
           timeout_ms: 2000,
           retries: 0,
         },
@@ -101,14 +101,14 @@ test("lifecycle — conditional routes to correct branch", async () => {
         },
         {
           id: "then_step",
-          call: { type: "rest" as const, endpoint: `http://localhost:${thenMock.port}/action` },
+          call: { type: "rest" as const, endpoint: `http://localhost:${thenMock.port}/action`, output_schema: { type: "object" } },
           timeout_ms: 1000,
           retries: 0,
           switch: { default: "$end" },
         },
         {
           id: "else_step",
-          call: { type: "rest" as const, endpoint: `http://localhost:${elseMock.port}/action` },
+          call: { type: "rest" as const, endpoint: `http://localhost:${elseMock.port}/action`, output_schema: { type: "object" } },
           timeout_ms: 1000,
           retries: 0,
           switch: { default: "$end" },
@@ -163,14 +163,17 @@ test("lifecycle — task fails when output violates output_schema", async () => 
       steps: [
         {
           id: "charge",
-          call: { type: "rest" as const, endpoint: `http://localhost:${mock.port}/action` },
+          call: {
+            type: "rest" as const,
+            endpoint: `http://localhost:${mock.port}/action`,
+            output_schema: {
+              type: "object",
+              properties: { charged: { type: "boolean" } },
+              required: ["charged"],
+            },
+          },
           timeout_ms: 2000,
           retries: 0,
-          output_schema: {
-            type: "object",
-            properties: { charged: { type: "boolean" } },
-            required: ["charged"],
-          },
         },
       ],
     },
