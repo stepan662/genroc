@@ -9,6 +9,7 @@ const (
 	StatusRunning   Status = "running"
 	StatusCompleted Status = "completed"
 	StatusFailed    Status = "failed"
+	StatusWaiting   Status = "waiting"
 )
 
 // ProcessInstance is a single running execution of a ProcessDefinition.
@@ -25,6 +26,14 @@ type ProcessInstance struct {
 
 	// ContextData is the accumulated key/value state passed between steps.
 	ContextData map[string]any
+
+	// ParentID is set when this instance was started by a child_process step.
+	// Empty string means this is a root instance.
+	ParentID string
+
+	// CallStack is the ordered list of ancestor instance IDs (root first).
+	// Used for O(1) ancestor lookup during error cascade.
+	CallStack []string
 
 	RetryCount    int
 	NextRetryAt   *time.Time

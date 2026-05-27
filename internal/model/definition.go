@@ -22,13 +22,13 @@ const GotoEnd = "$end"
 type CallType string
 
 const (
-	CallTypeREST   CallType = "rest"
-	CallTypeScript CallType = "script"
-	CallTypeSpawn  CallType = "spawn"
+	CallTypeREST         CallType = "rest"
+	CallTypeScript       CallType = "script"
+	CallTypeChildProcess CallType = "child_process"
 )
 
-// SpawnEntry describes a single process to spawn within a "spawn" call.
-type SpawnEntry struct {
+// ChildProcessEntry describes a single process to run within a "child_process" call.
+type ChildProcessEntry struct {
 	Name    string            `json:"name"`
 	Version int               `json:"version,omitempty"` // 0 = latest
 	Input   map[string]string `json:"input,omitempty"`   // expression map, evaluated like Step.Params
@@ -43,7 +43,7 @@ type Call struct {
 	Endpoint  string            `json:"endpoint,omitempty"`  // rest
 	Headers   map[string]string `json:"headers,omitempty"`   // rest, values are expressions
 	Exec      string            `json:"exec,omitempty"`      // script
-	Processes []SpawnEntry      `json:"processes,omitempty"` // spawn
+	Processes []ChildProcessEntry `json:"processes,omitempty"` // child_process
 }
 
 // JSONSchemaBytes returns the JSON Schema for Call as a discriminated union
@@ -73,7 +73,7 @@ func (Call) JSONSchemaBytes() ([]byte, error) {
 			{
 				"type": "object",
 				"properties": {
-					"type": {"type": "string", "const": "spawn"},
+					"type": {"type": "string", "const": "child_process"},
 					"processes": {
 						"type": "array",
 						"items": {
@@ -204,10 +204,12 @@ type Step struct {
 // ProcessDefinition is the immutable versioned blueprint for a process.
 // Once published, a version must never be mutated — create a new version instead.
 type ProcessDefinition struct {
-	Name        string         `json:"name"                 validate:"required"`
-	Version     int            `json:"version"              validate:"min=1"`
-	Steps       []*Step        `json:"steps"                validate:"required,min=1,dive"`
-	InputSchema map[string]any `json:"input_schema,omitempty"`
+	Name        string            `json:"name"                 validate:"required"`
+	Version     int               `json:"version"              validate:"min=1"`
+	Steps       []*Step           `json:"steps"                validate:"required,min=1,dive"`
+	InputSchema map[string]any    `json:"input_schema,omitempty"`
+	Output      map[string]string `json:"output,omitempty"`        // expression map evaluated at completion, like Step.Params
+	OutputSchema map[string]any   `json:"output_schema,omitempty"` // JSON Schema validating the computed output
 }
 
 // Normalize normalizes InputSchema and all step OutputSchemas in-place using the
@@ -219,6 +221,13 @@ func (d *ProcessDefinition) Normalize() error {
 			return fmt.Errorf("input_schema: %w", err)
 		}
 		d.InputSchema = normalized
+	}
+	if len(d.OutputSchema) > 0 {
+		normalized, err := schema.Normalize(d.OutputSchema)
+		if err != nil {
+			return fmt.Errorf("output_schema: %w", err)
+		}
+		d.OutputSchema = normalized
 	}
 	for _, s := range d.Steps {
 		if len(s.OutputSchema) > 0 {
@@ -240,6 +249,9 @@ func (d *ProcessDefinition) Validate() error {
 		return err
 	}
 	if err := checkSchemaDoc("input_schema", d.InputSchema); err != nil {
+		return err
+	}
+	if err := checkSchemaDoc("output_schema", d.OutputSchema); err != nil {
 		return err
 	}
 	stepIDs := make(map[string]struct{}, len(d.Steps))
@@ -271,7 +283,7 @@ func validateStep(s *Step, stepIDs map[string]struct{}) error {
 			if s.Call.Exec == "" {
 				return fmt.Errorf("step %q: call.exec is required for type %q", s.ID, s.Call.Type)
 			}
-		case CallTypeSpawn:
+		case CallTypeChildProcess:
 			if len(s.Call.Processes) == 0 {
 				return fmt.Errorf("step %q: call.processes is required for type %q", s.ID, s.Call.Type)
 			}
@@ -281,7 +293,7 @@ func validateStep(s *Step, stepIDs map[string]struct{}) error {
 				}
 			}
 		default:
-			return fmt.Errorf("step %q: call.type must be one of: rest, script, spawn", s.ID)
+			return fmt.Errorf("step %q: call.type must be one of: rest, script, child_process", s.ID)
 		}
 	}
 	if hasSwitch {
@@ -313,6 +325,11 @@ func checkSchemaDoc(field string, schema map[string]any) error {
 // ValidateInput checks input data against InputSchema. No-op if InputSchema is nil.
 func (d *ProcessDefinition) ValidateInput(input any) error {
 	return validateSchema(d.InputSchema, input)
+}
+
+// ValidateOutput checks output data against OutputSchema. No-op if OutputSchema is nil.
+func (d *ProcessDefinition) ValidateOutput(output any) error {
+	return validateSchema(d.OutputSchema, output)
 }
 
 // ValidateOutput checks output data against OutputSchema. No-op if OutputSchema is nil.

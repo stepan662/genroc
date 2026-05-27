@@ -99,6 +99,8 @@ type instanceRow struct {
 	ProcessVersion int        `bun:"process_version,notnull"`
 	StepQueue      string     `bun:"step_queue,notnull"`
 	ContextData    string     `bun:"context_data,notnull"`
+	ParentID       string     `bun:"parent_id,notnull"`
+	CallStack      string     `bun:"call_stack,notnull"`
 	RetryCount     int        `bun:"retry_count,notnull"`
 	NextRetryAt    *time.Time `bun:"next_retry_at"`
 	Status         string     `bun:"status,notnull"`
@@ -190,6 +192,10 @@ func (db *DB) SaveInstance(inst *model.ProcessInstance) error {
 	if err != nil {
 		return err
 	}
+	callStack, err := json.Marshal(inst.CallStack)
+	if err != nil {
+		return err
+	}
 	now := time.Now().UTC()
 	row := &instanceRow{
 		ID:             inst.ID,
@@ -197,6 +203,8 @@ func (db *DB) SaveInstance(inst *model.ProcessInstance) error {
 		ProcessVersion: inst.ProcessVersion,
 		StepQueue:      string(queue),
 		ContextData:    string(ctx),
+		ParentID:       inst.ParentID,
+		CallStack:      string(callStack),
 		RetryCount:     inst.RetryCount,
 		NextRetryAt:    inst.NextRetryAt,
 		Status:         string(inst.Status),
@@ -303,6 +311,150 @@ func (db *DB) ListInstances(status string) ([]*model.ProcessInstance, error) {
 	return toInstances(rows)
 }
 
+// TryWakeParent is called when a child instance finishes (completed or failed).
+// It checks whether all siblings are done and, if so, either cascades failure to
+// all waiting ancestors in one query or wakes the direct parent with merged outputs.
+//
+// spawnStepID and spawnOrder are derived from the child's own context
+// (_spawn_step_id key) and the parent's stored context (the placeholder ID list).
+func (db *DB) TryWakeParent(child *model.ProcessInstance) error {
+	ctx := context.Background()
+
+	// Derive the spawn step ID from the child's own context.
+	spawnStepID, _ := child.ContextData["_spawn_step_id"].(string)
+	if spawnStepID == "" {
+		return fmt.Errorf("child %q missing _spawn_step_id in context", child.ID)
+	}
+
+	// Count siblings still in progress.
+	var remaining int
+	err := db.bun.NewSelect().
+		TableExpr("process_instances").
+		ColumnExpr("COUNT(*)").
+		Where("parent_id = ?", child.ParentID).
+		Where("status NOT IN ('completed', 'failed')").
+		Scan(ctx, &remaining)
+	if err != nil {
+		return fmt.Errorf("count siblings: %w", err)
+	}
+	if remaining > 0 {
+		return nil
+	}
+
+	// All siblings done — read their final state.
+	var siblingRows []instanceRow
+	if err := db.bun.NewSelect().
+		Model(&siblingRows).
+		Where("parent_id = ?", child.ParentID).
+		Scan(ctx); err != nil {
+		return fmt.Errorf("read siblings: %w", err)
+	}
+
+	// Index siblings by ID for ordered output building.
+	siblingByID := make(map[string]instanceRow, len(siblingRows))
+	for _, s := range siblingRows {
+		siblingByID[s.ID] = s
+	}
+
+	// Check for any failure.
+	var failedID, failedErr string
+	for _, s := range siblingRows {
+		if s.Status == string(model.StatusFailed) {
+			failedID, failedErr = s.ID, s.Error
+			break
+		}
+	}
+
+	if failedID != "" {
+		// Cascade failure to all waiting ancestors in one UPDATE.
+		reason := fmt.Sprintf("child process %q failed: %s", failedID, failedErr)
+		ancestors := child.CallStack
+		if len(ancestors) == 0 {
+			return nil
+		}
+		_, err := db.bun.NewUpdate().
+			TableExpr("process_instances").
+			Set("status = ?", string(model.StatusFailed)).
+			Set("error = ?", reason).
+			Set("updated_at = ?", time.Now().UTC()).
+			Where("id IN (?)", bun.In(ancestors)).
+			Where("status = ?", string(model.StatusWaiting)).
+			Exec(ctx)
+		return err
+	}
+
+	// All succeeded — fetch the parent to get the spawn order and patch its context.
+	var parentRow instanceRow
+	if err := db.bun.NewSelect().
+		Model(&parentRow).
+		Where("id = ?", child.ParentID).
+		Scan(ctx); err != nil {
+		return fmt.Errorf("fetch parent: %w", err)
+	}
+	var parentCtx map[string]any
+	if err := json.Unmarshal([]byte(parentRow.ContextData), &parentCtx); err != nil {
+		return fmt.Errorf("unmarshal parent context: %w", err)
+	}
+
+	// Recover spawn order from the placeholder stored at spawn time.
+	var spawnOrder []string
+	if outputs, ok := parentCtx["outputs"].(map[string]any); ok {
+		switch v := outputs[spawnStepID].(type) {
+		case []string:
+			spawnOrder = v
+		case []any:
+			for _, item := range v {
+				if s, ok := item.(string); ok {
+					spawnOrder = append(spawnOrder, s)
+				}
+			}
+		}
+	}
+
+	// Build the step output array in spawn order.
+	type childResult struct {
+		ID     string         `json:"id"`
+		Output map[string]any `json:"output"`
+	}
+	results := make([]childResult, 0, len(spawnOrder))
+	for _, id := range spawnOrder {
+		row, ok := siblingByID[id]
+		if !ok {
+			continue
+		}
+		var ctxData map[string]any
+		if err := json.Unmarshal([]byte(row.ContextData), &ctxData); err != nil {
+			return fmt.Errorf("unmarshal child context: %w", err)
+		}
+		var output map[string]any
+		if o, ok := ctxData["output"]; ok {
+			output, _ = o.(map[string]any)
+		}
+		results = append(results, childResult{ID: id, Output: output})
+	}
+
+	if parentCtx["outputs"] == nil {
+		parentCtx["outputs"] = map[string]any{}
+	}
+	parentCtx["outputs"].(map[string]any)[spawnStepID] = results
+
+	patchedCtx, err := json.Marshal(parentCtx)
+	if err != nil {
+		return fmt.Errorf("marshal parent context: %w", err)
+	}
+
+	// WHERE status='waiting' makes this idempotent if two siblings race here.
+	_, err = db.bun.NewUpdate().
+		TableExpr("process_instances").
+		Set("status = ?", string(model.StatusRunning)).
+		Set("context_data = ?", string(patchedCtx)).
+		Set("updated_at = ?", time.Now().UTC()).
+		Where("id = ?", child.ParentID).
+		Where("status = ?", string(model.StatusWaiting)).
+		Exec(ctx)
+	return err
+}
+
 // ── row → model conversion ────────────────────────────────────────────────────
 
 func toInstance(r instanceRow) (*model.ProcessInstance, error) {
@@ -310,6 +462,7 @@ func toInstance(r instanceRow) (*model.ProcessInstance, error) {
 		ID:             r.ID,
 		ProcessName:    r.ProcessName,
 		ProcessVersion: r.ProcessVersion,
+		ParentID:       r.ParentID,
 		RetryCount:     r.RetryCount,
 		NextRetryAt:    r.NextRetryAt,
 		Status:         model.Status(r.Status),
@@ -324,6 +477,9 @@ func toInstance(r instanceRow) (*model.ProcessInstance, error) {
 	}
 	if err := json.Unmarshal([]byte(r.ContextData), &inst.ContextData); err != nil {
 		return nil, fmt.Errorf("unmarshal context_data: %w", err)
+	}
+	if err := json.Unmarshal([]byte(r.CallStack), &inst.CallStack); err != nil {
+		return nil, fmt.Errorf("unmarshal call_stack: %w", err)
 	}
 	return inst, nil
 }
