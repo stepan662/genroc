@@ -53,6 +53,11 @@ func (s *Server) ListenHTTP(ctx context.Context, addr string) error {
 		w.Write(buildSpec())
 	})
 
+	mux.HandleFunc("GET /process-schema.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(buildProcessDefinitionSchema())
+	})
+
 	mux.HandleFunc("GET /definitions/{name}/docs", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
 		specURL := "/definitions/" + name + "/openapi.json"

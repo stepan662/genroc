@@ -1,11 +1,14 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
 	"sync"
+
+	"gent/internal/model"
 
 	"github.com/swaggest/jsonschema-go"
 	"github.com/swaggest/openapi-go"
@@ -15,6 +18,86 @@ import (
 // Spec returns the OpenAPI 3.0 spec as JSON, built from the action registry.
 // Can be called without starting the server — useful for generating static spec files.
 func Spec() []byte { return buildSpec() }
+
+var (
+	processSchemaOnce  sync.Once
+	processSchemaBytes []byte
+)
+
+func buildProcessDefinitionSchema() []byte {
+	processSchemaOnce.Do(func() {
+		r := jsonschema.Reflector{}
+		r.DefaultOptions = append(r.DefaultOptions,
+			jsonschema.InterceptProp(func(params jsonschema.InterceptPropParams) error {
+				if !params.Processed || params.Field.Type == nil || params.ParentSchema == nil {
+					return nil
+				}
+				tag := params.Field.Tag.Get("json")
+				if strings.Contains(tag, "omitempty") || params.Field.Type.Kind() == reflect.Ptr {
+					return nil
+				}
+				for _, r := range params.ParentSchema.Required {
+					if r == params.Name {
+						return nil
+					}
+				}
+				params.ParentSchema.Required = append(params.ParentSchema.Required, params.Name)
+				return nil
+			}),
+			jsonschema.InterceptProp(func(params jsonschema.InterceptPropParams) error {
+				if !params.Processed || params.PropertySchema == nil {
+					return nil
+				}
+				if desc := params.Field.Tag.Get("description"); desc != "" {
+					params.PropertySchema.WithDescription(desc)
+				}
+				return nil
+			}),
+		)
+		s, err := r.Reflect(model.ProcessDefinition{})
+		if err != nil {
+			panic(fmt.Sprintf("processDefinitionSchema: %v", err))
+		}
+		b, _ := json.Marshal(s)
+		processSchemaBytes = upgradeToDraft201909(b)
+	})
+	return processSchemaBytes
+}
+
+// upgradeToDraft201909 rewrites a swaggest-generated schema to JSON Schema
+// draft 2019-09 so that $ref and description can coexist on the same node
+// (in draft-07, $ref silently swallows all sibling keywords).
+func upgradeToDraft201909(b []byte) []byte {
+	var root map[string]any
+	if err := json.Unmarshal(b, &root); err != nil {
+		return b
+	}
+	if defs, ok := root["definitions"]; ok {
+		root["$defs"] = defs
+		delete(root, "definitions")
+	}
+	root["$schema"] = "https://json-schema.org/draft/2019-09/schema"
+	// Rewrite all $ref values from #/definitions/ to #/$defs/.
+	rewriteRefs(root)
+	out, _ := json.Marshal(root)
+	return out
+}
+
+func rewriteRefs(v any) {
+	switch node := v.(type) {
+	case map[string]any:
+		if ref, ok := node["$ref"].(string); ok {
+			node["$ref"] = strings.ReplaceAll(ref, "#/definitions/", "#/$defs/")
+		}
+		for _, child := range node {
+			rewriteRefs(child)
+		}
+	case []any:
+		for _, child := range node {
+			rewriteRefs(child)
+		}
+	}
+}
 
 var (
 	specOnce  sync.Once

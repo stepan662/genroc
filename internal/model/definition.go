@@ -28,9 +28,9 @@ const (
 
 // ChildProcessEntry describes a single process to run within a "child_process" call.
 type ChildProcessEntry struct {
-	Name    string            `json:"name"`
-	Version int               `json:"version,omitempty"` // 0 = latest
-	Input   map[string]string `json:"input,omitempty"`   // expression map, evaluated like Step.Params
+	Name    string            `json:"name"            description:"Name of the child process to invoke."`
+	Version int               `json:"version,omitempty" description:"Version to run; 0 means latest published version."`
+	Input   map[string]string `json:"input,omitempty" description:"Expression map evaluated against the current context to build the child's input payload."`
 }
 
 // Call describes how to invoke a step's action. It is a discriminated union on Type.
@@ -61,44 +61,48 @@ func (Call) JSONSchemaBytes() ([]byte, error) {
 		"oneOf": [
 			{
 				"type": "object",
+				"description": "HTTP call — sends a request to an external endpoint.",
 				"properties": {
 					"type":          {"type": "string", "const": "rest"},
-					"endpoint":      {"type": "string"},
-					"headers":       {"type": "object", "additionalProperties": {"type": "string"}},
-					"output_schema": {"type": "object", "additionalProperties": true}
+					"endpoint":      {"type": "string", "description": "URL of the HTTP endpoint to call."},
+					"headers":       {"type": "object", "additionalProperties": {"type": "string"}, "description": "HTTP headers to include. Values are expressions evaluated against the current context."},
+					"output_schema": {"type": "object", "additionalProperties": true, "description": "JSON Schema to validate and persist the response body. Without it the response is available only as 'self' in this step's switch."}
 				},
 				"required": ["type", "endpoint"],
 				"additionalProperties": false
 			},
 			{
 				"type": "object",
+				"description": "Script call — executes a shell command or inline script.",
 				"properties": {
 					"type":          {"type": "string", "const": "script"},
-					"exec":          {"type": "string"},
-					"output_schema": {"type": "object", "additionalProperties": true}
+					"exec":          {"type": "string", "description": "Shell command or script body to execute."},
+					"output_schema": {"type": "object", "additionalProperties": true, "description": "JSON Schema to validate and persist stdout. Without it the output is available only as 'self' in this step's switch."}
 				},
 				"required": ["type", "exec"],
 				"additionalProperties": false
 			},
 			{
 				"type": "object",
+				"description": "Child-process call — runs one or more named processes as sub-instances.",
 				"properties": {
 					"type": {"type": "string", "const": "child_process"},
 					"processes": {
 						"type": "array",
+						"description": "List of child processes to run. All run concurrently; the step waits for all to complete.",
 						"items": {
 							"type": "object",
 							"properties": {
-								"name":    {"type": "string"},
-								"version": {"type": "integer"},
-								"input":   {"type": "object", "additionalProperties": {"type": "string"}}
+								"name":    {"type": "string", "description": "Name of the child process to invoke."},
+								"version": {"type": "integer", "description": "Version to run; 0 means latest published version."},
+								"input":   {"type": "object", "additionalProperties": {"type": "string"}, "description": "Expression map evaluated against the current context to build the child's input payload."}
 							},
 							"required": ["name"],
 							"additionalProperties": false
 						},
 						"minItems": 1
 					},
-					"child_output_schema": {"type": "object", "additionalProperties": true}
+					"child_output_schema": {"type": "object", "additionalProperties": true, "description": "JSON Schema applied to each child's computed output before the parent resumes."}
 				},
 				"required": ["type", "processes"],
 				"additionalProperties": false
@@ -169,7 +173,7 @@ func (s *SwitchMap) UnmarshalJSON(data []byte) error {
 // JSONSchemaBytes returns the JSON Schema for SwitchMap so that OpenAPI
 // reflection produces the correct schema for its wire format.
 func (SwitchMap) JSONSchemaBytes() ([]byte, error) {
-	return []byte(`{"type":"array","items":{"type":"object","properties":{"when":{"type":"string"},"goto":{"type":"string"}},"required":["when","goto"],"additionalProperties":false}}`), nil
+	return []byte(`{"type":"array","description":"Ordered routing rules. Cases are evaluated in order; first match wins. The last case must use \"default\" as its 'when' value. Use \"$end\" as 'goto' to terminate the instance.","items":{"type":"object","properties":{"when":{"type":"string","description":"Expression evaluated against the context (and 'self' for this step's output). Use \"default\" to match unconditionally."},"goto":{"type":"string","description":"ID of the step to jump to, prefixed with '#' (e.g. \"#my-step\"), or \"$end\" to complete the instance."}},"required":["when","goto"],"additionalProperties":false}}`), nil
 }
 
 // Step is a single unit of work in a process definition.
@@ -188,22 +192,22 @@ func (SwitchMap) JSONSchemaBytes() ([]byte, error) {
 // Switch expressions have access to the full context and to this step's own action
 // output under the name "self".
 type Step struct {
-	ID        string            `json:"id"           validate:"required"`
-	Call      *Call             `json:"call,omitempty"`
-	TimeoutMs int               `json:"timeout_ms,omitempty"`
-	Retries   int               `json:"retries,omitempty"`
-	Params    map[string]string `json:"params,omitempty"`
-	Switch    SwitchMap         `json:"switch,omitempty"`
+	ID        string            `json:"id"           validate:"required" description:"Unique step identifier within this process. Used as a goto target in switch cases."`
+	Call      *Call             `json:"call,omitempty"                  description:"Describes the action to perform. Omit for switch-only (routing) steps."`
+	TimeoutMs int               `json:"timeout_ms,omitempty"            description:"Maximum execution time in milliseconds. 0 means no timeout."`
+	Retries   int               `json:"retries,omitempty"               description:"Number of times to retry the call on failure before marking the step failed."`
+	Params    map[string]string `json:"params,omitempty"                description:"Expression map evaluated against the current context to build the call's input. Keys become input field names."`
+	Switch    SwitchMap         `json:"switch,omitempty"                description:"Ordered routing rules evaluated after the call. Last case must be 'default'. Required if the step has no call or needs non-linear flow."`
 }
 
 // ProcessDefinition is the immutable versioned blueprint for a process.
 // Once published, a version must never be mutated — create a new version instead.
 type ProcessDefinition struct {
-	Name        string            `json:"name"                 validate:"required"`
-	Version     int               `json:"version"              validate:"min=1"`
-	Steps       []*Step           `json:"steps"                validate:"required,min=1,dive"`
-	InputSchema map[string]any    `json:"input_schema,omitempty"`
-	Output map[string]string `json:"output,omitempty"` // expression map evaluated at completion, like Step.Params
+	Name        string            `json:"name"                 validate:"required" description:"Unique process identifier."`
+	Version     int               `json:"version"              validate:"min=1"    description:"Version number, must be ≥ 1. Once published, a version must never be mutated — create a new version instead."`
+	Steps       []*Step           `json:"steps"                validate:"required,min=1,dive" description:"Ordered list of execution steps. Control advances linearly unless a switch case redirects."`
+	InputSchema map[string]any    `json:"input_schema,omitempty"                              description:"JSON Schema used to validate the input payload when starting a new instance."`
+	Output      map[string]string `json:"output,omitempty"                                    description:"Expression map evaluated at completion to produce the process output. Keys become output field names."`
 }
 
 // Normalize normalizes InputSchema and all step OutputSchemas in-place using the
