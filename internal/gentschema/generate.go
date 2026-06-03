@@ -49,12 +49,13 @@ func Generate(def *model.ProcessDefinition) (SchemaFile, error) {
 	}
 	collectNamedOutputs(def.Steps, named)
 
+	var defs map[string]any
 	if len(named) > 0 {
-		defs, err := flattenNamedSchemas(named)
+		var err error
+		defs, err = flattenNamedSchemas(named)
 		if err != nil {
 			return SchemaFile{}, err
 		}
-		result.Defs = defs
 	}
 
 	if named["input"] != nil {
@@ -63,18 +64,40 @@ func Generate(def *model.ProcessDefinition) (SchemaFile, error) {
 
 	tasks := make(map[string]TaskSchemas)
 	collectTaskRefs(def.Steps, tasks)
-	if _, err := buildInputs(def.Steps, nil, tasks, result.ProcessInput, result.Defs); err != nil {
+	if _, err := buildInputs(def.Steps, nil, tasks, result.ProcessInput, defs); err != nil {
 		return SchemaFile{}, err
 	}
-	if len(tasks) > 0 {
-		result.Tasks = tasks
+
+	if defs == nil {
+		defs = make(map[string]any)
 	}
+
+	for _, s := range def.Steps {
+		if ts, ok := tasks[s.ID]; ok {
+			if _, hasProps := ts.Input["properties"]; hasProps {
+				name := uniqueDefName(s.ID+"_input", defs)
+				defs[name] = ts.Input
+				ts.Input = schemaRef(name)
+				tasks[s.ID] = ts
+			}
+		}
+	}
+
 	if len(def.Output) > 0 {
-		outputSchema, err := inferProcessOutput(def, tasks, result.ProcessInput, result.Defs)
+		outputSchema, err := inferProcessOutput(def, tasks, result.ProcessInput, defs)
 		if err != nil {
 			return SchemaFile{}, err
 		}
-		result.ProcessOutput = outputSchema
+		name := uniqueDefName("output", defs)
+		defs[name] = outputSchema
+		result.ProcessOutput = schemaRef(name)
+	}
+
+	if len(tasks) > 0 {
+		result.Tasks = tasks
+	}
+	if len(defs) > 0 {
+		result.Defs = defs
 	}
 	return result, nil
 }
@@ -593,6 +616,14 @@ func schemaTypeName(s map[string]any) string {
 		return strings.Join(parts, "|")
 	}
 	return "unknown"
+}
+
+func uniqueDefName(base string, defs map[string]any) string {
+	name := base
+	for i := 1; defs[name] != nil; i++ {
+		name = fmt.Sprintf("%s_%d", base, i)
+	}
+	return name
 }
 
 func schemaRef(name string) map[string]any {

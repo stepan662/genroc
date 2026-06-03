@@ -311,17 +311,30 @@ func toFloat(v any) (float64, bool) {
 }
 
 func stringSet(v any) map[string]bool {
-	arr, _ := v.([]any)
-	if len(arr) == 0 {
-		return nil
-	}
-	out := make(map[string]bool, len(arr))
-	for _, item := range arr {
-		if s, ok := item.(string); ok {
+	// Handle both []any (from json.Unmarshal) and []string (from programmatic schema construction).
+	switch arr := v.(type) {
+	case []any:
+		if len(arr) == 0 {
+			return nil
+		}
+		out := make(map[string]bool, len(arr))
+		for _, item := range arr {
+			if s, ok := item.(string); ok {
+				out[s] = true
+			}
+		}
+		return out
+	case []string:
+		if len(arr) == 0 {
+			return nil
+		}
+		out := make(map[string]bool, len(arr))
+		for _, s := range arr {
 			out[s] = true
 		}
+		return out
 	}
-	return out
+	return nil
 }
 
 // derefSubset resolves a $ref in s against defs, returning the target schema.

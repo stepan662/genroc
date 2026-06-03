@@ -101,6 +101,9 @@ func (h *Handlers) putDefinition(raw json.RawMessage) Reply {
 	if _, err := gentschema.Generate(&req.ProcessDefinition); err != nil {
 		return errReply(err)
 	}
+	if err := gentschema.ValidateChildProcessRefs(&req.ProcessDefinition, h.db); err != nil {
+		return errReply(err)
+	}
 	if err := h.db.SaveDefinition(&req.ProcessDefinition); err != nil {
 		return errReply(fmt.Errorf("save: %w", err))
 	}

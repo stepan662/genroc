@@ -279,7 +279,8 @@ func TestGenerate_Input_Params(t *testing.T) {
 			}
 		}]
 	}`)
-	input := out.Tasks["charge"].Input
+	assertJSON(t, out.Tasks["charge"].Input, `{"$ref": "#/$defs/charge_input"}`)
+	input, _ := out.Defs["charge_input"].(map[string]any)
 	props, _ := input["properties"].(map[string]any)
 	if input["type"] != "object" {
 		t.Errorf("input type: got %v, want object", input["type"])
@@ -301,7 +302,8 @@ func TestGenerate_Input_ParamsOnlyTask(t *testing.T) {
 	if _, ok := out.Tasks["log"]; !ok {
 		t.Fatal("task with params but no output_schema should appear in tasks")
 	}
-	assertJSON(t, out.Tasks["log"].Input, `{
+	assertJSON(t, out.Tasks["log"].Input, `{"$ref": "#/$defs/log_input"}`)
+	assertJSON(t, out.Defs["log_input"], `{
 		"type": "object",
 		"properties": { "uid": { "type": "string" } },
 		"required": ["uid"]
@@ -331,7 +333,8 @@ func TestGenerate_Input_Params_OneOfOutputPropertyAccess(t *testing.T) {
 			}
 		]
 	}`)
-	input := out.Tasks["check_fraud"].Input
+	assertJSON(t, out.Tasks["check_fraud"].Input, `{"$ref": "#/$defs/check_fraud_input"}`)
+	input, _ := out.Defs["check_fraud_input"].(map[string]any)
 	props, _ := input["properties"].(map[string]any)
 	assertJSON(t, props["result"], `{"type":["boolean","null"]}`)
 }
@@ -409,7 +412,8 @@ func TestGenerate_RecursiveStep_OwnOutputOptionalInParams(t *testing.T) {
 			"switch": { "{{!self.done}}": "#loop", "default": "$end" }
 		}]
 	}`)
-	input := out.Tasks["loop"].Input
+	assertJSON(t, out.Tasks["loop"].Input, `{"$ref": "#/$defs/loop_input"}`)
+	input, _ := out.Defs["loop_input"].(map[string]any)
 	props, _ := input["properties"].(map[string]any)
 	if props == nil {
 		t.Fatal("loop input should have properties")
@@ -444,8 +448,9 @@ func TestGenerate_SwitchStep_NextStepNotReachableViaFallthrough(t *testing.T) {
 		]
 	}`)
 	// work is only reachable via decide's switch, so decide's output is required for work.
-	input := out.Tasks["work"].Input
-	props, _ := input["properties"].(map[string]any)
+	assertJSON(t, out.Tasks["work"].Input, `{"$ref": "#/$defs/work_input"}`)
+	workInput, _ := out.Defs["work_input"].(map[string]any)
+	props, _ := workInput["properties"].(map[string]any)
 	if props == nil {
 		t.Fatal("work input should have properties")
 	}
@@ -481,7 +486,9 @@ func TestGenerate_ContextSets_LinearChain_RequiredOutputNonNullable(t *testing.T
 			}
 		]
 	}`)
-	props, _ := out.Tasks["B"].Input["properties"].(map[string]any)
+	assertJSON(t, out.Tasks["B"].Input, `{"$ref": "#/$defs/B_input"}`)
+	bInput, _ := out.Defs["B_input"].(map[string]any)
+	props, _ := bInput["properties"].(map[string]any)
 	if props == nil {
 		t.Fatal("B input should have properties")
 	}
@@ -525,7 +532,9 @@ func TestGenerate_ContextSets_ExclusiveBranch_SkippedStepOutputNullable(t *testi
 			}
 		]
 	}`)
-	props, _ := out.Tasks["merge"].Input["properties"].(map[string]any)
+	assertJSON(t, out.Tasks["merge"].Input, `{"$ref": "#/$defs/merge_input"}`)
+	mergeInput, _ := out.Defs["merge_input"].(map[string]any)
+	props, _ := mergeInput["properties"].(map[string]any)
 	if props == nil {
 		t.Fatal("merge input should have properties")
 	}
@@ -563,7 +572,9 @@ func TestGenerate_ContextSets_PreBranchStepRequiredAtAllMergePoints(t *testing.T
 			}
 		]
 	}`)
-	props, _ := out.Tasks["post"].Input["properties"].(map[string]any)
+	assertJSON(t, out.Tasks["post"].Input, `{"$ref": "#/$defs/post_input"}`)
+	postInput, _ := out.Defs["post_input"].(map[string]any)
+	props, _ := postInput["properties"].(map[string]any)
 	if props == nil {
 		t.Fatal("post input should have properties")
 	}
@@ -595,7 +606,9 @@ func TestGenerate_ContextSets_DefaultEndSwitch_SuccessorRequiredNotOptional(t *t
 			}
 		]
 	}`)
-	props, _ := out.Tasks["work"].Input["properties"].(map[string]any)
+	assertJSON(t, out.Tasks["work"].Input, `{"$ref": "#/$defs/work_input"}`)
+	workInput2, _ := out.Defs["work_input"].(map[string]any)
+	props, _ := workInput2["properties"].(map[string]any)
 	if props == nil {
 		t.Fatal("work input should have properties")
 	}
