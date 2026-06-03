@@ -16,7 +16,7 @@ steps:
       - when: "{{input.ttl > 0}}"
         goto: "#recursion"
       - when: default
-        goto: $end      
+        goto: "#finish"
   - id: recursion
     call:
       type: child_process
@@ -34,5 +34,25 @@ steps:
             type: number
         required:
           - processes
+  - id: finish
+    call:
+      type: child_process
+      processes:
+        - name: child            
 output:
   processes: "{{(outputs.recursion[0].output.processes ?? 0) + (outputs.recursion[1].output.processes ?? 0) + 1}}"
+
+---
+# yaml-language-server: $schema=http://localhost:8888/process-schema.json
+name: child
+version: 1
+input_schema:
+  properties:
+    finish: 
+      type: boolean
+      
+steps:
+  - id: one
+    switch:
+      - when: default
+        goto: $end
