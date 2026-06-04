@@ -160,18 +160,82 @@ var registry = func() []actionDef {
 			Name:    "put_definitions_batch",
 			Method:  http.MethodPut,
 			Path:    "/definitions/batch",
-			Summary: "Register or update multiple process definitions in one call",
+			Summary: "Apply process definitions to a channel with optional auto-update of dependents",
 			Tags:    []string{"Definitions"},
-			Req: []model.ProcessDefinition{
-				{
-					Name:    "child_process",
-					Version: 1,
-					Steps:   []*model.Step{{ID: "run", Call: &model.Call{Type: model.CallTypeREST, Endpoint: "http://localhost:9001/run"}}},
+			Req: PutDefinitionsBatchReq{
+				Channel:           "latest",
+				AutoUpdateParents: false,
+				Definitions: []model.ProcessDefinition{
+					{
+						Name:    "child_process",
+						Version: 1,
+						Steps:   []*model.Step{{ID: "run", Call: &model.Call{Type: model.CallTypeREST, Endpoint: "http://localhost:9001/run"}}},
+					},
 				},
 			},
 			Resp: []BatchApplyResult{{Name: "child_process", Version: 1, Saved: true}},
 			handle: func(h *Handlers, env Envelope) Reply {
 				return h.putDefinitions(env.Payload)
+			},
+		},
+		{
+			Name:    "put_channel",
+			Method:  http.MethodPut,
+			Path:    "/channels",
+			Summary: "Set a channel pointer to a specific process version",
+			Tags:    []string{"Channels"},
+			Req:     PutChannelReq{Name: "order_pipeline", Channel: "stable", Version: 3},
+			Resp:    map[string]any{"name": "order_pipeline", "channel": "stable", "version": 3},
+			handle: func(h *Handlers, env Envelope) Reply {
+				return h.putChannel(env.Payload)
+			},
+		},
+		{
+			Name:    "delete_channel",
+			Method:  http.MethodDelete,
+			Path:    "/channels",
+			Summary: "Remove a channel pointer from a process",
+			Tags:    []string{"Channels"},
+			Req:     DeleteChannelReq{Name: "order_pipeline", Channel: "stable"},
+			Resp:    map[string]any{"deleted": true},
+			handle: func(h *Handlers, env Envelope) Reply {
+				return h.deleteChannel(env.Payload)
+			},
+		},
+		{
+			Name:    "list_channels",
+			Method:  http.MethodGet,
+			Path:    "/channels",
+			Summary: "List all channels for a process",
+			Tags:    []string{"Channels"},
+			Req:     ListChannelsReq{Name: "order_pipeline"},
+			Resp:    []ChannelEntry{{Channel: "latest", Version: 2}, {Channel: "stable", Version: 1}},
+			handle: func(h *Handlers, env Envelope) Reply {
+				return h.listChannels(env.Payload)
+			},
+		},
+		{
+			Name:    "promote_channel",
+			Method:  http.MethodPost,
+			Path:    "/channels/promote",
+			Summary: "Copy all channel pointers from one channel to another (optionally scoped to a process subtree)",
+			Tags:    []string{"Channels"},
+			Req:     PromoteChannelReq{From: "staging", To: "latest"},
+			Resp:    map[string]any{"from": "staging", "to": "latest", "promoted": []any{}},
+			handle: func(h *Handlers, env Envelope) Reply {
+				return h.promoteChannel(env.Payload)
+			},
+		},
+		{
+			Name:    "channel_status",
+			Method:  http.MethodPost,
+			Path:    "/channels/status",
+			Summary: "Report stale child references within a channel",
+			Tags:    []string{"Channels"},
+			Req:     ChannelStatusReq{Channel: "latest"},
+			Resp:    []ChannelStatusItem{},
+			handle: func(h *Handlers, env Envelope) Reply {
+				return h.channelStatus(env.Payload)
 			},
 		},
 		{

@@ -4,8 +4,13 @@
 //
 // Usage:
 //
-//	gentctl apply    -f file.yaml [-f file2.yaml ...]
+//	gentctl apply    -f file.yaml [-f file2.yaml ...] [--channel latest] [--auto-update-parents]
 //	gentctl validate -f file.yaml [-f file2.yaml ...]
+//	gentctl channel list   <process>
+//	gentctl channel set    <process> <channel> <version>
+//	gentctl channel delete <process> <channel>
+//	gentctl promote  --from <channel> --to <channel> [--process <name>]
+//	gentctl status   --channel <channel>
 //
 // Environment:
 //
@@ -21,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -40,7 +46,68 @@ func main() {
 	cmd := os.Args[1]
 	args := os.Args[2:]
 
-	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
+	switch cmd {
+	case "apply":
+		runApplyCmd(server, args)
+	case "validate":
+		runValidateCmd(server, args)
+	case "channel":
+		runChannelCmd(server, args)
+	case "promote":
+		runPromoteCmd(server, args)
+	case "status":
+		runStatusCmd(server, args)
+	default:
+		fmt.Fprintf(os.Stderr, "gentctl: unknown command %q\n", cmd)
+		usage()
+		os.Exit(1)
+	}
+}
+
+func runApplyCmd(server string, args []string) {
+	fs := flag.NewFlagSet("apply", flag.ExitOnError)
+	var files multiFlag
+	fs.Var(&files, "f", "definition file (YAML or JSON); repeat for multiple files")
+	serverFlag := fs.String("server", server, "gent server base URL ($GENT_SERVER)")
+	channelFlag := fs.String("channel", "latest", "channel to apply definitions to")
+	autoUpdateFlag := fs.Bool("auto-update-parents", false, "auto-update parent processes on the same channel")
+	fs.Parse(args)
+
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "gentctl: -f is required")
+		os.Exit(1)
+	}
+
+	defs, err := loadDefs(files)
+	if err != nil {
+		fatal("%v", err)
+	}
+
+	body := map[string]any{
+		"channel":             *channelFlag,
+		"auto_update_parents": *autoUpdateFlag,
+		"definitions":         defs,
+	}
+
+	var resp []struct {
+		Name    string `json:"name"`
+		Version int    `json:"version"`
+		Saved   bool   `json:"saved"`
+	}
+	if err := call(*serverFlag+"/definitions/batch", http.MethodPut, body, &resp); err != nil {
+		fatal("%v", err)
+	}
+	for _, r := range resp {
+		status := "saved"
+		if !r.Saved {
+			status = "unchanged"
+		}
+		fmt.Printf("%s: %s@v%d\n", status, r.Name, r.Version)
+	}
+}
+
+func runValidateCmd(server string, args []string) {
+	fs := flag.NewFlagSet("validate", flag.ExitOnError)
 	var files multiFlag
 	fs.Var(&files, "f", "definition file (YAML or JSON); repeat for multiple files")
 	serverFlag := fs.String("server", server, "gent server base URL ($GENT_SERVER)")
@@ -56,45 +123,143 @@ func main() {
 		fatal("%v", err)
 	}
 
-	switch cmd {
-	case "apply":
-		runApply(*serverFlag, defs)
-	case "validate":
-		runValidate(*serverFlag, defs)
-	default:
-		fmt.Fprintf(os.Stderr, "gentctl: unknown command %q\n", cmd)
-		usage()
-		os.Exit(1)
-	}
-}
-
-func runApply(server string, defs []any) {
-	var resp []struct {
-		Name    string `json:"name"`
-		Version int    `json:"version"`
-		Saved   bool   `json:"saved"`
-	}
-	if err := call(server+"/definitions/batch", http.MethodPut, defs, &resp); err != nil {
-		fatal("%v", err)
-	}
-	for _, r := range resp {
-		fmt.Printf("saved: %s@v%d\n", r.Name, r.Version)
-	}
-}
-
-func runValidate(server string, defs []any) {
-	var resp json.RawMessage
-	if err := call(server+"/definitions/validate", http.MethodPost, defs, &resp); err != nil {
+	var raw json.RawMessage
+	if err := call(*serverFlag+"/definitions/validate", http.MethodPost, defs, &raw); err != nil {
 		fatal("%v", err)
 	}
 	var buf bytes.Buffer
-	json.Indent(&buf, resp, "", "  ")
+	json.Indent(&buf, raw, "", "  ")
 	os.Stdout.Write(buf.Bytes())
 	os.Stdout.Write([]byte("\n"))
 }
 
+func runChannelCmd(server string, args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: gentctl channel <list|set|delete> ...")
+		os.Exit(1)
+	}
+
+	fs := flag.NewFlagSet("channel", flag.ExitOnError)
+	serverFlag := fs.String("server", server, "gent server base URL ($GENT_SERVER)")
+	fs.Parse(args[1:])
+	rest := fs.Args()
+
+	sub := args[0]
+	switch sub {
+	case "list":
+		if len(rest) < 1 {
+			fatal("usage: gentctl channel list <process>")
+		}
+		var resp []struct {
+			Channel string `json:"channel"`
+			Version int    `json:"version"`
+		}
+		if err := call(*serverFlag+"/channels", http.MethodGet,
+			map[string]any{"name": rest[0]}, &resp); err != nil {
+			fatal("%v", err)
+		}
+		for _, e := range resp {
+			fmt.Printf("%s -> v%d\n", e.Channel, e.Version)
+		}
+
+	case "set":
+		if len(rest) < 3 {
+			fatal("usage: gentctl channel set <process> <channel> <version>")
+		}
+		v, err := strconv.Atoi(rest[2])
+		if err != nil || v < 1 {
+			fatal("version must be a positive integer")
+		}
+		if err := call(*serverFlag+"/channels", http.MethodPut,
+			map[string]any{"name": rest[0], "channel": rest[1], "version": v}, nil); err != nil {
+			fatal("%v", err)
+		}
+		fmt.Printf("set: %s@%s -> v%d\n", rest[0], rest[1], v)
+
+	case "delete":
+		if len(rest) < 2 {
+			fatal("usage: gentctl channel delete <process> <channel>")
+		}
+		if err := call(*serverFlag+"/channels", http.MethodDelete,
+			map[string]any{"name": rest[0], "channel": rest[1]}, nil); err != nil {
+			fatal("%v", err)
+		}
+		fmt.Printf("deleted: %s@%s\n", rest[0], rest[1])
+
+	default:
+		fatal("unknown channel subcommand %q", sub)
+	}
+}
+
+func runPromoteCmd(server string, args []string) {
+	fs := flag.NewFlagSet("promote", flag.ExitOnError)
+	serverFlag := fs.String("server", server, "gent server base URL ($GENT_SERVER)")
+	fromFlag := fs.String("from", "", "source channel")
+	toFlag := fs.String("to", "", "target channel")
+	processFlag := fs.String("process", "", "limit to this process and its dependency subtree (optional)")
+	fs.Parse(args)
+
+	if *fromFlag == "" || *toFlag == "" {
+		fatal("--from and --to are required")
+	}
+
+	body := map[string]any{"from": *fromFlag, "to": *toFlag}
+	if *processFlag != "" {
+		body["process"] = *processFlag
+	}
+
+	var resp struct {
+		From     string           `json:"from"`
+		To       string           `json:"to"`
+		Promoted []map[string]any `json:"promoted"`
+	}
+	if err := call(*serverFlag+"/channels/promote", http.MethodPost, body, &resp); err != nil {
+		fatal("%v", err)
+	}
+	for _, p := range resp.Promoted {
+		fmt.Printf("promoted: %v@v%v -> %s\n", p["name"], p["version"], resp.To)
+	}
+}
+
+func runStatusCmd(server string, args []string) {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	serverFlag := fs.String("server", server, "gent server base URL ($GENT_SERVER)")
+	channelFlag := fs.String("channel", "latest", "channel to inspect")
+	fs.Parse(args)
+
+	var resp []struct {
+		Name      string `json:"name"`
+		Version   int    `json:"version"`
+		StaleRefs []struct {
+			StepID         string `json:"step_id"`
+			ChildName      string `json:"child_name"`
+			BakedVersion   int    `json:"baked_version"`
+			ChannelVersion int    `json:"channel_version"`
+		} `json:"stale_refs"`
+	}
+	if err := call(*serverFlag+"/channels/status", http.MethodPost,
+		map[string]any{"channel": *channelFlag}, &resp); err != nil {
+		fatal("%v", err)
+	}
+
+	allClean := true
+	for _, item := range resp {
+		if len(item.StaleRefs) == 0 {
+			continue
+		}
+		allClean = false
+		fmt.Printf("STALE  %s@v%d\n", item.Name, item.Version)
+		for _, ref := range item.StaleRefs {
+			fmt.Printf("  step %q: %s baked@v%d, channel@v%d\n",
+				ref.StepID, ref.ChildName, ref.BakedVersion, ref.ChannelVersion)
+		}
+	}
+	if allClean {
+		fmt.Printf("channel %q is coherent\n", *channelFlag)
+	}
+}
+
 // call sends body as JSON to url and decodes the response into out.
-// The HTTP API returns the data directly on success (2xx) and {"error":"..."} on failure (4xx).
 func call(url, method string, body any, out any) error {
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -133,7 +298,6 @@ func call(url, method string, body any, out any) error {
 }
 
 // loadDefs reads all files and returns a slice of raw definition objects.
-// Each file may contain one or more YAML documents separated by ---.
 func loadDefs(files []string) ([]any, error) {
 	var all []any
 	for _, path := range files {
@@ -161,14 +325,12 @@ func readFile(path string) ([]any, error) {
 		if err := json.Unmarshal(data, &doc); err != nil {
 			return nil, fmt.Errorf("parse JSON: %w", err)
 		}
-		// Accept either a single object or an array.
 		if arr, ok := doc.([]any); ok {
 			return arr, nil
 		}
 		return []any{doc}, nil
 	}
 
-	// YAML: support multi-document streams.
 	var docs []any
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	for {
@@ -182,7 +344,6 @@ func readFile(path string) ([]any, error) {
 		if doc == nil {
 			continue
 		}
-		// yaml.v3 decodes into map[string]any compatible with JSON after round-trip.
 		jsonBytes, err := json.Marshal(doc)
 		if err != nil {
 			return nil, fmt.Errorf("convert YAML to JSON: %w", err)
@@ -194,7 +355,6 @@ func readFile(path string) ([]any, error) {
 	return docs, nil
 }
 
-// multiFlag is a flag.Value that accumulates repeated -f values.
 type multiFlag []string
 
 func (m *multiFlag) String() string { return strings.Join(*m, ",") }
@@ -205,8 +365,13 @@ func (m *multiFlag) Set(v string) error {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `Usage:
-  gentctl apply    -f file.yaml [-f file2.yaml ...]
+  gentctl apply    -f file.yaml [-f file2.yaml ...] [--channel latest] [--auto-update-parents]
   gentctl validate -f file.yaml [-f file2.yaml ...]
+  gentctl channel list   <process>
+  gentctl channel set    <process> <channel> <version>
+  gentctl channel delete <process> <channel>
+  gentctl promote  --from <channel> --to <channel> [--process <name>]
+  gentctl status   --channel <channel>
 
 Flags:
   -f        definition file (YAML or JSON, multi-doc --- supported)

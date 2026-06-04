@@ -14,6 +14,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const defaultChannel = "latest"
+
 // Handlers holds business logic for all API operations.
 type Handlers struct {
 	db *db.DB
@@ -30,9 +32,59 @@ type PutDefinitionReq struct {
 }
 
 type StartInstanceReq struct {
-	Process string `json:"process"`
-	Version *int   `json:"version"` // nil = latest
-	Input   *any   `json:"input,omitempty"`
+	Process string  `json:"process"`
+	Version *int    `json:"version,omitempty"` // explicit version; takes priority over Channel
+	Channel *string `json:"channel,omitempty"` // resolve to version via channel; fallback to latest
+	Input   *any    `json:"input,omitempty"`
+}
+
+type PutDefinitionsBatchReq struct {
+	Definitions       []model.ProcessDefinition `json:"definitions"`
+	Channel           string                    `json:"channel"`            // default "latest"
+	AutoUpdateParents bool                      `json:"auto_update_parents"`
+}
+
+type ChannelEntry struct {
+	Channel string `json:"channel"`
+	Version int    `json:"version"`
+}
+
+type PutChannelReq struct {
+	Name    string `json:"name"`
+	Channel string `json:"channel"`
+	Version int    `json:"version"`
+}
+
+type DeleteChannelReq struct {
+	Name    string `json:"name"`
+	Channel string `json:"channel"`
+}
+
+type ListChannelsReq struct {
+	Name string `json:"name"`
+}
+
+type PromoteChannelReq struct {
+	From    string  `json:"from"`
+	To      string  `json:"to"`
+	Process *string `json:"process,omitempty"` // nil = all processes on the channel
+}
+
+type ChannelStatusReq struct {
+	Channel string `json:"channel"`
+}
+
+type StaleRef struct {
+	StepID         string `json:"step_id"`
+	ChildName      string `json:"child_name"`
+	BakedVersion   int    `json:"baked_version"`
+	ChannelVersion int    `json:"channel_version"`
+}
+
+type ChannelStatusItem struct {
+	Name      string     `json:"name"`
+	Version   int        `json:"version"`
+	StaleRefs []StaleRef `json:"stale_refs,omitempty"`
 }
 
 type StartInstanceResp struct {
@@ -126,9 +178,16 @@ func (h *Handlers) startInstance(raw json.RawMessage) Reply {
 	}
 
 	version := 0
-	if req.Version != nil {
+	switch {
+	case req.Version != nil:
 		version = *req.Version
-	} else {
+	case req.Channel != nil:
+		v, err := h.db.GetChannel(req.Process, *req.Channel)
+		if err != nil {
+			return errReply(err)
+		}
+		version = v
+	default:
 		v, err := h.db.LatestVersion(req.Process)
 		if err != nil {
 			return errReply(err)
@@ -380,34 +439,472 @@ func (g *batchGetter) LatestVersion(name string) (int, error) {
 }
 
 func (h *Handlers) putDefinitions(raw json.RawMessage) Reply {
-	var defs []model.ProcessDefinition
-	if err := json.Unmarshal(raw, &defs); err != nil {
+	var req PutDefinitionsBatchReq
+	if err := json.Unmarshal(raw, &req); err != nil {
 		return errReply(fmt.Errorf("decode: %w", err))
 	}
+	if req.Channel == "" {
+		req.Channel = defaultChannel
+	}
+	results, err := h.applyBatch(req.Definitions, req.Channel, req.AutoUpdateParents)
+	if err != nil {
+		return errReply(err)
+	}
+	return okReply(results)
+}
+
+// applyBatch is the core implementation for channel-aware batch apply.
+func (h *Handlers) applyBatch(defs []model.ProcessDefinition, channel string, autoUpdateParents bool) ([]BatchApplyResult, error) {
 	ptrs := make([]*model.ProcessDefinition, len(defs))
 	for i := range defs {
 		ptrs[i] = &defs[i]
 	}
-	getter := &batchGetter{batch: ptrs, db: h.db}
-	for _, def := range ptrs {
+
+	sorted, err := topoSort(ptrs)
+	if err != nil {
+		return nil, err
+	}
+
+	// batchVersions tracks the resolved version for each process in this batch.
+	batchVersions := make(map[string]int, len(sorted))
+	// oldChannelVersions records what the channel pointed to before this apply,
+	// used later to find parents that need cascading updates.
+	oldChannelVersions := make(map[string]int, len(sorted))
+
+	var results []BatchApplyResult
+
+	for _, def := range sorted {
+		// Resolve version=0 child process entries from the channel or batch.
+		if err := h.resolveChildVersions(def, channel, batchVersions); err != nil {
+			return nil, fmt.Errorf("%s v%d: %w", def.Name, def.Version, err)
+		}
+
+		getter := &batchGetter{batch: sorted, db: h.db}
 		if err := def.Validate(); err != nil {
-			return errReply(fmt.Errorf("%s v%d: %w", def.Name, def.Version, err))
+			return nil, fmt.Errorf("%s v%d: %w", def.Name, def.Version, err)
 		}
 		if _, err := gentschema.Generate(def); err != nil {
-			return errReply(fmt.Errorf("%s v%d: %w", def.Name, def.Version, err))
+			return nil, fmt.Errorf("%s v%d: %w", def.Name, def.Version, err)
 		}
 		if err := gentschema.ValidateChildProcessRefs(def, getter); err != nil {
-			return errReply(fmt.Errorf("%s v%d: %w", def.Name, def.Version, err))
+			return nil, fmt.Errorf("%s v%d: %w", def.Name, def.Version, err)
 		}
-	}
-	results := make([]BatchApplyResult, len(ptrs))
-	for i, def := range ptrs {
+
+		// Record old channel version before we advance it.
+		if oldV, err := h.db.GetChannel(def.Name, channel); err == nil {
+			oldChannelVersions[def.Name] = oldV
+		}
+
+		// Content deduplication: if the channel already points to an identical definition, skip saving.
+		if currentV, err := h.db.GetChannel(def.Name, channel); err == nil {
+			if currentDef, err := h.db.GetDefinition(def.Name, currentV); err == nil {
+				if definitionsEqual(def, currentDef) {
+					batchVersions[def.Name] = currentV
+					results = append(results, BatchApplyResult{Name: def.Name, Version: currentV, Saved: false})
+					continue
+				}
+			}
+		}
+
 		if err := h.db.SaveDefinition(def); err != nil {
-			return errReply(fmt.Errorf("save %s v%d: %w", def.Name, def.Version, err))
+			return nil, fmt.Errorf("save %s v%d: %w", def.Name, def.Version, err)
 		}
-		results[i] = BatchApplyResult{Name: def.Name, Version: def.Version, Saved: true}
+		if err := h.db.SaveChannel(def.Name, channel, def.Version); err != nil {
+			return nil, fmt.Errorf("channel %s v%d: %w", def.Name, def.Version, err)
+		}
+		batchVersions[def.Name] = def.Version
+		results = append(results, BatchApplyResult{Name: def.Name, Version: def.Version, Saved: true})
 	}
-	return okReply(results)
+
+	if autoUpdateParents {
+		// Cascade only for processes that actually got new versions.
+		changedVersions := make(map[string]int)
+		for name, newV := range batchVersions {
+			if oldV, existed := oldChannelVersions[name]; !existed || oldV != newV {
+				changedVersions[name] = newV
+			}
+		}
+		cascadeResults, err := h.cascadeUpdate(channel, changedVersions, batchVersions)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, cascadeResults...)
+	}
+
+	return results, nil
+}
+
+// resolveChildVersions sets Version on any ChildProcessEntry with Version==0,
+// looking up the channel or the current batch.
+func (h *Handlers) resolveChildVersions(def *model.ProcessDefinition, channel string, batchVersions map[string]int) error {
+	for _, step := range def.Steps {
+		if step.Call == nil || step.Call.Type != model.CallTypeChildProcess {
+			continue
+		}
+		for i, entry := range step.Call.Processes {
+			if entry.Version != 0 {
+				continue
+			}
+			if v, ok := batchVersions[entry.Name]; ok {
+				step.Call.Processes[i].Version = v
+				continue
+			}
+			v, err := h.db.GetChannel(entry.Name, channel)
+			if err != nil {
+				return fmt.Errorf("step %q child %q: not on channel %q (%w)", step.ID, entry.Name, channel, err)
+			}
+			step.Call.Processes[i].Version = v
+		}
+	}
+	return nil
+}
+
+// cascadeUpdate finds all processes on channel whose baked-in child refs point to
+// old versions of any process in changedVersions, and creates new versions of them.
+// It cascades upward until nothing more changes. Runs until fixpoint.
+// allUpdated accumulates all versions resolved in the originating batch so we
+// can build the getter correctly.
+func (h *Handlers) cascadeUpdate(channel string, changedVersions map[string]int, allUpdated map[string]int) ([]BatchApplyResult, error) {
+	var results []BatchApplyResult
+
+	for {
+		allDefs, err := h.db.LoadDefinitionsOnChannel(channel)
+		if err != nil {
+			return nil, fmt.Errorf("cascade: load channel: %w", err)
+		}
+
+		foundUpdate := false
+		for _, def := range allDefs {
+			if _, alreadyUpdated := allUpdated[def.Name]; alreadyUpdated {
+				continue
+			}
+
+			needsUpdate := false
+			for _, step := range def.Steps {
+				if step.Call == nil || step.Call.Type != model.CallTypeChildProcess {
+					continue
+				}
+				for _, entry := range step.Call.Processes {
+					newV, isChanged := changedVersions[entry.Name]
+					if isChanged && entry.Version != newV {
+						needsUpdate = true
+						break
+					}
+				}
+				if needsUpdate {
+					break
+				}
+			}
+			if !needsUpdate {
+				continue
+			}
+
+			newDef, err := copyDefWithUpdatedRefs(def, changedVersions)
+			if err != nil {
+				return nil, err
+			}
+
+			getter := &batchGetter{db: h.db}
+			if _, err := gentschema.Generate(newDef); err != nil {
+				return nil, fmt.Errorf("auto-update %s: schema incompatible after child upgrade: %w", def.Name, err)
+			}
+			if err := gentschema.ValidateChildProcessRefs(newDef, getter); err != nil {
+				return nil, fmt.Errorf("auto-update %s: child input incompatible after upgrade: %w", def.Name, err)
+			}
+
+			latestV, err := h.db.LatestVersion(def.Name)
+			if err != nil {
+				latestV = 0
+			}
+			newDef.Version = latestV + 1
+
+			if err := h.db.SaveDefinition(newDef); err != nil {
+				return nil, fmt.Errorf("auto-update save %s v%d: %w", newDef.Name, newDef.Version, err)
+			}
+			if err := h.db.SaveChannel(newDef.Name, channel, newDef.Version); err != nil {
+				return nil, fmt.Errorf("auto-update channel %s: %w", newDef.Name, err)
+			}
+
+			changedVersions[newDef.Name] = newDef.Version
+			allUpdated[newDef.Name] = newDef.Version
+			results = append(results, BatchApplyResult{Name: newDef.Name, Version: newDef.Version, Saved: true})
+			foundUpdate = true
+		}
+
+		if !foundUpdate {
+			break
+		}
+	}
+
+	return results, nil
+}
+
+func (h *Handlers) putChannel(raw json.RawMessage) Reply {
+	var req PutChannelReq
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return errReply(fmt.Errorf("decode: %w", err))
+	}
+	if req.Name == "" || req.Channel == "" || req.Version < 1 {
+		return errReply(fmt.Errorf("name, channel, and version (≥1) are required"))
+	}
+	if _, err := h.db.GetDefinition(req.Name, req.Version); err != nil {
+		return errReply(fmt.Errorf("definition %q v%d not found", req.Name, req.Version))
+	}
+	if err := h.db.SaveChannel(req.Name, req.Channel, req.Version); err != nil {
+		return errReply(err)
+	}
+	return okReply(map[string]any{"name": req.Name, "channel": req.Channel, "version": req.Version})
+}
+
+func (h *Handlers) deleteChannel(raw json.RawMessage) Reply {
+	var req DeleteChannelReq
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return errReply(fmt.Errorf("decode: %w", err))
+	}
+	if req.Name == "" || req.Channel == "" {
+		return errReply(fmt.Errorf("name and channel are required"))
+	}
+	if err := h.db.DeleteChannel(req.Name, req.Channel); err != nil {
+		return errReply(err)
+	}
+	return okReply(map[string]any{"deleted": true})
+}
+
+func (h *Handlers) listChannels(raw json.RawMessage) Reply {
+	var req ListChannelsReq
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return errReply(fmt.Errorf("decode: %w", err))
+	}
+	if req.Name == "" {
+		return errReply(fmt.Errorf("name is required"))
+	}
+	channels, err := h.db.ListChannels(req.Name)
+	if err != nil {
+		return errReply(err)
+	}
+	entries := make([]ChannelEntry, 0, len(channels))
+	for ch, v := range channels {
+		entries = append(entries, ChannelEntry{Channel: ch, Version: v})
+	}
+	return okReply(entries)
+}
+
+func (h *Handlers) promoteChannel(raw json.RawMessage) Reply {
+	var req PromoteChannelReq
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return errReply(fmt.Errorf("decode: %w", err))
+	}
+	if req.From == "" || req.To == "" {
+		return errReply(fmt.Errorf("from and to are required"))
+	}
+	if req.From == req.To {
+		return errReply(fmt.Errorf("from and to must differ"))
+	}
+
+	defs, err := h.db.LoadDefinitionsOnChannel(req.From)
+	if err != nil {
+		return errReply(fmt.Errorf("load channel %q: %w", req.From, err))
+	}
+
+	// If scoped to a process, collect only its dependency subtree.
+	if req.Process != nil {
+		defs, err = subtree(defs, *req.Process)
+		if err != nil {
+			return errReply(err)
+		}
+	}
+
+	promoted := make([]map[string]any, 0, len(defs))
+	for _, def := range defs {
+		if err := h.db.SaveChannel(def.Name, req.To, def.Version); err != nil {
+			return errReply(fmt.Errorf("promote %s: %w", def.Name, err))
+		}
+		promoted = append(promoted, map[string]any{"name": def.Name, "version": def.Version})
+	}
+	return okReply(map[string]any{"from": req.From, "to": req.To, "promoted": promoted})
+}
+
+func (h *Handlers) channelStatus(raw json.RawMessage) Reply {
+	var req ChannelStatusReq
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return errReply(fmt.Errorf("decode: %w", err))
+	}
+	if req.Channel == "" {
+		return errReply(fmt.Errorf("channel is required"))
+	}
+
+	defs, err := h.db.LoadDefinitionsOnChannel(req.Channel)
+	if err != nil {
+		return errReply(err)
+	}
+
+	// Build a lookup of what the channel currently points to for each process.
+	channelVersions := make(map[string]int, len(defs))
+	for _, def := range defs {
+		channelVersions[def.Name] = def.Version
+	}
+
+	items := make([]ChannelStatusItem, 0, len(defs))
+	for _, def := range defs {
+		item := ChannelStatusItem{Name: def.Name, Version: def.Version}
+		for _, step := range def.Steps {
+			if step.Call == nil || step.Call.Type != model.CallTypeChildProcess {
+				continue
+			}
+			for _, entry := range step.Call.Processes {
+				chV, onChannel := channelVersions[entry.Name]
+				if !onChannel {
+					continue
+				}
+				if entry.Version < chV {
+					item.StaleRefs = append(item.StaleRefs, StaleRef{
+						StepID:         step.ID,
+						ChildName:      entry.Name,
+						BakedVersion:   entry.Version,
+						ChannelVersion: chV,
+					})
+				}
+			}
+		}
+		items = append(items, item)
+	}
+	return okReply(items)
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+// topoSort returns definitions sorted leaves-first so child refs are resolved
+// before the parents that reference them. Returns an error on cycles.
+func topoSort(defs []*model.ProcessDefinition) ([]*model.ProcessDefinition, error) {
+	byName := make(map[string]*model.ProcessDefinition, len(defs))
+	for _, d := range defs {
+		byName[d.Name] = d
+	}
+
+	const (
+		unvisited = 0
+		visiting  = 1
+		done      = 2
+	)
+	state := make(map[string]int, len(defs))
+	var sorted []*model.ProcessDefinition
+
+	var visit func(name string) error
+	visit = func(name string) error {
+		switch state[name] {
+		case done:
+			return nil
+		case visiting:
+			return fmt.Errorf("cycle detected involving process %q", name)
+		}
+		state[name] = visiting
+		d := byName[name]
+		for _, step := range d.Steps {
+			if step.Call == nil || step.Call.Type != model.CallTypeChildProcess {
+				continue
+			}
+			for _, entry := range step.Call.Processes {
+				if _, inBatch := byName[entry.Name]; inBatch {
+					if err := visit(entry.Name); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		state[name] = done
+		sorted = append(sorted, d)
+		return nil
+	}
+
+	for _, d := range defs {
+		if err := visit(d.Name); err != nil {
+			return nil, err
+		}
+	}
+	return sorted, nil
+}
+
+// definitionsEqual compares two definitions by their canonical JSON, ignoring the version field.
+func definitionsEqual(a, b *model.ProcessDefinition) bool {
+	type canonical struct {
+		Name        string             `json:"name"`
+		Steps       []*model.Step      `json:"steps"`
+		InputSchema any                `json:"input_schema,omitempty"`
+		Output      map[string]string  `json:"output,omitempty"`
+	}
+	toCanon := func(d *model.ProcessDefinition) canonical {
+		return canonical{Name: d.Name, Steps: d.Steps, InputSchema: d.InputSchema, Output: d.Output}
+	}
+	ba, _ := json.Marshal(toCanon(a))
+	bb, _ := json.Marshal(toCanon(b))
+	return bytes.Equal(ba, bb)
+}
+
+// copyDefWithUpdatedRefs returns a deep copy of def with child refs updated to newVersions.
+func copyDefWithUpdatedRefs(def *model.ProcessDefinition, newVersions map[string]int) (*model.ProcessDefinition, error) {
+	data, err := json.Marshal(def)
+	if err != nil {
+		return nil, err
+	}
+	var copy model.ProcessDefinition
+	if err := json.Unmarshal(data, &copy); err != nil {
+		return nil, err
+	}
+	for _, step := range copy.Steps {
+		if step.Call == nil || step.Call.Type != model.CallTypeChildProcess {
+			continue
+		}
+		for i, entry := range step.Call.Processes {
+			if newV, ok := newVersions[entry.Name]; ok {
+				step.Call.Processes[i].Version = newV
+			}
+		}
+	}
+	return &copy, nil
+}
+
+// subtree collects the definition for rootName and all its dependencies (recursively)
+// from the provided slice, following baked-in child refs.
+func subtree(defs []*model.ProcessDefinition, rootName string) ([]*model.ProcessDefinition, error) {
+	byName := make(map[string]*model.ProcessDefinition, len(defs))
+	for _, d := range defs {
+		byName[d.Name] = d
+	}
+
+	visited := make(map[string]bool)
+	var collect func(name string) error
+	collect = func(name string) error {
+		if visited[name] {
+			return nil
+		}
+		d, ok := byName[name]
+		if !ok {
+			return nil // dependency not on this channel, skip
+		}
+		visited[name] = true
+		for _, step := range d.Steps {
+			if step.Call == nil || step.Call.Type != model.CallTypeChildProcess {
+				continue
+			}
+			for _, entry := range step.Call.Processes {
+				if err := collect(entry.Name); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := collect(rootName); err != nil {
+		return nil, err
+	}
+
+	var out []*model.ProcessDefinition
+	for _, d := range defs {
+		if visited[d.Name] {
+			out = append(out, d)
+		}
+	}
+	return out, nil
 }
 
 func (h *Handlers) validateDefinitions(raw json.RawMessage) Reply {

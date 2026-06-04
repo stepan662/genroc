@@ -86,6 +86,14 @@ func (db *DB) Close() error { return db.bun.Close() }
 
 // ── bun row models ────────────────────────────────────────────────────────────
 
+type channelRow struct {
+	bun.BaseModel `bun:"table:process_channels"`
+	Name          string    `bun:"name,pk"`
+	Channel       string    `bun:"channel,pk"`
+	Version       int       `bun:"version,notnull"`
+	UpdatedAt     time.Time `bun:"updated_at,notnull"`
+}
+
 type definitionRow struct {
 	bun.BaseModel `bun:"table:process_definitions"`
 	Name          string    `bun:"name,pk"`
@@ -179,6 +187,75 @@ func (db *DB) ListDefinitions() ([]model.ProcessDefinition, error) {
 		if err := json.Unmarshal([]byte(r.Definition), &out[i]); err != nil {
 			return nil, err
 		}
+	}
+	return out, nil
+}
+
+// ── Channels ──────────────────────────────────────────────────────────────────
+
+func (db *DB) SaveChannel(name, channel string, version int) error {
+	row := &channelRow{Name: name, Channel: channel, Version: version, UpdatedAt: time.Now().UTC()}
+	_, err := db.bun.NewInsert().
+		Model(row).
+		On("CONFLICT (name, channel) DO UPDATE SET version = EXCLUDED.version, updated_at = EXCLUDED.updated_at").
+		Exec(context.Background())
+	return err
+}
+
+func (db *DB) GetChannel(name, channel string) (int, error) {
+	var row channelRow
+	err := db.bun.NewSelect().
+		Model(&row).
+		Where("name = ? AND channel = ?", name, channel).
+		Scan(context.Background())
+	if err == sql.ErrNoRows {
+		return 0, fmt.Errorf("process %q has no channel %q", name, channel)
+	}
+	return row.Version, err
+}
+
+func (db *DB) DeleteChannel(name, channel string) error {
+	_, err := db.bun.NewDelete().
+		TableExpr("process_channels").
+		Where("name = ? AND channel = ?", name, channel).
+		Exec(context.Background())
+	return err
+}
+
+func (db *DB) ListChannels(name string) (map[string]int, error) {
+	var rows []channelRow
+	err := db.bun.NewSelect().
+		Model(&rows).
+		Where("name = ?", name).
+		OrderExpr("channel").
+		Scan(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]int, len(rows))
+	for _, r := range rows {
+		out[r.Channel] = r.Version
+	}
+	return out, nil
+}
+
+// LoadDefinitionsOnChannel returns all process definitions currently pointed to
+// by the given channel, one per process name.
+func (db *DB) LoadDefinitionsOnChannel(channel string) ([]*model.ProcessDefinition, error) {
+	var rows []channelRow
+	if err := db.bun.NewSelect().
+		Model(&rows).
+		Where("channel = ?", channel).
+		Scan(context.Background()); err != nil {
+		return nil, err
+	}
+	out := make([]*model.ProcessDefinition, 0, len(rows))
+	for _, r := range rows {
+		def, err := db.GetDefinition(r.Name, r.Version)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, def)
 	}
 	return out, nil
 }
