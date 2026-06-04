@@ -10,7 +10,7 @@ const pgProject = process.env.POSTGRES_DSN
           // postgres database as the integration server, so the main server
           // would race to claim those instances. Excluded until each crash
           // test run gets its own isolated database.
-          include: ["integration/**/*_test.ts"],
+          include: ["integration/**/*_test.ts", "cli/**/*_test.ts"],
           exclude: ["integration/crash_recovery_test.ts"],
           testTimeout: 30_000,
           env: {
@@ -29,7 +29,7 @@ export default defineConfig({
         test: {
           name: "sqlite",
           globalSetup: ["./helpers/server.ts"],
-          include: ["integration/**/*_test.ts"],
+          include: ["integration/**/*_test.ts", "cli/**/*_test.ts"],
           testTimeout: 30_000,
           env: { GENT_PORT: "8888" },
         },

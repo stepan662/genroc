@@ -208,8 +208,14 @@ var registry = func() []actionDef {
 			Path:    "/channels",
 			Summary: "List all channels for a process",
 			Tags:    []string{"Channels"},
-			Req:     ListChannelsReq{Name: "order_pipeline"},
-			Resp:    []ChannelEntry{{Channel: "latest", Version: 2}, {Channel: "stable", Version: 1}},
+			PathQuery: struct {
+				Name string `query:"name" description:"Process name"`
+			}{},
+			Resp: []ChannelEntry{{Channel: "latest", Version: 2}, {Channel: "stable", Version: 1}},
+			fromHTTP: func(r *http.Request) (Envelope, error) {
+				b, _ := json.Marshal(ListChannelsReq{Name: r.URL.Query().Get("name")})
+				return Envelope{Action: "list_channels", Payload: b}, nil
+			},
 			handle: func(h *Handlers, env Envelope) Reply {
 				return h.listChannels(env.Payload)
 			},

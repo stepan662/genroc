@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -154,8 +155,8 @@ func runChannelCmd(server string, args []string) {
 			Channel string `json:"channel"`
 			Version int    `json:"version"`
 		}
-		if err := call(*serverFlag+"/channels", http.MethodGet,
-			map[string]any{"name": rest[0]}, &resp); err != nil {
+		listURL := *serverFlag + "/channels?name=" + url.QueryEscape(rest[0])
+		if err := callGet(listURL, &resp); err != nil {
 			fatal("%v", err)
 		}
 		for _, e := range resp {
@@ -257,6 +258,32 @@ func runStatusCmd(server string, args []string) {
 	if allClean {
 		fmt.Printf("channel %q is coherent\n", *channelFlag)
 	}
+}
+
+// callGet sends a GET request with no body and decodes the response into out.
+func callGet(url string, out any) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return fmt.Errorf("connect to server: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(raw, &errResp); err != nil {
+			return fmt.Errorf("server error (status %d)", resp.StatusCode)
+		}
+		return fmt.Errorf("server: %s", errResp.Error)
+	}
+	if out != nil {
+		return json.Unmarshal(raw, out)
+	}
+	return nil
 }
 
 // call sends body as JSON to url and decodes the response into out.

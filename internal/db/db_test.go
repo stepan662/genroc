@@ -54,6 +54,7 @@ func testBackends(t *testing.T) []backend {
 	if sharedPgDB != nil {
 		ctx := context.Background()
 		sharedPgDB.bun.NewRaw("DELETE FROM process_instances").Exec(ctx)
+		sharedPgDB.bun.NewRaw("DELETE FROM process_channels").Exec(ctx)
 		sharedPgDB.bun.NewRaw("DELETE FROM process_definitions").Exec(ctx)
 		out = append(out, backend{sharedPgDB, "postgres"})
 	}
