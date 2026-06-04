@@ -10,20 +10,20 @@ import (
 	"gent/internal/schema"
 )
 
-// ctx parses a JSON string into a context schema map.
-func ctx(t *testing.T, s string) map[string]any {
+// ctx parses a JSON string into a Schema, failing on unknown keywords.
+func ctx(t *testing.T, s string) schema.Schema {
 	t.Helper()
-	var m map[string]any
-	if err := json.Unmarshal([]byte(s), &m); err != nil {
+	sc, err := schema.Parse([]byte(s))
+	if err != nil {
 		t.Fatalf("invalid context schema JSON: %v", err)
 	}
-	return m
+	return sc
 }
 
 // infer calls InferType and fails the test on error.
-func infer(t *testing.T, expr string, s map[string]any) map[string]any {
+func infer(t *testing.T, expr string, s schema.Schema) map[string]any {
 	t.Helper()
-	got, err := expression.InferType(expr, schema.Load(s))
+	got, err := expression.InferType(expr, s)
 	if err != nil {
 		t.Fatalf("InferType(%q): %v", expr, err)
 	}
@@ -32,9 +32,9 @@ func infer(t *testing.T, expr string, s map[string]any) map[string]any {
 
 // inferErr calls InferType, expects an error, and optionally checks that the
 // error message contains wantContains (pass "" to skip the message check).
-func inferErr(t *testing.T, expr string, s map[string]any, wantContains string) error {
+func inferErr(t *testing.T, expr string, s schema.Schema, wantContains string) error {
 	t.Helper()
-	_, err := expression.InferType(expr, schema.Load(s))
+	_, err := expression.InferType(expr, s)
 	if err == nil {
 		t.Fatalf("InferType(%q): expected error, got nil", expr)
 	}

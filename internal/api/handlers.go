@@ -314,7 +314,7 @@ func (h *Handlers) ProcessSpec(name string, version int) ([]byte, error) {
 	return json.MarshalIndent(spec, "", "  ")
 }
 
-func patchInputSchema(spec map[string]any, inputSchema map[string]any) error {
+func patchInputSchema(spec map[string]any, inputSchema any) error {
 	components, ok := spec["components"].(map[string]any)
 	if !ok {
 		return fmt.Errorf("spec missing components")
@@ -332,11 +332,20 @@ func patchInputSchema(spec map[string]any, inputSchema map[string]any) error {
 		return fmt.Errorf("ApiStartInstanceReq missing properties")
 	}
 
-	if inputSchema["$id"] == nil {
-		inputSchema = maps.Clone(inputSchema)
-		inputSchema["$id"] = "instance_input_schema"
+	// Marshal the typed schema node to a plain map for OpenAPI spec injection.
+	b, err := json.Marshal(inputSchema)
+	if err != nil {
+		return fmt.Errorf("marshal input schema: %w", err)
 	}
-	props["input"] = inputSchema
+	var asMap map[string]any
+	if err := json.Unmarshal(b, &asMap); err != nil {
+		return fmt.Errorf("unmarshal input schema: %w", err)
+	}
+	if asMap["$id"] == nil {
+		asMap = maps.Clone(asMap)
+		asMap["$id"] = "instance_input_schema"
+	}
+	props["input"] = asMap
 	reqSchema["required"] = []string{"process", "input"}
 	return nil
 }

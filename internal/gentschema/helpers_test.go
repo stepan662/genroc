@@ -41,14 +41,19 @@ func defKeys(out gentschema.SchemaFile) []string {
 
 func assertJSON(t *testing.T, got any, wantJSON string) {
 	t.Helper()
-	ga, err := json.MarshalIndent(got, "", "  ")
+	// Round-trip through map[string]any so both sides use alphabetical key order.
+	raw, err := json.Marshal(got)
 	if err != nil {
 		t.Fatalf("marshal got: %v", err)
 	}
-	var wantParsed any
+	var gotParsed, wantParsed any
+	if err := json.Unmarshal(raw, &gotParsed); err != nil {
+		t.Fatalf("unmarshal got: %v", err)
+	}
 	if err := json.Unmarshal([]byte(wantJSON), &wantParsed); err != nil {
 		t.Fatalf("wantJSON is not valid JSON: %v\n%s", err, wantJSON)
 	}
+	ga, _ := json.MarshalIndent(gotParsed, "", "  ")
 	gb, _ := json.MarshalIndent(wantParsed, "", "  ")
 	if string(ga) != string(gb) {
 		t.Errorf("schema mismatch:\n got:  %s\n want: %s", ga, gb)

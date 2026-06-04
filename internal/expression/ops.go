@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+
+	"gent/internal/schema"
 )
 
 // ErrUnsupported is returned when the expression uses a construct outside
@@ -14,24 +16,18 @@ func (e ErrUnsupported) Error() string {
 	return "unsupported expression: " + e.Detail
 }
 
-// binOp pairs the type-inference and runtime-evaluation behaviour of a binary
-// operator. Defining both here means adding a new operator touches one place.
+// binOp pairs the type-inference and runtime-evaluation behaviour of a binary operator.
 type binOp struct {
-	infer func(left, right map[string]any) (map[string]any, error)
+	infer func(left, right *schema.SchemaNode) (*schema.SchemaNode, error)
 	eval  func(left, right any) (any, error)
 }
 
-// unOp pairs the type-inference and runtime-evaluation behaviour of a unary
-// operator.
+// unOp pairs the type-inference and runtime-evaluation behaviour of a unary operator.
 type unOp struct {
-	infer func(operand map[string]any) (map[string]any, error)
+	infer func(operand *schema.SchemaNode) (*schema.SchemaNode, error)
 	eval  func(operand any) (any, error)
 }
 
-// binaryOps is the authoritative list of supported binary operators.
-// Adding an entry here makes it available to both InferType and Eval.
-// && and || carry nil eval because short-circuit requires lazy operand
-// evaluation; the walkers handle them directly.
 var binaryOps = map[string]binOp{
 	"==": {infer: alwaysBoolean, eval: func(l, r any) (any, error) { return equalValues(l, r), nil }},
 	"!=": {infer: alwaysBoolean, eval: func(l, r any) (any, error) { return !equalValues(l, r), nil }},
@@ -49,7 +45,6 @@ var binaryOps = map[string]binOp{
 	"??": {infer: inferNullCoalesce, eval: nil},
 }
 
-// unaryOps is the authoritative list of supported unary operators.
 var unaryOps = map[string]unOp{
 	"!": {infer: inferNot, eval: func(v any) (any, error) { return evalNot(v) }},
 	"-": {infer: numericPassthrough, eval: func(v any) (any, error) { return negateNum(v) }},
@@ -58,15 +53,12 @@ var unaryOps = map[string]unOp{
 
 // ---- infer helpers ----
 
-func alwaysBoolean(_, _ map[string]any) (map[string]any, error) {
+func alwaysBoolean(_, _ *schema.SchemaNode) (*schema.SchemaNode, error) {
 	return typeSchema("boolean"), nil
 }
 
-// inferOrderingCmp rejects nullable, ambiguous, and non-numeric operands.
-// expr-lang only supports numeric ordering; string and boolean comparisons fail
-// at runtime.
-func inferOrderingCmp(left, right map[string]any) (map[string]any, error) {
-	if hasNullType(left) || hasNullType(right) {
+func inferOrderingCmp(left, right *schema.SchemaNode) (*schema.SchemaNode, error) {
+	if schema.HasNullType(left) || schema.HasNullType(right) {
 		return nil, fmt.Errorf("comparison requires non-nullable operands")
 	}
 	lt, ok := concreteTypeOf(left)
@@ -83,9 +75,8 @@ func inferOrderingCmp(left, right map[string]any) (map[string]any, error) {
 	return typeSchema("boolean"), nil
 }
 
-// inferLogical rejects nullable, ambiguous, and non-boolean operands.
-func inferLogical(left, right map[string]any) (map[string]any, error) {
-	if hasNullType(left) || hasNullType(right) {
+func inferLogical(left, right *schema.SchemaNode) (*schema.SchemaNode, error) {
+	if schema.HasNullType(left) || schema.HasNullType(right) {
 		return nil, fmt.Errorf("logical operator requires non-nullable boolean operands")
 	}
 	lt, ok := concreteTypeOf(left)
@@ -102,8 +93,8 @@ func inferLogical(left, right map[string]any) (map[string]any, error) {
 	return typeSchema("boolean"), nil
 }
 
-func inferNot(operand map[string]any) (map[string]any, error) {
-	if hasNullType(operand) {
+func inferNot(operand *schema.SchemaNode) (*schema.SchemaNode, error) {
+	if schema.HasNullType(operand) {
 		return nil, fmt.Errorf("! requires a non-nullable boolean operand")
 	}
 	t, ok := concreteTypeOf(operand)
@@ -124,8 +115,8 @@ func evalNot(v any) (any, error) {
 	return !b, nil
 }
 
-func inferAdd(left, right map[string]any) (map[string]any, error) {
-	if hasNullType(left) || hasNullType(right) {
+func inferAdd(left, right *schema.SchemaNode) (*schema.SchemaNode, error) {
+	if schema.HasNullType(left) || schema.HasNullType(right) {
 		return nil, fmt.Errorf("operator requires non-nullable operands")
 	}
 	lt, ltOK := concreteTypeOf(left)
@@ -139,8 +130,8 @@ func inferAdd(left, right map[string]any) (map[string]any, error) {
 	return inferArith(left, right)
 }
 
-func inferArith(left, right map[string]any) (map[string]any, error) {
-	if hasNullType(left) || hasNullType(right) {
+func inferArith(left, right *schema.SchemaNode) (*schema.SchemaNode, error) {
+	if schema.HasNullType(left) || schema.HasNullType(right) {
 		return nil, fmt.Errorf("operator requires non-nullable operands")
 	}
 	lt, ltOK := concreteTypeOf(left)
@@ -157,10 +148,8 @@ func inferArith(left, right map[string]any) (map[string]any, error) {
 	return typeSchema("number"), nil
 }
 
-// inferMod requires both operands to be integer — expr-lang rejects float % int
-// at runtime, unlike the other arithmetic operators.
-func inferMod(left, right map[string]any) (map[string]any, error) {
-	if hasNullType(left) || hasNullType(right) {
+func inferMod(left, right *schema.SchemaNode) (*schema.SchemaNode, error) {
+	if schema.HasNullType(left) || schema.HasNullType(right) {
 		return nil, fmt.Errorf("%% requires non-nullable operands")
 	}
 	lt, ltOK := concreteTypeOf(left)
@@ -174,9 +163,8 @@ func inferMod(left, right map[string]any) (map[string]any, error) {
 	return typeSchema("integer"), nil
 }
 
-// inferDiv always returns number because division of integers can produce a fraction.
-func inferDiv(left, right map[string]any) (map[string]any, error) {
-	if hasNullType(left) || hasNullType(right) {
+func inferDiv(left, right *schema.SchemaNode) (*schema.SchemaNode, error) {
+	if schema.HasNullType(left) || schema.HasNullType(right) {
 		return nil, fmt.Errorf("/ requires non-nullable operands")
 	}
 	lt, ltOK := concreteTypeOf(left)
@@ -190,8 +178,8 @@ func inferDiv(left, right map[string]any) (map[string]any, error) {
 	return typeSchema("number"), nil
 }
 
-func numericPassthrough(operand map[string]any) (map[string]any, error) {
-	if hasNullType(operand) {
+func numericPassthrough(operand *schema.SchemaNode) (*schema.SchemaNode, error) {
+	if schema.HasNullType(operand) {
 		return nil, fmt.Errorf("unary operator requires a non-nullable numeric operand")
 	}
 	t, ok := concreteTypeOf(operand)
@@ -204,15 +192,11 @@ func numericPassthrough(operand map[string]any) (map[string]any, error) {
 	return operand, nil
 }
 
-// inferNullCoalesce infers the result type of a ?? b.
-// If left is always null, the result is right's type.
-// If left is never nullable, the result is left's type (right is unreachable).
-// If left is nullable, the result is the union of stripNull(left) and right.
-func inferNullCoalesce(left, right map[string]any) (map[string]any, error) {
-	if isNullType(left) {
+func inferNullCoalesce(left, right *schema.SchemaNode) (*schema.SchemaNode, error) {
+	if schema.IsNullType(left) {
 		return right, nil
 	}
-	nonNullLeft := stripNull(left)
+	nonNullLeft := schema.StripNull(left)
 	if schemasEqual(left, nonNullLeft) {
 		return left, nil
 	}
@@ -227,7 +211,7 @@ func inferNullCoalesce(left, right map[string]any) (map[string]any, error) {
 		}
 		return typeSchema("number"), nil
 	}
-	return map[string]any{"oneOf": []any{nonNullLeft, right}}, nil
+	return &schema.SchemaNode{OneOf: []*schema.SchemaNode{nonNullLeft, right}}, nil
 }
 
 // ---- eval helpers ----
@@ -262,8 +246,6 @@ func evalAdd(l, r any) (any, error) {
 	return numBinOp("+", func(a, b float64) float64 { return a + b })(l, r)
 }
 
-// numBinOp returns an eval func for a numeric binary operator that preserves
-// integer type when both operands are integers and the result is whole.
 func numBinOp(op string, fn func(float64, float64) float64) func(any, any) (any, error) {
 	return func(l, r any) (any, error) {
 		lf, rf, ok := bothNumeric(l, r)
@@ -318,33 +300,29 @@ func requireNum(v any) (any, error) {
 	return v, nil
 }
 
-// ---- shared type / numeric utilities ----
+// ---- schema helpers ----
 
-func typeSchema(t string) map[string]any {
-	return map[string]any{"type": t}
+func typeSchema(t string) *schema.SchemaNode {
+	return &schema.SchemaNode{Type: schema.SchemaType{t}}
 }
 
 func isNumeric(t string) bool {
 	return t == "integer" || t == "number"
 }
 
-// nullableSchema returns {type: [X, "null"]} when one of a/b is a null schema
-// and the other carries a single string type. Falls back to (nil, false) for
-// complex cases so the caller can use oneOf instead.
-// withNull makes schema nullable. Simple types produce {type:[X,"null"]};
-// already-nullable or {} schemas are returned as-is; complex schemas are
-// wrapped in {oneOf:[schema,{type:"null"}]}.
-func withNull(s map[string]any) map[string]any {
-	if len(s) == 0 {
-		return s // {} = any, already includes null
+// withNull makes s nullable. Simple types produce {type:[T,"null"]};
+// complex schemas are wrapped in {oneOf:[s,{type:"null"}]}.
+func withNull(s *schema.SchemaNode) *schema.SchemaNode {
+	if s == nil {
+		return s
 	}
 	if result, ok := tryNullable(s, typeSchema("null")); ok {
 		return result
 	}
-	return map[string]any{"oneOf": []any{s, typeSchema("null")}}
+	return &schema.SchemaNode{OneOf: []*schema.SchemaNode{s, typeSchema("null")}}
 }
 
-func nullableSchema(a, b map[string]any) (map[string]any, bool) {
+func nullableSchema(a, b *schema.SchemaNode) (*schema.SchemaNode, bool) {
 	if s, ok := tryNullable(a, b); ok {
 		return s, true
 	}
@@ -352,82 +330,56 @@ func nullableSchema(a, b map[string]any) (map[string]any, bool) {
 }
 
 // tryNullable checks if other is {type:"null"} and self can be made nullable.
-// Returns (nullable schema, true) on success.
-// All keys of self are preserved — only the "type" field is widened to include "null".
-// Schemas with "properties" are intentionally excluded: merging null into their
-// type array would mislead property lookups (the properties would still appear
-// present even when the value is null). Those schemas are wrapped in oneOf by
-// withNull instead.
-func tryNullable(self, other map[string]any) (map[string]any, bool) {
-	if !isNullType(other) {
+// Schemas with properties are excluded (they need oneOf wrapping by withNull).
+func tryNullable(self, other *schema.SchemaNode) (*schema.SchemaNode, bool) {
+	if !schema.IsNullType(other) {
 		return nil, false
 	}
-	// self is already a nullable type array → return as-is.
-	if types, ok := self["type"].([]any); ok && typeArrayContainsNull(types) {
+	if schema.HasNullType(self) {
 		return self, true
 	}
-	// Schemas with properties need oneOf wrapping so that property access after
-	// null-check narrowing works correctly (handled by withNull's fallback).
-	if _, hasProps := self["properties"]; hasProps {
+	if self.Properties != nil {
 		return nil, false
 	}
-	// self has a simple non-null type → widen to [type, "null"], preserving all other keys.
-	if t, ok := self["type"].(string); ok && t != "null" {
-		result := make(map[string]any, len(self))
-		for k, v := range self {
-			result[k] = v
-		}
-		result["type"] = []any{t, "null"}
-		return result, true
+	if len(self.Type) == 1 && self.Type[0] != "null" {
+		n := *self
+		n.Type = schema.SchemaType{self.Type[0], "null"}
+		return &n, true
 	}
 	return nil, false
 }
 
-func isNullType(s map[string]any) bool {
-	t, _ := s["type"].(string)
-	return t == "null"
-}
-
-// concreteTypeOf extracts a single effective type string from a schema:
-//   - {"type":"T"} → ("T", true)
-//   - anyOf/oneOf where all non-null variants share the same type → (type, true)
-//   - anyOf/oneOf where all non-null variants are numeric (mixed int/number) → ("number", true)
-//   - anything else (ambiguous, no type, nullable) → ("", false)
-//
-// Nullable schemas (those caught by hasNullType) are not unwrapped here;
-// callers must check hasNullType first.
-func concreteTypeOf(s map[string]any) (string, bool) {
-	if t, ok := s["type"].(string); ok {
-		return t, true
+// concreteTypeOf extracts a single effective type string from a schema.
+func concreteTypeOf(s *schema.SchemaNode) (string, bool) {
+	if s == nil {
+		return "", false
 	}
-	for _, kw := range []string{"anyOf", "oneOf"} {
-		variants, ok := s[kw].([]any)
-		if !ok {
+	if len(s.Type) == 1 {
+		return s.Type[0], true
+	}
+	for _, variants := range [][]*schema.SchemaNode{s.AnyOf, s.OneOf} {
+		if variants == nil {
 			continue
 		}
 		var types []string
 		for _, v := range variants {
-			vs, ok := v.(map[string]any)
-			if !ok {
+			if v == nil {
 				return "", false
 			}
-			if isNullType(vs) {
-				return "", false // nullable — hasNullType must have missed it; reject
-			}
-			t, ok := vs["type"].(string)
-			if !ok {
+			if schema.IsNullType(v) {
 				return "", false
 			}
-			types = append(types, t)
+			if len(v.Type) != 1 {
+				return "", false
+			}
+			types = append(types, v.Type[0])
 		}
 		if len(types) == 0 {
 			return "", false
 		}
-		// All variants the same concrete type.
 		if allEqual(types) {
 			return types[0], true
 		}
-		// All variants numeric (integer/number mix) → widen to number.
 		if allSatisfy(types, isNumeric) {
 			return "number", true
 		}
@@ -455,25 +407,24 @@ func allSatisfy(ss []string, fn func(string) bool) bool {
 }
 
 // unwrapSingleVariant simplifies a oneOf/anyOf schema that has exactly one
-// variant (with no null variants) into that variant directly, so
-// {"oneOf":[{"type":"number"}]} is treated the same as {"type":"number"}.
-// Schemas with a null variant are left unchanged so hasNullType can catch them.
-func unwrapSingleVariant(s map[string]any) map[string]any {
-	for _, kw := range []string{"anyOf", "oneOf"} {
-		variants, ok := s[kw].([]any)
-		if !ok {
+// non-null variant into that variant directly.
+func unwrapSingleVariant(s *schema.SchemaNode) *schema.SchemaNode {
+	if s == nil {
+		return s
+	}
+	for _, variants := range [][]*schema.SchemaNode{s.AnyOf, s.OneOf} {
+		if variants == nil {
 			continue
 		}
-		var nonNull []map[string]any
+		var nonNull []*schema.SchemaNode
 		for _, v := range variants {
-			vs, ok := v.(map[string]any)
-			if !ok {
+			if v == nil {
 				return s
 			}
-			if isNullType(vs) {
-				return s // preserve nullable schemas for hasNullType to handle
+			if schema.IsNullType(v) {
+				return s
 			}
-			nonNull = append(nonNull, vs)
+			nonNull = append(nonNull, v)
 		}
 		if len(nonNull) == 1 {
 			return nonNull[0]
@@ -482,41 +433,13 @@ func unwrapSingleVariant(s map[string]any) map[string]any {
 	return s
 }
 
-// hasNullType reports whether null is a possible type for the schema:
-// {"type":"null"}, {"type":["X","null"]}, or anyOf/oneOf with a null variant.
-func hasNullType(s map[string]any) bool {
-	switch t := s["type"].(type) {
-	case string:
-		return t == "null"
-	case []any:
-		return typeArrayContainsNull(t)
-	}
-	for _, kw := range []string{"anyOf", "oneOf"} {
-		if variants, ok := s[kw].([]any); ok {
-			for _, v := range variants {
-				if vs, ok := v.(map[string]any); ok && isNullType(vs) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-func typeArrayContainsNull(types []any) bool {
-	for _, t := range types {
-		if t == "null" {
-			return true
-		}
-	}
-	return false
-}
-
-func schemasEqual(a, b map[string]any) bool {
+func schemasEqual(a, b *schema.SchemaNode) bool {
 	aj, err1 := json.Marshal(a)
 	bj, err2 := json.Marshal(b)
 	return err1 == nil && err2 == nil && string(aj) == string(bj)
 }
+
+// ---- runtime type / numeric utilities ----
 
 func toFloat64(v any) (float64, bool) {
 	switch n := v.(type) {

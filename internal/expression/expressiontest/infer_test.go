@@ -2,29 +2,31 @@ package expressiontest
 
 import (
 	"testing"
+
+	"gent/internal/schema"
 )
 
 // --- Literals ---
 
 func TestInfer_IntegerLiteral(t *testing.T) {
-	assertSchema(t, infer(t, "42", nil), `{"type":"integer"}`)
+	assertSchema(t, infer(t, "42", schema.Schema{}), `{"type":"integer"}`)
 }
 
 func TestInfer_FloatLiteral(t *testing.T) {
-	assertSchema(t, infer(t, "3.14", nil), `{"type":"number"}`)
+	assertSchema(t, infer(t, "3.14", schema.Schema{}), `{"type":"number"}`)
 }
 
 func TestInfer_StringLiteral(t *testing.T) {
-	assertSchema(t, infer(t, `"hello"`, nil), `{"type":"string"}`)
+	assertSchema(t, infer(t, `"hello"`, schema.Schema{}), `{"type":"string"}`)
 }
 
 func TestInfer_BoolLiteral(t *testing.T) {
-	assertSchema(t, infer(t, "true", nil), `{"type":"boolean"}`)
-	assertSchema(t, infer(t, "false", nil), `{"type":"boolean"}`)
+	assertSchema(t, infer(t, "true", schema.Schema{}), `{"type":"boolean"}`)
+	assertSchema(t, infer(t, "false", schema.Schema{}), `{"type":"boolean"}`)
 }
 
 func TestInfer_NilLiteral(t *testing.T) {
-	assertSchema(t, infer(t, "nil", nil), `{"type":"null"}`)
+	assertSchema(t, infer(t, "nil", schema.Schema{}), `{"type":"null"}`)
 }
 
 // --- Field access ---
@@ -226,7 +228,7 @@ func TestInfer_NullCoalesce_NullableField_SameType(t *testing.T) {
 }
 
 func TestInfer_NullCoalesce_AlwaysNull_ReturnsRight(t *testing.T) {
-	assertSchema(t, infer(t, "nil ?? 0", nil), `{"type":"integer"}`)
+	assertSchema(t, infer(t, "nil ?? 0", schema.Schema{}), `{"type":"integer"}`)
 }
 
 func TestInfer_NullCoalesce_NonNullableLeft_ReturnsLeft(t *testing.T) {
@@ -258,7 +260,7 @@ func TestInfer_NullCoalesce_DifferentTypes(t *testing.T) {
 // --- Unsupported constructs ---
 
 func TestInfer_FunctionCall_Unsupported(t *testing.T) {
-	err := inferErr(t, `len("hello")`, nil, "")
+	err := inferErr(t, `len("hello")`, schema.Schema{}, "")
 	assertUnsupported(t, err)
 }
 

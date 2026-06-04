@@ -8,26 +8,38 @@ import (
 	"github.com/xeipuuv/gojsonschema"
 )
 
-func normalize(t *testing.T, in string) map[string]any {
+func normalize(t *testing.T, in string) *schema.SchemaNode {
 	t.Helper()
-	var m map[string]any
-	if err := json.Unmarshal([]byte(in), &m); err != nil {
-		t.Fatalf("invalid input schema: %v", err)
+	var n schema.SchemaNode
+	if err := json.Unmarshal([]byte(in), &n); err != nil {
+		t.Fatalf("parse schema: %v", err)
 	}
-	out, err := schema.Normalize(m)
+	out, err := schema.Normalize(&n)
 	if err != nil {
 		t.Fatalf("Normalize: %v", err)
 	}
 	return out
 }
 
+func assertParseErr(t *testing.T, in string, wantMsg string) {
+	t.Helper()
+	var n schema.SchemaNode
+	err := json.Unmarshal([]byte(in), &n)
+	if err == nil {
+		t.Fatalf("expected parse error %q, got nil", wantMsg)
+	}
+	if wantMsg != "" && err.Error() != wantMsg {
+		t.Errorf("error message mismatch\ngot:  %q\nwant: %q", err.Error(), wantMsg)
+	}
+}
+
 func assertErr(t *testing.T, in string, wantMsg string) {
 	t.Helper()
-	var m map[string]any
-	if err := json.Unmarshal([]byte(in), &m); err != nil {
-		t.Fatalf("invalid input schema: %v", err)
+	var n schema.SchemaNode
+	if err := json.Unmarshal([]byte(in), &n); err != nil {
+		t.Fatalf("parse schema: %v", err)
 	}
-	_, err := schema.Normalize(m)
+	_, err := schema.Normalize(&n)
 	if err == nil {
 		t.Fatalf("expected error %q, got nil", wantMsg)
 	}
@@ -36,20 +48,22 @@ func assertErr(t *testing.T, in string, wantMsg string) {
 	}
 }
 
-func assertJSON(t *testing.T, got map[string]any, want string) {
+func assertJSON(t *testing.T, got *schema.SchemaNode, want string) {
 	t.Helper()
-	gotBytes, err := json.MarshalIndent(got, "", "  ")
+	// Round-trip got through map[string]any so key order matches want (both sort alphabetically).
+	gotRaw, err := json.Marshal(got)
 	if err != nil {
 		t.Fatalf("marshal got: %v", err)
 	}
-	var wantParsed any
+	var gotParsed, wantParsed any
+	if err := json.Unmarshal(gotRaw, &gotParsed); err != nil {
+		t.Fatalf("unmarshal got: %v", err)
+	}
 	if err := json.Unmarshal([]byte(want), &wantParsed); err != nil {
 		t.Fatalf("invalid expected JSON: %v", err)
 	}
-	wantBytes, err := json.MarshalIndent(wantParsed, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal want: %v", err)
-	}
+	gotBytes, _ := json.MarshalIndent(gotParsed, "", "  ")
+	wantBytes, _ := json.MarshalIndent(wantParsed, "", "  ")
 	if string(gotBytes) != string(wantBytes) {
 		t.Errorf("output mismatch\ngot:\n%s\n\nwant:\n%s", gotBytes, wantBytes)
 	}
@@ -58,7 +72,8 @@ func assertJSON(t *testing.T, got map[string]any, want string) {
 func assertSemanticEquivalence(t *testing.T, src string, valid []any, invalid []any) {
 	t.Helper()
 
-	var original, toNorm map[string]any
+	var original schema.SchemaNode
+	var toNorm schema.SchemaNode
 	if err := json.Unmarshal([]byte(src), &original); err != nil {
 		t.Fatalf("parse schema: %v", err)
 	}
@@ -66,12 +81,12 @@ func assertSemanticEquivalence(t *testing.T, src string, valid []any, invalid []
 		t.Fatalf("parse schema copy: %v", err)
 	}
 
-	normalized, err := schema.Normalize(toNorm)
+	normalized, err := schema.Normalize(&toNorm)
 	if err != nil {
 		t.Fatalf("Normalize: %v", err)
 	}
 
-	origSchema, err := gojsonschema.NewSchema(gojsonschema.NewGoLoader(original))
+	origSchema, err := gojsonschema.NewSchema(gojsonschema.NewGoLoader(&original))
 	if err != nil {
 		t.Fatalf("original schema is not a valid JSON Schema: %v", err)
 	}

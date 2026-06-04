@@ -49,9 +49,9 @@ type Call struct {
 	Endpoint  string            `json:"endpoint,omitempty"`           // rest
 	Headers   map[string]string `json:"headers,omitempty"`            // rest, values are expressions
 	Exec      string            `json:"exec,omitempty"`               // script
-	OutputSchema map[string]any `json:"output_schema,omitempty"`      // rest/script: validate & persist output
-	Processes []ChildProcessEntry `json:"processes,omitempty"`        // child_process
-	ChildOutputSchema map[string]any `json:"child_output_schema,omitempty"` // child_process: validate each child's output
+	OutputSchema      *schema.SchemaNode  `json:"output_schema,omitempty"`       // rest/script: validate & persist output
+	Processes         []ChildProcessEntry `json:"processes,omitempty"`           // child_process
+	ChildOutputSchema *schema.SchemaNode  `json:"child_output_schema,omitempty"` // child_process: validate each child's output
 }
 
 // JSONSchemaBytes returns the JSON Schema for Call as a discriminated union
@@ -206,14 +206,14 @@ type ProcessDefinition struct {
 	Name        string            `json:"name"                 validate:"required" description:"Unique process identifier."`
 	Version     int               `json:"version"              validate:"min=1"    description:"Version number, must be ≥ 1. Once published, a version must never be mutated — create a new version instead."`
 	Steps       []*Step           `json:"steps"                validate:"required,min=1,dive" description:"Ordered list of execution steps. Control advances linearly unless a switch case redirects."`
-	InputSchema map[string]any    `json:"input_schema,omitempty"                              description:"JSON Schema used to validate the input payload when starting a new instance."`
+	InputSchema *schema.SchemaNode `json:"input_schema,omitempty"                              description:"JSON Schema used to validate the input payload when starting a new instance."`
 	Output      map[string]string `json:"output,omitempty"                                    description:"Expression map evaluated at completion to produce the process output. Keys become output field names."`
 }
 
 // Normalize normalizes InputSchema and all step OutputSchemas in-place using the
 // schema package (flattens $defs to root, removes unused definitions, rewrites $refs).
 func (d *ProcessDefinition) Normalize() error {
-	if len(d.InputSchema) > 0 {
+	if d.InputSchema != nil {
 		normalized, err := schema.Normalize(d.InputSchema)
 		if err != nil {
 			return fmt.Errorf("input_schema: %w", err)
@@ -224,14 +224,14 @@ func (d *ProcessDefinition) Normalize() error {
 		if s.Call == nil {
 			continue
 		}
-		if len(s.Call.OutputSchema) > 0 {
+		if s.Call.OutputSchema != nil {
 			normalized, err := schema.Normalize(s.Call.OutputSchema)
 			if err != nil {
 				return fmt.Errorf("step %q call.output_schema: %w", s.ID, err)
 			}
 			s.Call.OutputSchema = normalized
 		}
-		if len(s.Call.ChildOutputSchema) > 0 {
+		if s.Call.ChildOutputSchema != nil {
 			normalized, err := schema.Normalize(s.Call.ChildOutputSchema)
 			if err != nil {
 				return fmt.Errorf("step %q call.child_output_schema: %w", s.ID, err)
@@ -318,11 +318,11 @@ func validateStep(s *Step, stepIDs map[string]struct{}) error {
 	return nil
 }
 
-func checkSchemaDoc(field string, schema map[string]any) error {
-	if len(schema) == 0 {
+func checkSchemaDoc(field string, s *schema.SchemaNode) error {
+	if s == nil {
 		return nil
 	}
-	if _, err := gojsonschema.NewSchema(gojsonschema.NewGoLoader(schema)); err != nil {
+	if _, err := gojsonschema.NewSchema(gojsonschema.NewGoLoader(s)); err != nil {
 		return fmt.Errorf("%s is not a valid JSON Schema: %w", field, err)
 	}
 	return nil
@@ -343,12 +343,12 @@ func (c *Call) ValidateChildOutput(output any) error {
 	return validateSchema(c.ChildOutputSchema, output)
 }
 
-func validateSchema(schema map[string]any, data any) error {
-	if len(schema) == 0 {
+func validateSchema(s *schema.SchemaNode, data any) error {
+	if s == nil {
 		return nil
 	}
 	result, err := gojsonschema.Validate(
-		gojsonschema.NewGoLoader(schema),
+		gojsonschema.NewGoLoader(s),
 		gojsonschema.NewGoLoader(data),
 	)
 	if err != nil {

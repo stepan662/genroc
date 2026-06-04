@@ -2,6 +2,8 @@ package model
 
 import (
 	"testing"
+
+	"gent/internal/schema"
 )
 
 func TestProcessDefinition_Normalize(t *testing.T) {
@@ -19,16 +21,15 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 	t.Run("simple InputSchema without refs is unchanged", func(t *testing.T) {
 		d := ProcessDefinition{
 			Name: "p", Version: 1, Steps: []*Step{validStep("s1")},
-			InputSchema: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{"id": map[string]any{"type": "integer"}},
+			InputSchema: &schema.SchemaNode{
+				Type:       schema.SchemaType{"object"},
+				Properties: map[string]*schema.SchemaNode{"id": {Type: schema.SchemaType{"integer"}}},
 			},
 		}
 		if err := d.Normalize(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		props, _ := d.InputSchema["properties"].(map[string]any)
-		if props == nil {
+		if d.InputSchema.Properties == nil {
 			t.Fatal("properties missing after normalize")
 		}
 	})
@@ -36,16 +37,16 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 	t.Run("InputSchema $defs are flattened to root", func(t *testing.T) {
 		d := ProcessDefinition{
 			Name: "p", Version: 1, Steps: []*Step{validStep("s1")},
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"addr": map[string]any{"$ref": "#/$defs/Address"},
+			InputSchema: &schema.SchemaNode{
+				Type: schema.SchemaType{"object"},
+				Properties: map[string]*schema.SchemaNode{
+					"addr": {Ref: "#/$defs/Address"},
 				},
-				"$defs": map[string]any{
-					"Address": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"street": map[string]any{"type": "string"},
+				Defs: map[string]*schema.SchemaNode{
+					"Address": {
+						Type: schema.SchemaType{"object"},
+						Properties: map[string]*schema.SchemaNode{
+							"street": {Type: schema.SchemaType{"string"}},
 						},
 					},
 				},
@@ -54,69 +55,62 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 		if err := d.Normalize(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		defs, _ := d.InputSchema["$defs"].(map[string]any)
-		if defs == nil || defs["Address"] == nil {
+		if d.InputSchema.Defs == nil || d.InputSchema.Defs["Address"] == nil {
 			t.Fatal("$defs/Address missing after normalize")
 		}
-		if d.InputSchema["properties"] == nil {
+		if d.InputSchema.Properties == nil {
 			t.Fatal("properties missing after normalize")
 		}
 	})
 
 	t.Run("step call.output_schema $defs are flattened to root", func(t *testing.T) {
 		step := validStep("charge")
-		step.Call.OutputSchema = map[string]any{
-			"type": "object",
-			"$defs": map[string]any{
-				"Result": map[string]any{"type": "object", "properties": map[string]any{
-					"ok": map[string]any{"type": "boolean"},
-				}},
+		step.Call.OutputSchema = &schema.SchemaNode{
+			Type: schema.SchemaType{"object"},
+			Defs: map[string]*schema.SchemaNode{
+				"Result": {
+					Type:       schema.SchemaType{"object"},
+					Properties: map[string]*schema.SchemaNode{"ok": {Type: schema.SchemaType{"boolean"}}},
+				},
 			},
-			"properties": map[string]any{
-				"result": map[string]any{"$ref": "#/$defs/Result"},
+			Properties: map[string]*schema.SchemaNode{
+				"result": {Ref: "#/$defs/Result"},
 			},
 		}
 		d := ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{step}}
 		if err := d.Normalize(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		defs, _ := step.Call.OutputSchema["$defs"].(map[string]any)
-		if defs == nil || defs["Result"] == nil {
+		if step.Call.OutputSchema.Defs == nil || step.Call.OutputSchema.Defs["Result"] == nil {
 			t.Fatal("$defs/Result missing in call.output_schema after normalize")
 		}
 	})
 
 	t.Run("all step call.output_schemas are normalized", func(t *testing.T) {
 		step1 := validStep("charge")
-		step1.Call.OutputSchema = map[string]any{
-			"type": "object",
-			"$defs": map[string]any{
-				"Tracking": map[string]any{"type": "object"},
-			},
-			"properties": map[string]any{
-				"tracking": map[string]any{"$ref": "#/$defs/Tracking"},
+		step1.Call.OutputSchema = &schema.SchemaNode{
+			Type: schema.SchemaType{"object"},
+			Defs: map[string]*schema.SchemaNode{"Tracking": {Type: schema.SchemaType{"object"}}},
+			Properties: map[string]*schema.SchemaNode{
+				"tracking": {Ref: "#/$defs/Tracking"},
 			},
 		}
 		step2 := validStep("notify")
-		step2.Call.OutputSchema = map[string]any{
-			"type": "object",
-			"$defs": map[string]any{
-				"Result": map[string]any{"type": "object"},
-			},
-			"properties": map[string]any{
-				"result": map[string]any{"$ref": "#/$defs/Result"},
+		step2.Call.OutputSchema = &schema.SchemaNode{
+			Type: schema.SchemaType{"object"},
+			Defs: map[string]*schema.SchemaNode{"Result": {Type: schema.SchemaType{"object"}}},
+			Properties: map[string]*schema.SchemaNode{
+				"result": {Ref: "#/$defs/Result"},
 			},
 		}
 		d := ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{step1, step2}}
 		if err := d.Normalize(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		defs1, _ := step1.Call.OutputSchema["$defs"].(map[string]any)
-		if defs1 == nil || defs1["Tracking"] == nil {
+		if step1.Call.OutputSchema.Defs == nil || step1.Call.OutputSchema.Defs["Tracking"] == nil {
 			t.Fatal("step1 $defs/Tracking missing after normalize")
 		}
-		defs2, _ := step2.Call.OutputSchema["$defs"].(map[string]any)
-		if defs2 == nil || defs2["Result"] == nil {
+		if step2.Call.OutputSchema.Defs == nil || step2.Call.OutputSchema.Defs["Result"] == nil {
 			t.Fatal("step2 $defs/Result missing after normalize")
 		}
 	})
@@ -124,9 +118,9 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 	t.Run("invalid $ref in InputSchema returns error", func(t *testing.T) {
 		d := ProcessDefinition{
 			Name: "p", Version: 1, Steps: []*Step{validStep("s1")},
-			InputSchema: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{"x": map[string]any{"$ref": "#/$defs/Missing"}},
+			InputSchema: &schema.SchemaNode{
+				Type:       schema.SchemaType{"object"},
+				Properties: map[string]*schema.SchemaNode{"x": {Ref: "#/$defs/Missing"}},
 			},
 		}
 		if err := d.Normalize(); err == nil {
@@ -136,9 +130,9 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 
 	t.Run("invalid $ref in step call.output_schema returns error with step ID", func(t *testing.T) {
 		step := validStep("charge")
-		step.Call.OutputSchema = map[string]any{
-			"type":       "object",
-			"properties": map[string]any{"x": map[string]any{"$ref": "#/$defs/Missing"}},
+		step.Call.OutputSchema = &schema.SchemaNode{
+			Type:       schema.SchemaType{"object"},
+			Properties: map[string]*schema.SchemaNode{"x": {Ref: "#/$defs/Missing"}},
 		}
 		d := ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{step}}
 		err := d.Normalize()
@@ -153,25 +147,24 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 	t.Run("unused $defs are removed from InputSchema", func(t *testing.T) {
 		d := ProcessDefinition{
 			Name: "p", Version: 1, Steps: []*Step{validStep("s1")},
-			InputSchema: map[string]any{
-				"type": "object",
-				"$defs": map[string]any{
-					"Used":   map[string]any{"type": "string"},
-					"Unused": map[string]any{"type": "integer"},
+			InputSchema: &schema.SchemaNode{
+				Type: schema.SchemaType{"object"},
+				Defs: map[string]*schema.SchemaNode{
+					"Used":   {Type: schema.SchemaType{"string"}},
+					"Unused": {Type: schema.SchemaType{"integer"}},
 				},
-				"properties": map[string]any{
-					"name": map[string]any{"$ref": "#/$defs/Used"},
+				Properties: map[string]*schema.SchemaNode{
+					"name": {Ref: "#/$defs/Used"},
 				},
 			},
 		}
 		if err := d.Normalize(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		defs, _ := d.InputSchema["$defs"].(map[string]any)
-		if defs == nil || defs["Used"] == nil {
+		if d.InputSchema.Defs == nil || d.InputSchema.Defs["Used"] == nil {
 			t.Fatal("$defs/Used should be present")
 		}
-		if defs["Unused"] != nil {
+		if d.InputSchema.Defs["Unused"] != nil {
 			t.Fatal("$defs/Unused should have been removed as unused")
 		}
 	})
@@ -342,18 +335,17 @@ func TestProcessDefinition_Validate(t *testing.T) {
 }
 
 func TestProcessDefinition_ValidateInput_Nullable(t *testing.T) {
-	schema := map[string]any{
-		"type":     "object",
-		"required": []any{"id"},
-		"properties": map[string]any{
-			"id":      map[string]any{"type": "integer"},
-			"comment": map[string]any{"type": []any{"string", "null"}},
-		},
-	}
 	def := ProcessDefinition{
 		Name: "p", Version: 1,
-		InputSchema: schema,
-		Steps:       []*Step{{ID: "s", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"}}},
+		InputSchema: &schema.SchemaNode{
+			Type:     schema.SchemaType{"object"},
+			Required: []string{"id"},
+			Properties: map[string]*schema.SchemaNode{
+				"id":      {Type: schema.SchemaType{"integer"}},
+				"comment": {Type: schema.SchemaType{"string", "null"}},
+			},
+		},
+		Steps: []*Step{{ID: "s", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"}}},
 	}
 
 	tests := []struct {
@@ -409,12 +401,12 @@ func TestStep_ValidateOutput_Nullable(t *testing.T) {
 		Call: &Call{
 			Type:     CallTypeREST,
 			Endpoint: "http://x",
-			OutputSchema: map[string]any{
-				"type":     "object",
-				"required": []any{"charged"},
-				"properties": map[string]any{
-					"charged": map[string]any{"type": "boolean"},
-					"receipt": map[string]any{"type": []any{"string", "null"}},
+			OutputSchema: &schema.SchemaNode{
+				Type:     schema.SchemaType{"object"},
+				Required: []string{"charged"},
+				Properties: map[string]*schema.SchemaNode{
+					"charged": {Type: schema.SchemaType{"boolean"}},
+					"receipt": {Type: schema.SchemaType{"string", "null"}},
 				},
 			},
 		},

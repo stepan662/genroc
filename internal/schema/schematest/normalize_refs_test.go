@@ -17,25 +17,11 @@ func TestNormalize_items(t *testing.T) {
 	}`)
 }
 
-func TestNormalize_prefixItems(t *testing.T) {
-	assertJSON(t, normalize(t, `{
-		"type": "array",
-		"prefixItems": [
-			{"$ref": "#/$defs/First"},
-			{"type": "string"}
-		],
-		"$defs": {
-			"First":  {"type": "integer"},
-			"Unused": {"type": "boolean"}
-		}
-	}`), `{
-		"$defs": {"First": {"type": "integer"}},
-		"prefixItems": [
-			{"$ref": "#/$defs/First"},
-			{"type": "string"}
-		],
-		"type": "array"
-	}`)
+func TestParse_rejectPrefixItems(t *testing.T) {
+	assertParseErr(t,
+		`{"type":"array","prefixItems":[{"type":"integer"},{"type":"string"}]}`,
+		`unsupported schema keyword "prefixItems"`,
+	)
 }
 
 func TestNormalize_oneOf(t *testing.T) {
@@ -87,55 +73,25 @@ func TestNormalize_allOf(t *testing.T) {
 	}`)
 }
 
-func TestNormalize_not(t *testing.T) {
-	assertJSON(t, normalize(t, `{
-		"not": {"$ref": "#/$defs/Forbidden"},
-		"$defs": {
-			"Forbidden": {"type": "string"},
-			"Unused":    {"type": "integer"}
-		}
-	}`), `{
-		"$defs": {"Forbidden": {"type": "string"}},
-		"not": {"$ref": "#/$defs/Forbidden"}
-	}`)
+func TestParse_rejectNot(t *testing.T) {
+	assertParseErr(t,
+		`{"not":{"type":"string"}}`,
+		`unsupported schema keyword "not"`,
+	)
 }
 
-func TestNormalize_additionalProperties(t *testing.T) {
-	assertJSON(t, normalize(t, `{
-		"type": "object",
-		"additionalProperties": {"$ref": "#/$defs/Value"},
-		"$defs": {
-			"Value":  {"type": "string"},
-			"Unused": {"type": "integer"}
-		}
-	}`), `{
-		"$defs": {"Value": {"type": "string"}},
-		"additionalProperties": {"$ref": "#/$defs/Value"},
-		"type": "object"
-	}`)
+func TestParse_rejectAdditionalProperties(t *testing.T) {
+	assertParseErr(t,
+		`{"type":"object","additionalProperties":{"type":"string"}}`,
+		`unsupported schema keyword "additionalProperties"`,
+	)
 }
 
-func TestNormalize_ifThenElse(t *testing.T) {
-	assertJSON(t, normalize(t, `{
-		"if":   {"$ref": "#/$defs/Cond"},
-		"then": {"$ref": "#/$defs/Yes"},
-		"else": {"$ref": "#/$defs/No"},
-		"$defs": {
-			"Cond":   {"type": "string"},
-			"Yes":    {"type": "integer"},
-			"No":     {"type": "boolean"},
-			"Unused": {"type": "null"}
-		}
-	}`), `{
-		"$defs": {
-			"Cond": {"type": "string"},
-			"No":   {"type": "boolean"},
-			"Yes":  {"type": "integer"}
-		},
-		"else": {"$ref": "#/$defs/No"},
-		"if":   {"$ref": "#/$defs/Cond"},
-		"then": {"$ref": "#/$defs/Yes"}
-	}`)
+func TestParse_rejectIfThenElse(t *testing.T) {
+	assertParseErr(t,
+		`{"if":{"type":"string"},"then":{"type":"integer"}}`,
+		"", // map iteration order is non-deterministic; just check error is non-nil
+	)
 }
 
 func TestNormalize_rejectExternalRef(t *testing.T) {

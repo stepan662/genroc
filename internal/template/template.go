@@ -35,7 +35,7 @@ func InferType(s string, sc schema.Schema) (schema.Schema, error) {
 	if expr, ok := singleExpr(s); ok {
 		return expression.InferType(expr, sc)
 	}
-	return schema.Load(map[string]any{"type": "string"}), nil
+	return schema.FromNode(&schema.SchemaNode{Type: schema.SchemaType{"string"}}), nil
 }
 
 // singleExpr reports whether s is exactly "{{expr}}" with nothing outside.

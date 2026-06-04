@@ -152,32 +152,17 @@ func TestNormalizeSemantic_items(t *testing.T) {
 	)
 }
 
-func TestNormalizeSemantic_additionalProperties(t *testing.T) {
-	assertSemanticEquivalence(t,
-		`{
-			"type": "object",
-			"additionalProperties": {"$ref": "#/$defs/Val"},
-			"$defs": {"Val": {"type": "string"}}
-		}`,
-		[]any{map[string]any{"a": "x", "b": "y"}},
-		[]any{map[string]any{"a": 1}},
+func TestParse_rejectAdditionalPropertiesInSemantic(t *testing.T) {
+	assertParseErr(t,
+		`{"type":"object","additionalProperties":{"type":"string"}}`,
+		`unsupported schema keyword "additionalProperties"`,
 	)
 }
 
-func TestNormalizeSemantic_ifThenElse(t *testing.T) {
-	assertSemanticEquivalence(t,
-		`{
-			"if":   {"$ref": "#/$defs/IsStr"},
-			"then": {"$ref": "#/$defs/LongStr"},
-			"else": {"$ref": "#/$defs/PosInt"},
-			"$defs": {
-				"IsStr":   {"type": "string"},
-				"LongStr": {"type": "string", "minLength": 3},
-				"PosInt":  {"type": "integer", "minimum": 1}
-			}
-		}`,
-		[]any{"hello", 5},
-		[]any{"hi", 0},
+func TestParse_rejectIfThenElseInSemantic(t *testing.T) {
+	assertParseErr(t,
+		`{"if":{"type":"string"},"then":{"type":"integer"},"else":{"type":"boolean"}}`,
+		"", // map iteration order is non-deterministic; just check error is non-nil
 	)
 }
 

@@ -98,47 +98,9 @@ func TestIsSubset_object_properties(t *testing.T) {
 	}
 }
 
-func TestIsSubset_additionalProperties(t *testing.T) {
-	cases := []struct {
-		name  string
-		sub   string
-		super string
-		want  bool
-	}{
-		{
-			"sub has no extra props, super forbids additional",
-			`{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}`,
-			`{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":false}`,
-			true,
-		},
-		{
-			"sub has extra prop, super forbids additional",
-			`{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"integer"}},"required":["a"]}`,
-			`{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":false}`,
-			false,
-		},
-		{
-			"sub extra prop compatible with super additionalProperties schema",
-			`{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"integer"}},"required":["a"]}`,
-			`{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":{"type":"integer"}}`,
-			true,
-		},
-		{
-			"sub extra prop incompatible with super additionalProperties schema",
-			`{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a"]}`,
-			`{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":{"type":"integer"}}`,
-			false,
-		},
-		{
-			"sub extra prop is integer, super additionalProperties allows number",
-			`{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"integer"}},"required":["a"]}`,
-			`{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":{"type":"number"}}`,
-			true,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assertSubset(t, tc.sub, tc.super, tc.want)
-		})
-	}
+func TestParse_rejectAdditionalPropertiesInSubsetContext(t *testing.T) {
+	assertParseErr(t,
+		`{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":false}`,
+		`unsupported schema keyword "additionalProperties"`,
+	)
 }

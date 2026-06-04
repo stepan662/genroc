@@ -20,16 +20,15 @@ type DefinitionGetter interface {
 // def must already be normalised (Generate calls Normalize internally, so
 // call this after Generate).
 func ValidateChildProcessRefs(def *model.ProcessDefinition, getter DefinitionGetter) error {
-	// Rebuild the context the same way Generate/buildInputs does.
 	required, optional := computeContextSets(def.Steps)
 
-	named := make(map[string]map[string]any)
-	if len(def.InputSchema) > 0 {
+	named := make(map[string]*schema.SchemaNode)
+	if def.InputSchema != nil {
 		named["input"] = def.InputSchema
 	}
 	collectNamedOutputs(def.Steps, named)
 
-	var defs map[string]any
+	var defs map[string]*schema.SchemaNode
 	if len(named) > 0 {
 		var err error
 		defs, err = flattenNamedSchemas(named)
@@ -41,7 +40,7 @@ func ValidateChildProcessRefs(def *model.ProcessDefinition, getter DefinitionGet
 	tasks := make(map[string]TaskSchemas)
 	collectTaskRefs(def.Steps, tasks)
 
-	var processInput map[string]any
+	var processInput *schema.SchemaNode
 	if named["input"] != nil {
 		processInput = schemaRef("input")
 	}
@@ -53,7 +52,7 @@ func ValidateChildProcessRefs(def *model.ProcessDefinition, getter DefinitionGet
 
 		ctx := contextSchema(required[s.ID], optional[s.ID], tasks, processInput)
 		if len(defs) > 0 {
-			ctx["$defs"] = defs
+			ctx = withDefs(ctx, defs)
 		}
 
 		for i, p := range s.Call.Processes {
@@ -65,12 +64,9 @@ func ValidateChildProcessRefs(def *model.ProcessDefinition, getter DefinitionGet
 	return nil
 }
 
-func validateChildEntry(stepID string, idx int, p model.ChildProcessEntry, ctx, defs map[string]any, current *model.ProcessDefinition, getter DefinitionGetter) error {
+func validateChildEntry(stepID string, idx int, p model.ChildProcessEntry, ctx *schema.SchemaNode, defs map[string]*schema.SchemaNode, current *model.ProcessDefinition, getter DefinitionGetter) error {
 	prefix := fmt.Sprintf("step %q: processes[%d]", stepID, idx)
 
-	// Resolve the child definition. When the entry names the process being defined
-	// (self-reference or same version), use the current definition directly to
-	// avoid a circular DB lookup that would always fail for a first save.
 	var child *model.ProcessDefinition
 	if p.Name == current.Name && (p.Version == 0 || p.Version == current.Version) {
 		child = current
@@ -90,11 +86,10 @@ func validateChildEntry(stepID string, idx int, p model.ChildProcessEntry, ctx, 
 		}
 	}
 
-	if len(child.InputSchema) == 0 {
+	if child.InputSchema == nil {
 		return nil
 	}
 
-	// Infer the schema from the p.Input expression map.
 	inferred, err := inferObjectSchema(p.Input, ctx, func(name string) string {
 		return fmt.Sprintf("%s input %q", prefix, name)
 	})
@@ -102,11 +97,8 @@ func validateChildEntry(stepID string, idx int, p model.ChildProcessEntry, ctx, 
 		return err
 	}
 
-	// Normalize the inferred schema so that any $ref values that were resolved
-	// from the context defs are embedded as proper root-level $defs. IsSubset
-	// requires both schemas to be normalized.
 	if len(defs) > 0 {
-		inferred["$defs"] = defs
+		inferred = withDefs(inferred, defs)
 	}
 	inferred, err = schema.Normalize(inferred)
 	if err != nil {

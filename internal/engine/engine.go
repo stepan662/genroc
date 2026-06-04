@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -233,7 +234,7 @@ func (e *Engine) executeAction(ctx context.Context, inst *model.ProcessInstance,
 
 	// Only persist output to context when output_schema is declared.
 	// Without it the output is only available as "self" within this step's switch.
-	if len(step.Call.OutputSchema) > 0 {
+	if step.Call.OutputSchema != nil {
 		if inst.ContextData["outputs"] == nil {
 			inst.ContextData["outputs"] = map[string]any{}
 		}
@@ -406,7 +407,11 @@ func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInsta
 	}
 	// Placeholder — TryWakeParent replaces this with the enriched array on wake.
 	inst.ContextData["outputs"].(map[string]any)[step.ID] = ids
-	inst.ContextData["_spawn_child_output_schema"] = step.Call.ChildOutputSchema
+	if step.Call.ChildOutputSchema != nil {
+		if schemaBytes, err := json.Marshal(step.Call.ChildOutputSchema); err == nil {
+			inst.ContextData["_spawn_child_output_schema"] = string(schemaBytes)
+		}
+	}
 
 	var order []string
 	switch v := inst.ContextData["output_order"].(type) {

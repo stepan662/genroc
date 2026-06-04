@@ -271,13 +271,15 @@ func TestGenerate_Input_Params(t *testing.T) {
 		}]
 	}`)
 	assertJSON(t, out.Tasks["charge"].Input, `{"$ref": "#/$defs/charge_input"}`)
-	input, _ := out.Defs["charge_input"].(map[string]any)
-	props, _ := input["properties"].(map[string]any)
-	if input["type"] != "object" {
-		t.Errorf("input type: got %v, want object", input["type"])
+	input := out.Defs["charge_input"]
+	if input == nil {
+		t.Fatal("charge_input not found in defs")
 	}
-	assertJSON(t, props["id"], `{"type": "integer"}`)
-	assertJSON(t, props["sum"], `{"type": "number"}`)
+	if !input.Type.Contains("object") {
+		t.Errorf("input type: got %v, want object", input.Type)
+	}
+	assertJSON(t, input.Properties["id"], `{"type": "integer"}`)
+	assertJSON(t, input.Properties["sum"], `{"type": "number"}`)
 }
 
 func TestGenerate_Input_ParamsOnlyTask(t *testing.T) {
@@ -322,9 +324,11 @@ func TestGenerate_Input_Params_OneOfOutputPropertyAccess(t *testing.T) {
 		]
 	}`)
 	assertJSON(t, out.Tasks["check_fraud"].Input, `{"$ref": "#/$defs/check_fraud_input"}`)
-	input, _ := out.Defs["check_fraud_input"].(map[string]any)
-	props, _ := input["properties"].(map[string]any)
-	assertJSON(t, props["result"], `{"type":["boolean","null"]}`)
+	cfInput := out.Defs["check_fraud_input"]
+	if cfInput == nil {
+		t.Fatal("check_fraud_input not found in defs")
+	}
+	assertJSON(t, cfInput.Properties["result"], `{"type":["boolean","null"]}`)
 }
 
 func TestGenerate_Switch_SelfExpressionTypeChecked(t *testing.T) {
@@ -394,15 +398,14 @@ func TestGenerate_RecursiveStep_OwnOutputOptionalInParams(t *testing.T) {
 		}]
 	}`)
 	assertJSON(t, out.Tasks["loop"].Input, `{"$ref": "#/$defs/loop_input"}`)
-	input, _ := out.Defs["loop_input"].(map[string]any)
-	props, _ := input["properties"].(map[string]any)
-	if props == nil {
+	loopInput := out.Defs["loop_input"]
+	if loopInput == nil || loopInput.Properties == nil {
 		t.Fatal("loop input should have properties")
 	}
-	if props["task_index"] == nil {
+	if loopInput.Properties["task_index"] == nil {
 		t.Error("task_index param should be inferred")
 	}
-	if props["tasks"] == nil {
+	if loopInput.Properties["tasks"] == nil {
 		t.Error("tasks param should be inferred")
 	}
 }
@@ -424,12 +427,11 @@ func TestGenerate_SwitchStep_NextStepNotReachableViaFallthrough(t *testing.T) {
 		]
 	}`)
 	assertJSON(t, out.Tasks["work"].Input, `{"$ref": "#/$defs/work_input"}`)
-	workInput, _ := out.Defs["work_input"].(map[string]any)
-	props, _ := workInput["properties"].(map[string]any)
-	if props == nil {
+	workInput := out.Defs["work_input"]
+	if workInput == nil || workInput.Properties == nil {
 		t.Fatal("work input should have properties")
 	}
-	assertJSON(t, props["flag"], `{"type": "boolean"}`)
+	assertJSON(t, workInput.Properties["flag"], `{"type": "boolean"}`)
 }
 
 func TestGenerate_ContextSets_LinearChain_RequiredOutputNonNullable(t *testing.T) {
@@ -452,12 +454,11 @@ func TestGenerate_ContextSets_LinearChain_RequiredOutputNonNullable(t *testing.T
 		]
 	}`)
 	assertJSON(t, out.Tasks["B"].Input, `{"$ref": "#/$defs/B_input"}`)
-	bInput, _ := out.Defs["B_input"].(map[string]any)
-	props, _ := bInput["properties"].(map[string]any)
-	if props == nil {
+	bInput := out.Defs["B_input"]
+	if bInput == nil || bInput.Properties == nil {
 		t.Fatal("B input should have properties")
 	}
-	assertJSON(t, props["flag"], `{"type": "boolean"}`)
+	assertJSON(t, bInput.Properties["flag"], `{"type": "boolean"}`)
 }
 
 func TestGenerate_ContextSets_ExclusiveBranch_SkippedStepOutputNullable(t *testing.T) {
@@ -490,12 +491,11 @@ func TestGenerate_ContextSets_ExclusiveBranch_SkippedStepOutputNullable(t *testi
 		]
 	}`)
 	assertJSON(t, out.Tasks["merge"].Input, `{"$ref": "#/$defs/merge_input"}`)
-	mergeInput, _ := out.Defs["merge_input"].(map[string]any)
-	props, _ := mergeInput["properties"].(map[string]any)
-	if props == nil {
+	mergeInput := out.Defs["merge_input"]
+	if mergeInput == nil || mergeInput.Properties == nil {
 		t.Fatal("merge input should have properties")
 	}
-	assertJSON(t, props["s"], `{"type": ["number", "null"]}`)
+	assertJSON(t, mergeInput.Properties["s"], `{"type": ["number", "null"]}`)
 }
 
 func TestGenerate_ContextSets_PreBranchStepRequiredAtAllMergePoints(t *testing.T) {
@@ -524,12 +524,11 @@ func TestGenerate_ContextSets_PreBranchStepRequiredAtAllMergePoints(t *testing.T
 		]
 	}`)
 	assertJSON(t, out.Tasks["post"].Input, `{"$ref": "#/$defs/post_input"}`)
-	postInput, _ := out.Defs["post_input"].(map[string]any)
-	props, _ := postInput["properties"].(map[string]any)
-	if props == nil {
+	postInput := out.Defs["post_input"]
+	if postInput == nil || postInput.Properties == nil {
 		t.Fatal("post input should have properties")
 	}
-	assertJSON(t, props["pre_id"], `{"type": "integer"}`)
+	assertJSON(t, postInput.Properties["pre_id"], `{"type": "integer"}`)
 }
 
 func TestGenerate_ContextSets_DefaultEndSwitch_SuccessorRequiredNotOptional(t *testing.T) {
@@ -553,12 +552,11 @@ func TestGenerate_ContextSets_DefaultEndSwitch_SuccessorRequiredNotOptional(t *t
 		]
 	}`)
 	assertJSON(t, out.Tasks["work"].Input, `{"$ref": "#/$defs/work_input"}`)
-	workInput2, _ := out.Defs["work_input"].(map[string]any)
-	props, _ := workInput2["properties"].(map[string]any)
-	if props == nil {
+	workInput2 := out.Defs["work_input"]
+	if workInput2 == nil || workInput2.Properties == nil {
 		t.Fatal("work input should have properties")
 	}
-	assertJSON(t, props["flag"], `{"type": "boolean"}`)
+	assertJSON(t, workInput2.Properties["flag"], `{"type": "boolean"}`)
 }
 
 func TestGenerate_Switch_OneOfAllBooleanAccepted(t *testing.T) {

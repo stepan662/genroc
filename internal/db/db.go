@@ -413,10 +413,12 @@ func (db *DB) TryWakeParent(child *model.ProcessInstance) error {
 		}
 	}
 
-	// Read child_output_schema if the parent declared one.
+	// Read child_output_schema if the parent declared one (stored as a JSON string).
 	var childOutputSchema map[string]any
 	if s, ok := parentCtx["_spawn_child_output_schema"]; ok {
-		childOutputSchema, _ = s.(map[string]any)
+		if raw, ok := s.(string); ok && raw != "" {
+			json.Unmarshal([]byte(raw), &childOutputSchema) //nolint:errcheck
+		}
 	}
 
 	// Build the step output array in spawn order.

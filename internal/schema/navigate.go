@@ -9,12 +9,11 @@ import (
 
 // pathStep is one segment of a dot-path expression.
 type pathStep struct {
-	prop  string // non-empty for a named property access
-	index int    // used when prop == "" (array index access)
+	prop  string
+	index int
 }
 
 // parsePath splits a path like "user.issues[0].value" into typed steps.
-// Brackets immediately follow a segment name: "items[0]" → prop "items" then index 0.
 func parsePath(path string) ([]pathStep, error) {
 	if path == "" {
 		return nil, fmt.Errorf("path must not be empty")
@@ -24,7 +23,6 @@ func parsePath(path string) ([]pathStep, error) {
 		if segment == "" {
 			return nil, fmt.Errorf("invalid path %q: empty segment", path)
 		}
-		// Split off trailing [N] bracket(s).
 		for {
 			open := strings.Index(segment, "[")
 			if open == -1 {
@@ -55,10 +53,9 @@ func parsePath(path string) ([]pathStep, error) {
 	return steps, nil
 }
 
-// Navigate navigates a dot-path expression (e.g. "user.issues[0].value") from
-// the root of s, resolving $refs against defs, and returns the subschema at
-// the end of the path. The schema should be normalized before calling Navigate.
-func Navigate(s map[string]any, defs map[string]any, path string) (map[string]any, error) {
+// Navigate navigates a dot-path expression from the root of s, resolving $refs
+// against defs, and returns the subschema at the end of the path.
+func Navigate(s *SchemaNode, defs map[string]*SchemaNode, path string) (*SchemaNode, error) {
 	steps, err := parsePath(path)
 	if err != nil {
 		return nil, err
@@ -66,29 +63,145 @@ func Navigate(s map[string]any, defs map[string]any, path string) (map[string]an
 	return navigateSchema(s, defs, steps)
 }
 
-// LookupProperty returns the subschema for a single named property within s,
-// resolving any $ref first. For anyOf/oneOf schemas it navigates each non-null
-// variant and merges the results. Optional properties (absent from "required")
-// are returned wrapped as nullable.
-func LookupProperty(s map[string]any, name string, defs map[string]any) (map[string]any, error) {
+// LookupProperty returns the subschema for a single named property within s.
+// Optional properties are returned wrapped as nullable.
+func LookupProperty(s *SchemaNode, name string, defs map[string]*SchemaNode) (*SchemaNode, error) {
 	return lookupProperty(s, name, defs)
 }
 
 // InferIndex returns the (nullable) element type for array index access on s.
 // Always nullable because the index may be out of bounds at runtime.
-func InferIndex(s map[string]any, defs map[string]any) (map[string]any, error) {
+func InferIndex(s *SchemaNode, defs map[string]*SchemaNode) (*SchemaNode, error) {
 	return inferIndex(s, defs)
 }
 
 // Deref follows a $ref pointer if present, looking it up in defs.
 // Returns s unchanged if no $ref is present.
-func Deref(s map[string]any, defs map[string]any) (map[string]any, error) {
+func Deref(s *SchemaNode, defs map[string]*SchemaNode) (*SchemaNode, error) {
 	return derefNav(s, defs)
 }
 
-// navigateSchema walks steps through schema, resolving $refs against defs,
-// and returns the subschema reached at the end of the path.
-func navigateSchema(s map[string]any, defs map[string]any, steps []pathStep) (map[string]any, error) {
+// IsNullType reports whether s is exactly {type:"null"}.
+func IsNullType(s *SchemaNode) bool {
+	return s != nil && len(s.Type) == 1 && s.Type[0] == "null"
+}
+
+// HasNullType reports whether null is a possible type for s.
+func HasNullType(s *SchemaNode) bool {
+	if s == nil {
+		return false
+	}
+	if s.Type.Contains("null") {
+		return true
+	}
+	for _, v := range s.OneOf {
+		if IsNullType(v) {
+			return true
+		}
+	}
+	for _, v := range s.AnyOf {
+		if IsNullType(v) {
+			return true
+		}
+	}
+	return false
+}
+
+// WithNull makes s nullable. Simple types produce {type:[T,"null"]};
+// complex schemas are wrapped in {oneOf:[s,{type:"null"}]}.
+func WithNull(s *SchemaNode) *SchemaNode {
+	if s == nil || isEmptyNode(s) {
+		return s
+	}
+	if s.Type.Contains("null") {
+		return s
+	}
+	for _, v := range s.OneOf {
+		if IsNullType(v) {
+			return s
+		}
+	}
+	for _, v := range s.AnyOf {
+		if IsNullType(v) {
+			return s
+		}
+	}
+	// Simple type without properties — widen type array to include null.
+	if len(s.Type) >= 1 && s.Properties == nil {
+		n := *s
+		n.Type = make(SchemaType, len(s.Type)+1)
+		copy(n.Type, s.Type)
+		n.Type[len(s.Type)] = "null"
+		return &n
+	}
+	return &SchemaNode{OneOf: []*SchemaNode{s, {Type: SchemaType{"null"}}}}
+}
+
+// StripNull removes null from a schema's possible types.
+func StripNull(s *SchemaNode) *SchemaNode {
+	if s == nil {
+		return s
+	}
+	if len(s.Type) > 0 {
+		var nonNull SchemaType
+		for _, t := range s.Type {
+			if t != "null" {
+				nonNull = append(nonNull, t)
+			}
+		}
+		if len(nonNull) == len(s.Type) {
+			return s
+		}
+		n := *s
+		n.Type = nonNull
+		return &n
+	}
+	if len(s.OneOf) > 0 {
+		var nonNull []*SchemaNode
+		for _, v := range s.OneOf {
+			if !IsNullType(v) {
+				nonNull = append(nonNull, v)
+			}
+		}
+		if len(nonNull) == len(s.OneOf) {
+			return s
+		}
+		if len(nonNull) == 1 {
+			return nonNull[0]
+		}
+		n := *s
+		n.OneOf = nonNull
+		return &n
+	}
+	if len(s.AnyOf) > 0 {
+		var nonNull []*SchemaNode
+		for _, v := range s.AnyOf {
+			if !IsNullType(v) {
+				nonNull = append(nonNull, v)
+			}
+		}
+		if len(nonNull) == len(s.AnyOf) {
+			return s
+		}
+		if len(nonNull) == 1 {
+			return nonNull[0]
+		}
+		n := *s
+		n.AnyOf = nonNull
+		return &n
+	}
+	return s
+}
+
+func isEmptyNode(s *SchemaNode) bool {
+	return s == nil || (len(s.Type) == 0 && s.Properties == nil && s.Required == nil &&
+		s.Items == nil && s.OneOf == nil && s.AnyOf == nil && s.AllOf == nil &&
+		s.Enum == nil && s.Ref == "" && s.Defs == nil && s.Minimum == nil &&
+		s.Maximum == nil && s.MinLength == nil && s.MaxLength == nil &&
+		s.MinItems == nil && s.MaxItems == nil)
+}
+
+func navigateSchema(s *SchemaNode, defs map[string]*SchemaNode, steps []pathStep) (*SchemaNode, error) {
 	current := s
 	for _, step := range steps {
 		var err error
@@ -104,33 +217,34 @@ func navigateSchema(s map[string]any, defs map[string]any, steps []pathStep) (ma
 	return current, nil
 }
 
-// lookupProperty looks up a named property within a (possibly ref-resolved) schema.
-// For anyOf/oneOf it navigates each non-null variant and merges the results.
-// Optional properties (not in "required") are returned wrapped as nullable.
-func lookupProperty(s map[string]any, name string, defs map[string]any) (map[string]any, error) {
+func lookupProperty(s *SchemaNode, name string, defs map[string]*SchemaNode) (*SchemaNode, error) {
 	resolved, err := derefNav(s, defs)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, kw := range []string{"anyOf", "oneOf"} {
-		variants, ok := resolved[kw].([]any)
-		if !ok {
+	for _, kw := range []struct {
+		name     string
+		variants []*SchemaNode
+	}{
+		{"anyOf", resolved.AnyOf},
+		{"oneOf", resolved.OneOf},
+	} {
+		if kw.variants == nil {
 			continue
 		}
-		results := make([]any, 0, len(variants))
+		results := make([]*SchemaNode, 0, len(kw.variants))
 		hadNull := false
 		hadMiss := false
-		for i, v := range variants {
-			varSchema, ok := v.(map[string]any)
-			if !ok {
-				return nil, fmt.Errorf("cannot access .%s: %s[%d] is not a schema object", name, kw, i)
+		for i, v := range kw.variants {
+			if v == nil {
+				return nil, fmt.Errorf("cannot access .%s: %s[%d] is nil", name, kw.name, i)
 			}
-			if isNullType(varSchema) {
+			if IsNullType(v) {
 				hadNull = true
 				continue
 			}
-			r, err := lookupProperty(varSchema, name, defs)
+			r, err := lookupProperty(v, name, defs)
 			if err != nil {
 				hadMiss = true
 				hadNull = true
@@ -140,27 +254,32 @@ func lookupProperty(s map[string]any, name string, defs map[string]any) (map[str
 		}
 		if len(results) == 0 {
 			if hadMiss {
-				return nil, fmt.Errorf("field %q not found in any %s variant", name, kw)
+				return nil, fmt.Errorf("field %q not found in any %s variant", name, kw.name)
 			}
-			return map[string]any{"type": "null"}, nil
+			return &SchemaNode{Type: SchemaType{"null"}}, nil
 		}
-		var result map[string]any
+		var result *SchemaNode
 		if allSame(results) {
-			result = results[0].(map[string]any)
+			result = results[0]
 		} else {
-			result = map[string]any{kw: results}
+			cp := make([]*SchemaNode, len(results))
+			copy(cp, results)
+			if kw.name == "oneOf" {
+				result = &SchemaNode{OneOf: cp}
+			} else {
+				result = &SchemaNode{AnyOf: cp}
+			}
 		}
 		if hadNull {
-			return withNull(result), nil
+			return WithNull(result), nil
 		}
 		return result, nil
 	}
 
-	props, _ := resolved["properties"].(map[string]any)
-	if props == nil {
+	if resolved.Properties == nil {
 		return nil, fmt.Errorf("cannot access .%s: schema has no properties", name)
 	}
-	prop, ok := props[name].(map[string]any)
+	prop, ok := resolved.Properties[name]
 	if !ok {
 		return nil, fmt.Errorf("field %q not found in schema", name)
 	}
@@ -169,37 +288,33 @@ func lookupProperty(s map[string]any, name string, defs map[string]any) (map[str
 		return nil, err
 	}
 	if !isRequired(resolved, name) {
-		return withNull(result), nil
+		return WithNull(result), nil
 	}
 	return result, nil
 }
 
-// inferIndex returns the (nullable) element type for array index access.
-// Always nullable because the index may be out of bounds at runtime.
-func inferIndex(s map[string]any, defs map[string]any) (map[string]any, error) {
+func inferIndex(s *SchemaNode, defs map[string]*SchemaNode) (*SchemaNode, error) {
 	resolved, err := derefNav(s, defs)
 	if err != nil {
 		return nil, err
 	}
-	resolved = stripNull(resolved)
+	resolved = StripNull(resolved)
 
-	for _, kw := range []string{"anyOf", "oneOf"} {
-		variants, ok := resolved[kw].([]any)
-		if !ok {
+	for _, variants := range [][]*SchemaNode{resolved.AnyOf, resolved.OneOf} {
+		if variants == nil {
 			continue
 		}
-		results := make([]any, 0, len(variants))
+		results := make([]*SchemaNode, 0, len(variants))
 		hadNull := false
 		for _, v := range variants {
-			varSchema, ok := v.(map[string]any)
-			if !ok {
+			if v == nil {
 				continue
 			}
-			if isNullType(varSchema) {
+			if IsNullType(v) {
 				hadNull = true
 				continue
 			}
-			r, err := inferIndex(varSchema, defs)
+			r, err := inferIndex(v, defs)
 			if err != nil {
 				hadNull = true
 				continue
@@ -207,73 +322,53 @@ func inferIndex(s map[string]any, defs map[string]any) (map[string]any, error) {
 			results = append(results, r)
 		}
 		if len(results) == 0 {
-			return map[string]any{"type": "null"}, nil
+			return &SchemaNode{Type: SchemaType{"null"}}, nil
 		}
-		var result map[string]any
+		var result *SchemaNode
 		if allSame(results) {
-			result = results[0].(map[string]any)
+			result = results[0]
 		} else {
-			result = map[string]any{kw: results}
+			result = &SchemaNode{AnyOf: results}
 		}
-		if hadNull && !hasNullType(result) {
-			return withNull(result), nil
+		if hadNull && !HasNullType(result) {
+			return WithNull(result), nil
 		}
 		return result, nil
 	}
 
-	t, _ := resolved["type"].(string)
-	if t != "array" {
+	if !resolved.Type.Contains("array") {
+		t := ""
+		if len(resolved.Type) > 0 {
+			t = resolved.Type[0]
+		}
 		return nil, fmt.Errorf("index access [n] requires an array schema, got type %q", t)
 	}
-	items, _ := resolved["items"].(map[string]any)
-	if items == nil {
-		return map[string]any{}, nil
+	if resolved.Items == nil {
+		return &SchemaNode{}, nil
 	}
-	return withNull(items), nil
+	return WithNull(resolved.Items), nil
 }
 
-// derefNav follows a $ref if present.
-func derefNav(s map[string]any, defs map[string]any) (map[string]any, error) {
-	ref, ok := s["$ref"].(string)
-	if !ok {
+func derefNav(s *SchemaNode, defs map[string]*SchemaNode) (*SchemaNode, error) {
+	if s == nil || s.Ref == "" {
 		return s, nil
 	}
 	if defs == nil {
-		return nil, fmt.Errorf("cannot resolve $ref %q: no defs available", ref)
+		return nil, fmt.Errorf("cannot resolve $ref %q: no defs available", s.Ref)
 	}
 	const prefix = "#/$defs/"
-	if !strings.HasPrefix(ref, prefix) {
-		return nil, fmt.Errorf("unsupported $ref %q: only #/$defs/<name> is supported", ref)
+	if !strings.HasPrefix(s.Ref, prefix) {
+		return nil, fmt.Errorf("unsupported $ref %q: only #/$defs/<name> is supported", s.Ref)
 	}
-	target, ok := defs[strings.TrimPrefix(ref, prefix)].(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("$ref %q not found in defs", ref)
+	target, ok := defs[strings.TrimPrefix(s.Ref, prefix)]
+	if !ok || target == nil {
+		return nil, fmt.Errorf("$ref %q not found in defs", s.Ref)
 	}
 	return target, nil
 }
 
-func isNullType(s map[string]any) bool {
-	t, _ := s["type"].(string)
-	return t == "null"
-}
-
-func hasNullType(s map[string]any) bool {
-	switch t := s["type"].(type) {
-	case string:
-		return t == "null"
-	case []any:
-		for _, v := range t {
-			if v == "null" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func isRequired(s map[string]any, name string) bool {
-	req, _ := s["required"].([]any)
-	for _, r := range req {
+func isRequired(s *SchemaNode, name string) bool {
+	for _, r := range s.Required {
 		if r == name {
 			return true
 		}
@@ -281,88 +376,7 @@ func isRequired(s map[string]any, name string) bool {
 	return false
 }
 
-// withNull makes a schema nullable. Simple types produce {"type":[X,"null"]};
-// complex schemas are wrapped in {"oneOf":[schema,{"type":"null"}]}.
-func withNull(s map[string]any) map[string]any {
-	if len(s) == 0 {
-		return s // {} = any, already includes null
-	}
-	if types, ok := s["type"].([]any); ok {
-		for _, t := range types {
-			if t == "null" {
-				return s
-			}
-		}
-	}
-	if t, ok := s["type"].(string); ok && t != "null" {
-		if _, hasProps := s["properties"]; !hasProps {
-			result := make(map[string]any, len(s))
-			for k, v := range s {
-				result[k] = v
-			}
-			result["type"] = []any{t, "null"}
-			return result
-		}
-	}
-	return map[string]any{"oneOf": []any{s, map[string]any{"type": "null"}}}
-}
-
-// stripNull removes null from a schema's possible types.
-func stripNull(s map[string]any) map[string]any {
-	if types, ok := s["type"].([]any); ok {
-		var nonNull []any
-		for _, t := range types {
-			if t != "null" {
-				nonNull = append(nonNull, t)
-			}
-		}
-		if len(nonNull) == len(types) {
-			return s
-		}
-		result := make(map[string]any, len(s))
-		for k, v := range s {
-			result[k] = v
-		}
-		if len(nonNull) == 1 {
-			result["type"] = nonNull[0]
-		} else {
-			result["type"] = nonNull
-		}
-		return result
-	}
-	for _, kw := range []string{"oneOf", "anyOf"} {
-		variants, ok := s[kw].([]any)
-		if !ok {
-			continue
-		}
-		var nonNull []any
-		for _, v := range variants {
-			vs, ok := v.(map[string]any)
-			if !ok {
-				nonNull = append(nonNull, v)
-				continue
-			}
-			if !isNullType(vs) {
-				nonNull = append(nonNull, vs)
-			}
-		}
-		if len(nonNull) == len(variants) {
-			return s
-		}
-		if len(nonNull) == 1 {
-			return nonNull[0].(map[string]any)
-		}
-		result := make(map[string]any, len(s))
-		for k, v := range s {
-			result[k] = v
-		}
-		result[kw] = nonNull
-		return result
-	}
-	return s
-}
-
-func allSame(schemas []any) bool {
+func allSame(schemas []*SchemaNode) bool {
 	if len(schemas) == 0 {
 		return true
 	}

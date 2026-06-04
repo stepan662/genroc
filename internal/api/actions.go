@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"gent/internal/model"
+	"gent/internal/schema"
 )
 
 // actionDef is the single source of truth for one API action.
@@ -62,12 +63,12 @@ var registry = func() []actionDef {
 			Req: model.ProcessDefinition{
 				Name:    "order_pipeline",
 				Version: 1,
-				InputSchema: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"order_id": map[string]any{"type": "integer"},
+				InputSchema: &schema.SchemaNode{
+					Type: schema.SchemaType{"object"},
+					Properties: map[string]*schema.SchemaNode{
+						"order_id": {Type: schema.SchemaType{"integer"}},
 					},
-					"required": []string{"order_id"},
+					Required: []string{"order_id"},
 				},
 				Steps: []*model.Step{
 					{
@@ -75,10 +76,10 @@ var registry = func() []actionDef {
 						Call: &model.Call{
 							Type:     model.CallTypeREST,
 							Endpoint: "http://localhost:9001/charge",
-							OutputSchema: map[string]any{
-								"type": "object",
-								"properties": map[string]any{
-									"charged": map[string]any{"type": "boolean"},
+							OutputSchema: &schema.SchemaNode{
+								Type: schema.SchemaType{"object"},
+								Properties: map[string]*schema.SchemaNode{
+									"charged": {Type: schema.SchemaType{"boolean"}},
 								},
 							},
 						},

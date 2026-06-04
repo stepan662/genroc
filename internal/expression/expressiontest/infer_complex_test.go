@@ -2,9 +2,11 @@ package expressiontest
 
 import (
 	"testing"
+
+	"gent/internal/schema"
 )
 
-// complexCtxJSON is a context schema whose fields use anyOf, oneOf, allOf and not.
+// complexCtxJSON is a context schema whose fields use anyOf, oneOf, and allOf.
 const complexCtxJSON = `{
 	"type": "object",
 	"properties": {
@@ -14,7 +16,6 @@ const complexCtxJSON = `{
 				"flexible":      { "anyOf": [{"type":"integer"}, {"type":"string"}] },
 				"exactly_one":   { "oneOf": [{"type":"integer"}, {"type":"number"}] },
 				"combined":      { "allOf": [{"type":"integer"}, {"minimum": 0}] },
-				"negated":       { "not": {"type":"string"} },
 				"numeric_union": { "anyOf": [{"type":"integer"}, {"type":"number"}] },
 				"obj_union": {
 					"anyOf": [
@@ -47,7 +48,7 @@ const complexCtxJSON = `{
 					]
 				}
 			},
-			"required": ["flexible", "exactly_one", "combined", "negated", "numeric_union", "obj_union", "obj_union_oneof", "obj_union_same", "obj_union_nested", "obj_union_anyof_in_oneof"]
+			"required": ["flexible", "exactly_one", "combined", "numeric_union", "obj_union", "obj_union_oneof", "obj_union_same", "obj_union_nested", "obj_union_anyof_in_oneof"]
 		}
 	},
 	"required": ["input"]
@@ -76,13 +77,6 @@ func TestInfer_AllOf_FieldReturnsSchema(t *testing.T) {
 	}`)
 }
 
-func TestInfer_Not_FieldReturnsSchema(t *testing.T) {
-	c := ctx(t, complexCtxJSON)
-	assertSchema(t, infer(t, "input.negated", c), `{
-		"not": {"type":"string"}
-	}`)
-}
-
 // --- comparison operators always produce boolean regardless of operand schema ---
 
 func TestInfer_AnyOf_EqualityIsBoolean(t *testing.T) {
@@ -103,11 +97,6 @@ func TestInfer_AnyOf_OrderComparisonFails(t *testing.T) {
 func TestInfer_OneOf_EqualityIsBoolean(t *testing.T) {
 	c := ctx(t, complexCtxJSON)
 	assertSchema(t, infer(t, "input.exactly_one == 0", c), `{"type":"boolean"}`)
-}
-
-func TestInfer_Not_EqualityIsBoolean(t *testing.T) {
-	c := ctx(t, complexCtxJSON)
-	assertSchema(t, infer(t, `input.negated == "hello"`, c), `{"type":"boolean"}`)
 }
 
 // --- logical operators always produce boolean ---
@@ -143,11 +132,6 @@ func TestInfer_AllOf_ArithmeticFails(t *testing.T) {
 	c := ctx(t, complexCtxJSON)
 	// allOf carries no plain "type" key at the top level
 	inferErr(t, "input.combined + 1", c, "unambiguous")
-}
-
-func TestInfer_Not_ArithmeticFails(t *testing.T) {
-	c := ctx(t, complexCtxJSON)
-	inferErr(t, "input.negated + 1", c, "unambiguous")
 }
 
 // --- nullable types ---
@@ -194,7 +178,7 @@ func TestInfer_Nullable_ConditionalNilFirst(t *testing.T) {
 
 // Both branches nil → plain null type (not a type array).
 func TestInfer_Nullable_BothBranchesNil(t *testing.T) {
-	assertSchema(t, infer(t, `true ? nil : nil`, nil), `{"type":"null"}`)
+	assertSchema(t, infer(t, `true ? nil : nil`, schema.Schema{}), `{"type":"null"}`)
 }
 
 // Arithmetic on a nullable type fails — the null case is unhandled.
@@ -397,12 +381,7 @@ func TestInfer_AnyOf_NullAndObject_MemberAccess(t *testing.T) {
 	assertSchema(t, infer(t, "input.maybe.x", c), `{"type":["integer","null"]}`)
 }
 
-// --- member access on opaque schemas (not, allOf, unknown) always fails ---
-
-func TestInfer_Not_MemberAccessFails(t *testing.T) {
-	c := ctx(t, complexCtxJSON)
-	inferErr(t, "input.negated.x", c, "cannot access .x: schema has no properties")
-}
+// --- member access on opaque schemas (allOf, unknown) always fails ---
 
 func TestInfer_AllOf_MemberAccessFails(t *testing.T) {
 	c := ctx(t, complexCtxJSON)

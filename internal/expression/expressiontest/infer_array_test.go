@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"gent/internal/expression"
+	"gent/internal/schema"
 )
 
 const arrayCtxJSON = `{
@@ -77,7 +78,7 @@ func TestInfer_Array_ArithmeticFails(t *testing.T) {
 
 // Array literals are outside the supported subset.
 func TestInfer_Array_LiteralUnsupported(t *testing.T) {
-	err := inferErr(t, "[1, 2, 3]", nil, "")
+	err := inferErr(t, "[1, 2, 3]", schema.Schema{}, "")
 	var e expression.ErrUnsupported
 	if !errors.As(err, &e) {
 		t.Errorf("expected ErrUnsupported, got %T: %v", err, err)

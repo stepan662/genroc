@@ -10,8 +10,7 @@
 //   - Conditional: cond ? a : b
 //   - Null coalescing: a ?? b (returns a if non-nil, else b)
 //
-// All other expr-lang constructs return ErrUnsupported, so the accepted subset
-// is identical for both InferType and Eval.
+// All other expr-lang constructs return ErrUnsupported.
 package expression
 
 import (
@@ -27,15 +26,13 @@ import (
 // calls. s and defs are shared across branches; guards is a shallow-copied
 // overlay that maps dot-paths to schema overrides for type-narrowed branches.
 type inferCtx struct {
-	s      map[string]any
-	defs   map[string]any
-	guards map[string]map[string]any // dot-path → schema override
+	s      *schema.SchemaNode
+	defs   map[string]*schema.SchemaNode
+	guards map[string]*schema.SchemaNode
 }
 
-// withGuard returns a new inferCtx with path mapped to narrowed. s and
-// defs are shared; only the guards map is copied.
-func (c inferCtx) withGuard(path string, narrowed map[string]any) inferCtx {
-	guards := make(map[string]map[string]any, len(c.guards)+1)
+func (c inferCtx) withGuard(path string, narrowed *schema.SchemaNode) inferCtx {
+	guards := make(map[string]*schema.SchemaNode, len(c.guards)+1)
 	for k, v := range c.guards {
 		guards[k] = v
 	}
@@ -46,20 +43,23 @@ func (c inferCtx) withGuard(path string, narrowed map[string]any) inferCtx {
 // InferType statically determines the JSON Schema type of expression when
 // evaluated against s. $refs are resolved against s's $defs.
 func InferType(expression string, s schema.Schema) (schema.Schema, error) {
-	raw := s.Raw()
-	defs, _ := raw["$defs"].(map[string]any)
+	node := s.Node()
+	var defs map[string]*schema.SchemaNode
+	if node != nil {
+		defs = node.Defs
+	}
 	tree, err := parser.Parse(expression)
 	if err != nil {
 		return schema.Schema{}, fmt.Errorf("parse %q: %w", expression, err)
 	}
-	result, err := inferNode(tree.Node, inferCtx{s: raw, defs: defs})
+	result, err := inferNode(tree.Node, inferCtx{s: node, defs: defs})
 	if err != nil {
 		return schema.Schema{}, err
 	}
-	return schema.Load(result), nil
+	return schema.FromNode(result), nil
 }
 
-func inferNode(node ast.Node, ictx inferCtx) (map[string]any, error) {
+func inferNode(node ast.Node, ictx inferCtx) (*schema.SchemaNode, error) {
 	switch n := node.(type) {
 	case *ast.IntegerNode:
 		return typeSchema("integer"), nil
@@ -89,9 +89,7 @@ func inferNode(node ast.Node, ictx inferCtx) (map[string]any, error) {
 	}
 }
 
-func inferMember(n *ast.MemberNode, ictx inferCtx) (map[string]any, error) {
-	// Check the guard overlay before traversing the schema — a guarded path
-	// short-circuits the full lookup and propagates correctly into sub-accesses.
+func inferMember(n *ast.MemberNode, ictx inferCtx) (*schema.SchemaNode, error) {
 	if path := nodePath(n); path != "" {
 		if s, ok := ictx.guards[path]; ok {
 			return s, nil
@@ -111,7 +109,7 @@ func inferMember(n *ast.MemberNode, ictx inferCtx) (map[string]any, error) {
 	}
 }
 
-func inferBinary(n *ast.BinaryNode, ictx inferCtx) (map[string]any, error) {
+func inferBinary(n *ast.BinaryNode, ictx inferCtx) (*schema.SchemaNode, error) {
 	op, ok := binaryOps[n.Operator]
 	if !ok {
 		return nil, ErrUnsupported{Detail: fmt.Sprintf("operator %q", n.Operator)}
@@ -127,7 +125,7 @@ func inferBinary(n *ast.BinaryNode, ictx inferCtx) (map[string]any, error) {
 	return op.infer(unwrapSingleVariant(left), unwrapSingleVariant(right))
 }
 
-func inferUnary(n *ast.UnaryNode, ictx inferCtx) (map[string]any, error) {
+func inferUnary(n *ast.UnaryNode, ictx inferCtx) (*schema.SchemaNode, error) {
 	op, ok := unaryOps[n.Operator]
 	if !ok {
 		return nil, ErrUnsupported{Detail: fmt.Sprintf("unary operator %q", n.Operator)}
@@ -139,7 +137,7 @@ func inferUnary(n *ast.UnaryNode, ictx inferCtx) (map[string]any, error) {
 	return op.infer(unwrapSingleVariant(operand))
 }
 
-func inferConditional(n *ast.ConditionalNode, ictx inferCtx) (map[string]any, error) {
+func inferConditional(n *ast.ConditionalNode, ictx inferCtx) (*schema.SchemaNode, error) {
 	thenCtx, elseCtx := narrowCondition(n.Cond, ictx)
 	t, err := inferNode(n.Exp1, thenCtx)
 	if err != nil {
@@ -155,13 +153,10 @@ func inferConditional(n *ast.ConditionalNode, ictx inferCtx) (map[string]any, er
 	if s, ok := nullableSchema(t, f); ok {
 		return s, nil
 	}
-	return map[string]any{"oneOf": []any{t, f}}, nil
+	return &schema.SchemaNode{OneOf: []*schema.SchemaNode{t, f}}, nil
 }
 
 // narrowCondition returns then/else contexts narrowed by an equality condition.
-// For "x == nil": then→null, else→non-null. For "x != nil": then→non-null, else→null.
-// For "x == <literal>": then→literal's type. For "x != <literal>": else→literal's type.
-// Returns the original ctx unchanged when the condition doesn't match these patterns.
 func narrowCondition(cond ast.Node, ictx inferCtx) (thenCtx, elseCtx inferCtx) {
 	thenCtx, elseCtx = ictx, ictx
 	bin, ok := cond.(*ast.BinaryNode)
@@ -195,14 +190,14 @@ func narrowCondition(cond ast.Node, ictx inferCtx) (thenCtx, elseCtx inferCtx) {
 		thenCtx = ictx.withGuard(path, litSchema)
 		if litIsNull {
 			if subjectSchema, err := inferNode(subject, ictx); err == nil {
-				elseCtx = ictx.withGuard(path, stripNull(subjectSchema))
+				elseCtx = ictx.withGuard(path, schema.StripNull(subjectSchema))
 			}
 		}
 	} else {
 		elseCtx = ictx.withGuard(path, litSchema)
 		if litIsNull {
 			if subjectSchema, err := inferNode(subject, ictx); err == nil {
-				thenCtx = ictx.withGuard(path, stripNull(subjectSchema))
+				thenCtx = ictx.withGuard(path, schema.StripNull(subjectSchema))
 			}
 		}
 	}
@@ -217,9 +212,6 @@ func isLiteralNode(n ast.Node) bool {
 	return false
 }
 
-// nodePath extracts a path string from a simple member/identifier chain,
-// e.g. "input.amount" or "outputs.items[0].value".
-// Returns "" for any other node form (dynamic index, function call, etc.).
 func nodePath(node ast.Node) string {
 	if node == nil {
 		return ""
@@ -238,62 +230,4 @@ func nodePath(node ast.Node) string {
 		}
 	}
 	return ""
-}
-
-// stripNull removes null from a schema's possible types, returning its non-nullable version.
-// {"type":["X","null"]} → {"type":"X"}
-// {"oneOf":[{"type":"X"},{"type":"null"}]} → {"type":"X"}
-// Already non-nullable schemas are returned unchanged.
-func stripNull(s map[string]any) map[string]any {
-	if types, ok := s["type"].([]any); ok {
-		var nonNull []any
-		for _, t := range types {
-			if t != "null" {
-				nonNull = append(nonNull, t)
-			}
-		}
-		if len(nonNull) == len(types) {
-			return s
-		}
-		result := make(map[string]any, len(s))
-		for k, v := range s {
-			result[k] = v
-		}
-		if len(nonNull) == 1 {
-			result["type"] = nonNull[0]
-		} else {
-			result["type"] = nonNull
-		}
-		return result
-	}
-	for _, kw := range []string{"oneOf", "anyOf"} {
-		variants, ok := s[kw].([]any)
-		if !ok {
-			continue
-		}
-		var nonNull []any
-		for _, v := range variants {
-			vs, ok := v.(map[string]any)
-			if !ok {
-				nonNull = append(nonNull, v)
-				continue
-			}
-			if !isNullType(vs) {
-				nonNull = append(nonNull, vs)
-			}
-		}
-		if len(nonNull) == len(variants) {
-			return s
-		}
-		if len(nonNull) == 1 {
-			return nonNull[0].(map[string]any)
-		}
-		result := make(map[string]any, len(s))
-		for k, v := range s {
-			result[k] = v
-		}
-		result[kw] = nonNull
-		return result
-	}
-	return s
 }

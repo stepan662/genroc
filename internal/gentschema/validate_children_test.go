@@ -32,13 +32,13 @@ func (s stubGetter) LatestVersion(name string) (int, error) {
 
 // normalizedSchema parses a JSON schema string and normalises it, as the DB
 // would store it after a successful putDefinition call.
-func normalizedSchema(t *testing.T, raw string) map[string]any {
+func normalizedSchema(t *testing.T, raw string) *schema.SchemaNode {
 	t.Helper()
-	var m map[string]any
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+	var n schema.SchemaNode
+	if err := json.Unmarshal([]byte(raw), &n); err != nil {
 		t.Fatalf("parse schema: %v", err)
 	}
-	out, err := schema.Normalize(m)
+	out, err := schema.Normalize(&n)
 	if err != nil {
 		t.Fatalf("normalize schema: %v", err)
 	}
@@ -227,23 +227,20 @@ func TestValidateChildProcessRefs_wrongFieldType(t *testing.T) {
 	assertValidateErr(t, def, getter, "not compatible")
 }
 
-func TestValidateChildProcessRefs_additionalPropertiesForbidden(t *testing.T) {
-	getter := stubGetter{
-		"worker": childDef(t, "worker", `{
-			"type": "object",
-			"properties": {"amount": {"type": "integer"}},
-			"required": ["amount"],
-			"additionalProperties": false
-		}`),
+func TestValidateChildProcessRefs_additionalPropertiesRejectedAtParse(t *testing.T) {
+	// additionalProperties is not a supported keyword; schemas using it fail to parse.
+	var n schema.SchemaNode
+	err := json.Unmarshal([]byte(`{
+		"type": "object",
+		"properties": {"amount": {"type": "integer"}},
+		"additionalProperties": false
+	}`), &n)
+	if err == nil {
+		t.Fatal("expected parse error for additionalProperties, got nil")
 	}
-	// parent passes both "amount" and "extra" (mapped from input.name)
-	def := parentDef(t, parentInputSchema, []model.ChildProcessEntry{
-		{Name: "worker", Version: 1, Input: map[string]string{
-			"amount": "{{input.amount}}",
-			"extra":  "{{input.name}}",
-		}},
-	})
-	assertValidateErr(t, def, getter, "not compatible")
+	if err.Error() != `unsupported schema keyword "additionalProperties"` {
+		t.Errorf("unexpected error: %v", err)
+	}
 }
 
 func TestValidateChildProcessRefs_badExpression(t *testing.T) {

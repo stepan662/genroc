@@ -11,21 +11,21 @@ import (
 	"gent/internal/schema"
 )
 
-// namedSchema pairs a notation label with a parsed schema map so tests can
-// loop over multiple representations of the same logical schema.
+// namedSchema pairs a notation label with a schema so tests can loop over
+// multiple representations of the same logical schema.
 type namedSchema struct {
 	name   string
-	schema map[string]any
+	schema schema.Schema
 }
 
 // mustSchema parses a JSON schema string and panics if it is invalid.
 // Intended for use in package-level var declarations.
-func mustSchema(s string) map[string]any {
+func mustSchema(s string) schema.Schema {
 	var m map[string]any
 	if err := json.Unmarshal([]byte(s), &m); err != nil {
 		panic("invalid schema JSON: " + err.Error())
 	}
-	return m
+	return schema.Load(m)
 }
 
 // Nullable schema sets — "x" declared as T|null in all three JSON Schema notations.
@@ -66,7 +66,7 @@ func testNullableOperand(t *testing.T, expr string, schemas []namedSchema) {
 		t.Run(ns.name, func(t *testing.T) {
 			_, libErr := exprlib.Eval(expr, evalCtx)
 			_, ourErr := expression.Eval(expr, evalCtx)
-			_, inferErr := expression.InferType(expr, schema.Load(ns.schema))
+			_, inferErr := expression.InferType(expr, ns.schema)
 			if (libErr != nil) != (ourErr != nil) {
 				t.Errorf("eval mismatch:\n  expr-lang: %v\n  our eval:  %v", libErr, ourErr)
 			}
@@ -77,14 +77,14 @@ func testNullableOperand(t *testing.T, expr string, schemas []namedSchema) {
 	}
 }
 
-// testAmbiguousTypeCase verifies that both Eval and InferType reject schema
+// testAmbiguousTypeCase verifies that both Eval and InferType reject the schema
 // when evaluated with wrongVal — the incompatible runtime value.
-func testAmbiguousTypeCase(t *testing.T, expr string, wrongVal any, s map[string]any) {
+func testAmbiguousTypeCase(t *testing.T, expr string, wrongVal any, s schema.Schema) {
 	t.Helper()
 	evalCtx := map[string]any{"x": wrongVal}
 	_, libErr := exprlib.Eval(expr, evalCtx)
 	_, ourErr := expression.Eval(expr, evalCtx)
-	_, inferErr := expression.InferType(expr, schema.Load(s))
+	_, inferErr := expression.InferType(expr, s)
 	if libErr == nil {
 		t.Fatalf("expr-lang: expected error with wrong-type value %T, got nil", wrongVal)
 	}
@@ -133,7 +133,7 @@ func testNumericUnionCase(t *testing.T, expr string, schemas []namedSchema) {
 	t.Helper()
 	for _, ns := range schemas {
 		t.Run(ns.name+"/infer", func(t *testing.T) {
-			_, err := expression.InferType(expr, schema.Load(ns.schema))
+			_, err := expression.InferType(expr, ns.schema)
 			if err != nil {
 				t.Errorf("InferType rejected a valid all-numeric union: %v", err)
 			}
