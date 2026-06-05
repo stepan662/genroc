@@ -144,6 +144,38 @@ func TestApplyBatch_ContentDedup_Idempotent(t *testing.T) {
 	}
 }
 
+func TestApplyBatch_ContentDedup_SelfRef(t *testing.T) {
+	h, cleanup := newTestHandlers(t)
+	defer cleanup()
+
+	// A self-referential (recursive) process: calls itself as a child.
+	selfRef := map[string]any{
+		"name": "recursive",
+		"steps": []any{
+			map[string]any{"id": "recurse", "call": map[string]any{
+				"type":      "child_process",
+				"processes": []any{map[string]any{"name": "recursive"}},
+			}},
+		},
+	}
+
+	batchApply(h, "latest", false, selfRef)
+
+	// Apply same content again — must not create a new version.
+	r := batchApply(h, "latest", false, selfRef)
+	if !r.OK {
+		t.Fatalf("apply failed: %s", r.Error)
+	}
+	var results []BatchApplyResult
+	json.Unmarshal(r.Data, &results)
+	if len(results) != 1 || results[0].Saved {
+		t.Errorf("expected Saved=false for self-referential process, got %+v", results)
+	}
+	if channelVersion(listChannels(h, t, "recursive"), "latest") != 1 {
+		t.Error("expected channel to remain at v1")
+	}
+}
+
 func TestApplyBatch_NewVersionOnChange(t *testing.T) {
 	h, cleanup := newTestHandlers(t)
 	defer cleanup()
