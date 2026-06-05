@@ -487,18 +487,30 @@ func (h *Handlers) applyBatch(defs []model.ProcessDefinition, channel string, au
 		}
 
 		// Content dedup: compare raw JSON + resolved deps.
+		// When already on channel, compare against that version; otherwise compare
+		// against the globally highest version (latestV) so that applying the same
+		// content to a new channel reuses the existing version rather than creating one.
 		currentV, onChannel := 0, false
 		if v, chErr := h.db.GetChannel(def.Name, channel); chErr == nil {
 			currentV, onChannel = v, true
 		}
 		if onChannel {
 			oldChannelVersions[def.Name] = currentV
+		}
+		dedupV := currentV
+		if !onChannel {
+			dedupV = latestV
+		}
+		if dedupV > 0 {
 			rawNew, _ := json.Marshal(def)
-			if rawOld, err := h.db.GetDefinitionRaw(def.Name, currentV); err == nil && bytes.Equal(rawNew, rawOld) {
-				oldDeps, _ := h.db.GetDependencies(def.Name, currentV)
+			if rawOld, err := h.db.GetDefinitionRaw(def.Name, dedupV); err == nil && bytes.Equal(rawNew, rawOld) {
+				oldDeps, _ := h.db.GetDependencies(def.Name, dedupV)
 				if depsEqual(newDeps, oldDeps) {
-					batchVersions[def.Name] = currentV
-					results = append(results, BatchApplyResult{Name: def.Name, Version: currentV, Saved: false})
+					if err := h.db.SaveChannel(def.Name, channel, dedupV); err != nil {
+						return nil, fmt.Errorf("channel %s: %w", def.Name, err)
+					}
+					batchVersions[def.Name] = dedupV
+					results = append(results, BatchApplyResult{Name: def.Name, Version: dedupV, Saved: false})
 					continue
 				}
 			}

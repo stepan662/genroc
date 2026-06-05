@@ -144,6 +144,28 @@ func TestApplyBatch_ContentDedup_Idempotent(t *testing.T) {
 	}
 }
 
+func TestApplyBatch_ContentDedup_NewChannel(t *testing.T) {
+	h, cleanup := newTestHandlers(t)
+	defer cleanup()
+
+	// Establish content on "latest" → v1.
+	batchApply(h, "latest", false, restDef("p"))
+
+	// Apply identical content to a new channel — must reuse v1, not create v2.
+	r := batchApply(h, "staging", false, restDef("p"))
+	if !r.OK {
+		t.Fatalf("apply failed: %s", r.Error)
+	}
+	var results []BatchApplyResult
+	json.Unmarshal(r.Data, &results)
+	if len(results) != 1 || results[0].Saved || results[0].Version != 1 {
+		t.Errorf("expected Saved=false version=1 (reuse), got %+v", results)
+	}
+	if channelVersion(listChannels(h, t, "p"), "staging") != 1 {
+		t.Error("expected staging to point to v1")
+	}
+}
+
 func TestApplyBatch_ContentDedup_SelfRef(t *testing.T) {
 	h, cleanup := newTestHandlers(t)
 	defer cleanup()
