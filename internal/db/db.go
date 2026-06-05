@@ -102,6 +102,25 @@ type definitionRow struct {
 	CreatedAt     time.Time `bun:"created_at,notnull"`
 }
 
+type DependencyRow struct {
+	bun.BaseModel `bun:"table:process_dependencies"`
+	ParentName    string `bun:"parent_name,pk"`
+	ParentVersion int    `bun:"parent_version,pk"`
+	StepID        string `bun:"step_id,pk"`
+	ChildIdx      int    `bun:"child_idx,pk"`
+	ChildName     string `bun:"child_name,notnull"`
+	ChildVersion  int    `bun:"child_version,notnull"`
+}
+
+type StaleRefRow struct {
+	ParentName     string `bun:"parent_name"`
+	ParentVersion  int    `bun:"parent_version"`
+	StepID         string `bun:"step_id"`
+	ChildName      string `bun:"child_name"`
+	BakedVersion   int    `bun:"baked_version"`
+	ChannelVersion int    `bun:"channel_version"`
+}
+
 type instanceRow struct {
 	bun.BaseModel  `bun:"table:process_instances"`
 	ID             string     `bun:"id,pk"`
@@ -129,7 +148,7 @@ type VersionedDef struct {
 	Def     *model.ProcessDefinition
 }
 
-func (db *DB) SaveDefinition(def *model.ProcessDefinition, version int) error {
+func (db *DB) SaveDefinition(def *model.ProcessDefinition, version int, deps []DependencyRow) error {
 	data, err := json.Marshal(def)
 	if err != nil {
 		return err
@@ -140,11 +159,26 @@ func (db *DB) SaveDefinition(def *model.ProcessDefinition, version int) error {
 		Definition: string(data),
 		CreatedAt:  time.Now().UTC(),
 	}
-	_, err = db.bun.NewInsert().
-		Model(row).
-		On("CONFLICT (name, version) DO UPDATE SET definition = EXCLUDED.definition").
-		Exec(context.Background())
-	return err
+	return db.bun.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewInsert().
+			Model(row).
+			On("CONFLICT (name, version) DO UPDATE SET definition = EXCLUDED.definition").
+			Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewDelete().
+			TableExpr("process_dependencies").
+			Where("parent_name = ? AND parent_version = ?", def.Name, version).
+			Exec(ctx); err != nil {
+			return err
+		}
+		if len(deps) > 0 {
+			if _, err := tx.NewInsert().Model(&deps).Exec(ctx); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (db *DB) GetDefinition(name string, version int) (*model.ProcessDefinition, error) {
@@ -197,6 +231,102 @@ func (db *DB) ListDefinitions() ([]VersionedDef, error) {
 		out[i] = VersionedDef{Version: r.Version, Def: &def}
 	}
 	return out, nil
+}
+
+func (db *DB) GetDefinitionRaw(name string, version int) ([]byte, error) {
+	var row definitionRow
+	err := db.bun.NewSelect().
+		Model(&row).
+		Where("name = ? AND version = ?", name, version).
+		Scan(context.Background())
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("definition %q v%d not found", name, version)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return []byte(row.Definition), nil
+}
+
+func (db *DB) GetDependencies(name string, version int) ([]DependencyRow, error) {
+	var rows []DependencyRow
+	err := db.bun.NewSelect().
+		Model(&rows).
+		Where("parent_name = ? AND parent_version = ?", name, version).
+		OrderExpr("step_id, child_idx").
+		Scan(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (db *DB) GetDependencyVersion(parentName string, parentVersion int, stepID string, childIdx int) (int, error) {
+	var row DependencyRow
+	err := db.bun.NewSelect().
+		Model(&row).
+		Where("parent_name = ? AND parent_version = ? AND step_id = ? AND child_idx = ?", parentName, parentVersion, stepID, childIdx).
+		Scan(context.Background())
+	if err == sql.ErrNoRows {
+		return 0, fmt.Errorf("dependency not found for %q v%d step %q child %d", parentName, parentVersion, stepID, childIdx)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return row.ChildVersion, nil
+}
+
+func (db *DB) FindStaleParents(channel string, changedVersions map[string]int) ([]VersionedDef, error) {
+	if len(changedVersions) == 0 {
+		return nil, nil
+	}
+	conditions := make([]string, 0, len(changedVersions))
+	args := []any{channel}
+	for childName, newVersion := range changedVersions {
+		conditions = append(conditions, "(pd.child_name = ? AND pd.child_version != ?)")
+		args = append(args, childName, newVersion)
+	}
+	query := fmt.Sprintf(`
+		SELECT DISTINCT pd.parent_name, pc.version AS parent_version
+		FROM process_dependencies pd
+		JOIN process_channels pc ON pc.name = pd.parent_name AND pc.channel = ?
+		WHERE pd.parent_version = pc.version
+		  AND (%s)
+	`, strings.Join(conditions, " OR "))
+	var stale []struct {
+		ParentName    string `bun:"parent_name"`
+		ParentVersion int    `bun:"parent_version"`
+	}
+	if err := db.bun.NewRaw(query, args...).Scan(context.Background(), &stale); err != nil {
+		return nil, err
+	}
+	out := make([]VersionedDef, 0, len(stale))
+	for _, r := range stale {
+		def, err := db.GetDefinition(r.ParentName, r.ParentVersion)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, VersionedDef{Version: r.ParentVersion, Def: def})
+	}
+	return out, nil
+}
+
+func (db *DB) FindStaleRefs(channel string) ([]StaleRefRow, error) {
+	var rows []StaleRefRow
+	err := db.bun.NewRaw(`
+		SELECT pd.parent_name, pc.version AS parent_version,
+		       pd.step_id, pd.child_name,
+		       pd.child_version AS baked_version, pc2.version AS channel_version
+		FROM process_dependencies pd
+		JOIN process_channels pc  ON pc.name  = pd.parent_name AND pc.channel = ?
+		JOIN process_channels pc2 ON pc2.name = pd.child_name  AND pc2.channel = ?
+		WHERE pd.parent_version = pc.version
+		  AND pd.child_version < pc2.version
+	`, channel, channel).Scan(context.Background(), &rows)
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 // ── Channels ──────────────────────────────────────────────────────────────────

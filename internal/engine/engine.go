@@ -364,9 +364,13 @@ func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInsta
 		version := entry.Version
 		if version == 0 {
 			var err error
-			version, err = e.db.LatestVersion(entry.Name)
+			version, err = e.db.GetDependencyVersion(inst.ProcessName, inst.ProcessVersion, step.ID, i)
 			if err != nil {
-				return nil, true, e.failInstance(inst, fmt.Sprintf("step %q child_process[%d]: %v", step.ID, i, err))
+				// Backwards-compat: old defs without deps rows fall back to latest.
+				version, err = e.db.LatestVersion(entry.Name)
+				if err != nil {
+					return nil, true, e.failInstance(inst, fmt.Sprintf("step %q child_process[%d]: %v", step.ID, i, err))
+				}
 			}
 		}
 		def, err := e.db.GetDefinition(entry.Name, version)
