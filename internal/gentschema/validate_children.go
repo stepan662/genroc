@@ -17,9 +17,9 @@ type DefinitionGetter interface {
 //  1. The referenced process exists (version 0 resolves to latest).
 //  2. The schema inferred from p.Input is a subset of the child's InputSchema.
 //
-// def must already be normalised (Generate calls Normalize internally, so
-// call this after Generate).
-func ValidateChildProcessRefs(def *model.ProcessDefinition, getter DefinitionGetter) error {
+// currentVersion is the server-assigned version of def (used for self-reference detection).
+// def must already be normalised (Generate calls Normalize internally, so call this after Generate).
+func ValidateChildProcessRefs(def *model.ProcessDefinition, currentVersion int, getter DefinitionGetter) error {
 	required, optional := computeContextSets(def.Steps)
 
 	named := make(map[string]*schema.SchemaNode)
@@ -56,7 +56,7 @@ func ValidateChildProcessRefs(def *model.ProcessDefinition, getter DefinitionGet
 		}
 
 		for i, p := range s.Call.Processes {
-			if err := validateChildEntry(s.ID, i, p, ctx, defs, def, getter); err != nil {
+			if err := validateChildEntry(s.ID, i, p, ctx, defs, def, currentVersion, getter); err != nil {
 				return err
 			}
 		}
@@ -64,23 +64,25 @@ func ValidateChildProcessRefs(def *model.ProcessDefinition, getter DefinitionGet
 	return nil
 }
 
-func validateChildEntry(stepID string, idx int, p model.ChildProcessEntry, ctx *schema.SchemaNode, defs map[string]*schema.SchemaNode, current *model.ProcessDefinition, getter DefinitionGetter) error {
+func validateChildEntry(stepID string, idx int, p model.ChildProcessEntry, ctx *schema.SchemaNode, defs map[string]*schema.SchemaNode, current *model.ProcessDefinition, currentVersion int, getter DefinitionGetter) error {
 	prefix := fmt.Sprintf("step %q: processes[%d]", stepID, idx)
 
 	var child *model.ProcessDefinition
-	if p.Name == current.Name && (p.Version == 0 || p.Version == current.Version) {
+	var childVersion int
+	if p.Name == current.Name && (p.Version == 0 || p.Version == currentVersion) {
 		child = current
+		childVersion = currentVersion
 	} else {
-		version := p.Version
-		if version == 0 {
+		childVersion = p.Version
+		if childVersion == 0 {
 			v, err := getter.LatestVersion(p.Name)
 			if err != nil {
 				return fmt.Errorf("%s: %w", prefix, err)
 			}
-			version = v
+			childVersion = v
 		}
 		var err error
-		child, err = getter.GetDefinition(p.Name, version)
+		child, err = getter.GetDefinition(p.Name, childVersion)
 		if err != nil {
 			return fmt.Errorf("%s: %w", prefix, err)
 		}
@@ -106,7 +108,7 @@ func validateChildEntry(stepID string, idx int, p model.ChildProcessEntry, ctx *
 	}
 
 	if !schema.IsSubset(inferred, child.InputSchema) {
-		return fmt.Errorf("%s: input is not compatible with %q v%d input_schema", prefix, p.Name, child.Version)
+		return fmt.Errorf("%s: input is not compatible with %q v%d input_schema", prefix, p.Name, childVersion)
 	}
 	return nil
 }

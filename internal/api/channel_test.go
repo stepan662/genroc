@@ -16,18 +16,18 @@ func mustMarshal(t *testing.T, v any) json.RawMessage {
 	return b
 }
 
-func restDef(name string, version int) map[string]any {
+func restDef(name string) map[string]any {
 	return map[string]any{
-		"name": name, "version": version,
+		"name": name,
 		"steps": []any{
 			map[string]any{"id": "s1", "call": map[string]any{"type": "rest", "endpoint": "http://localhost/x"}},
 		},
 	}
 }
 
-func switchDef(name string, version int) map[string]any {
+func switchDef(name string) map[string]any {
 	return map[string]any{
-		"name": name, "version": version,
+		"name": name,
 		"steps": []any{
 			map[string]any{"id": "s1", "switch": []any{
 				map[string]any{"when": "default", "goto": "$end"},
@@ -36,13 +36,13 @@ func switchDef(name string, version int) map[string]any {
 	}
 }
 
-func childProcessDef(name string, version int, childName string, childVersion int) map[string]any {
+func childProcessDef(name string, childName string, childVersion int) map[string]any {
 	child := map[string]any{"name": childName}
 	if childVersion != 0 {
 		child["version"] = childVersion
 	}
 	return map[string]any{
-		"name": name, "version": version,
+		"name": name,
 		"steps": []any{
 			map[string]any{"id": "spawn", "call": map[string]any{
 				"type":      "child_process",
@@ -92,7 +92,7 @@ func TestApplyBatch_SetsChannel(t *testing.T) {
 	h, cleanup := newTestHandlers(t)
 	defer cleanup()
 
-	r := batchApply(h, "stable", false, restDef("p", 1))
+	r := batchApply(h, "stable", false, restDef("p"))
 	if !r.OK {
 		t.Fatalf("apply failed: %s", r.Error)
 	}
@@ -107,9 +107,9 @@ func TestApplyBatch_ContentDedup(t *testing.T) {
 	h, cleanup := newTestHandlers(t)
 	defer cleanup()
 
-	batchApply(h, "latest", false, restDef("p", 1))
+	batchApply(h, "latest", false, restDef("p"))
 
-	r := batchApply(h, "latest", false, restDef("p", 1))
+	r := batchApply(h, "latest", false, restDef("p"))
 	if !r.OK {
 		t.Fatalf("second apply failed: %s", r.Error)
 	}
@@ -120,23 +120,23 @@ func TestApplyBatch_ContentDedup(t *testing.T) {
 	}
 }
 
-// Content dedup compares by content not version number — different version same
-// content is still deduplicated (channel stays at existing version).
-func TestApplyBatch_ContentDedup_VersionIgnored(t *testing.T) {
+// Applying identical content a second time is deduplicated regardless of how
+// many times it has been applied before.
+func TestApplyBatch_ContentDedup_Idempotent(t *testing.T) {
 	h, cleanup := newTestHandlers(t)
 	defer cleanup()
 
-	batchApply(h, "latest", false, restDef("p", 1))
+	batchApply(h, "latest", false, restDef("p"))
 
-	// Same content, different version number supplied — content is equal so reuse existing.
-	r := batchApply(h, "latest", false, restDef("p", 2))
+	// Apply same content again — must report Saved=false.
+	r := batchApply(h, "latest", false, restDef("p"))
 	if !r.OK {
 		t.Fatalf("apply failed: %s", r.Error)
 	}
 	var results []BatchApplyResult
 	json.Unmarshal(r.Data, &results)
 	if len(results) != 1 || results[0].Saved {
-		t.Errorf("expected Saved=false (same content different version), got %+v", results)
+		t.Errorf("expected Saved=false (same content), got %+v", results)
 	}
 	// Channel should stay at v1.
 	if channelVersion(listChannels(h, t, "p"), "latest") != 1 {
@@ -148,9 +148,9 @@ func TestApplyBatch_NewVersionOnChange(t *testing.T) {
 	h, cleanup := newTestHandlers(t)
 	defer cleanup()
 
-	batchApply(h, "latest", false, restDef("p", 1))
+	batchApply(h, "latest", false, restDef("p"))
 
-	changed := restDef("p", 2)
+	changed := restDef("p")
 	changed["steps"] = []any{
 		map[string]any{"id": "s1", "call": map[string]any{"type": "rest", "endpoint": "http://localhost/changed"}},
 	}
@@ -173,10 +173,10 @@ func TestApplyBatch_ChildVersionResolution(t *testing.T) {
 	defer cleanup()
 
 	// Apply child on "latest".
-	batchApply(h, "latest", false, switchDef("child", 1))
+	batchApply(h, "latest", false, switchDef("child"))
 
 	// Apply parent with version=0 (omitted) child ref — should resolve to v1.
-	r := batchApply(h, "latest", false, childProcessDef("parent", 1, "child", 0))
+	r := batchApply(h, "latest", false, childProcessDef("parent", "child", 0))
 	if !r.OK {
 		t.Fatalf("parent apply failed: %s", r.Error)
 	}
@@ -191,7 +191,7 @@ func TestApplyBatch_ChildVersionResolution_ChildNotOnChannel(t *testing.T) {
 	defer cleanup()
 
 	// Parent references a child that hasn't been applied to any channel yet.
-	r := batchApply(h, "latest", false, childProcessDef("parent", 1, "missing-child", 0))
+	r := batchApply(h, "latest", false, childProcessDef("parent", "missing-child", 0))
 	if r.OK {
 		t.Error("expected error when child not on channel")
 	}
@@ -206,8 +206,8 @@ func TestApplyBatch_TopoSort(t *testing.T) {
 
 	// Parent first, child second — topo sort should handle it.
 	r := batchApply(h, "latest", false,
-		childProcessDef("parent", 1, "child", 0),
-		switchDef("child", 1),
+		childProcessDef("parent", "child", 0),
+		switchDef("child"),
 	)
 	if !r.OK {
 		t.Fatalf("apply failed (expected topo sort to reorder): %s", r.Error)
@@ -218,8 +218,8 @@ func TestApplyBatch_CycleDetection(t *testing.T) {
 	h, cleanup := newTestHandlers(t)
 	defer cleanup()
 
-	a := childProcessDef("a", 1, "b", 0)
-	b := childProcessDef("b", 1, "a", 0)
+	a := childProcessDef("a", "b", 0)
+	b := childProcessDef("b", "a", 0)
 	r := batchApply(h, "latest", false, a, b)
 	if r.OK {
 		t.Error("expected error for cycle")
@@ -234,10 +234,10 @@ func TestApplyBatch_AutoUpdateParents_Basic(t *testing.T) {
 	defer cleanup()
 
 	// Set up: child v1 + parent v1 on "stable".
-	batchApply(h, "stable", false, switchDef("child", 1), childProcessDef("parent", 1, "child", 0))
+	batchApply(h, "stable", false, switchDef("child"), childProcessDef("parent", "child", 0))
 
 	// Apply child v2 with auto-update-parents.
-	child2 := switchDef("child", 2)
+	child2 := switchDef("child")
 	child2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
 		map[string]any{"when": "default", "goto": "$end"},
 	}}}
@@ -272,13 +272,13 @@ func TestApplyBatch_AutoUpdateParents_Cascade(t *testing.T) {
 
 	// leaf → parent → grandparent, all on "latest".
 	batchApply(h, "latest", false,
-		switchDef("leaf", 1),
-		childProcessDef("parent", 1, "leaf", 0),
-		childProcessDef("grandparent", 1, "parent", 0),
+		switchDef("leaf"),
+		childProcessDef("parent", "leaf", 0),
+		childProcessDef("grandparent", "parent", 0),
 	)
 
 	// Update leaf: grandparent should also cascade.
-	leaf2 := switchDef("leaf", 2)
+	leaf2 := switchDef("leaf")
 	leaf2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
 		map[string]any{"when": "default", "goto": "$end"},
 	}}}
@@ -303,11 +303,11 @@ func TestApplyBatch_AutoUpdateParents_OtherChannelUntouched(t *testing.T) {
 	defer cleanup()
 
 	// child on "latest", parent on "stable" (different channel).
-	batchApply(h, "latest", false, switchDef("child", 1))
-	batchApply(h, "stable", false, switchDef("child", 1), childProcessDef("parent", 1, "child", 0))
+	batchApply(h, "latest", false, switchDef("child"))
+	batchApply(h, "stable", false, switchDef("child"), childProcessDef("parent", "child", 0))
 
 	// Update child on "latest" only.
-	child2 := switchDef("child", 2)
+	child2 := switchDef("child")
 	child2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
 		map[string]any{"when": "default", "goto": "$end"},
 	}}}
@@ -326,7 +326,7 @@ func TestChannelCRUD(t *testing.T) {
 	h, cleanup := newTestHandlers(t)
 	defer cleanup()
 
-	putDef(h, restDef("p", 1))
+	putDef(h, restDef("p"))
 
 	// put_channel
 	pc := h.Handle(Envelope{Action: "put_channel", Payload: mustMarshal(t, PutChannelReq{Name: "p", Channel: "stable", Version: 1})})
@@ -339,8 +339,8 @@ func TestChannelCRUD(t *testing.T) {
 		t.Errorf("expected stable→1, got %+v", entries)
 	}
 
-	// Update channel pointer.
-	putDef(h, restDef("p", 2))
+	// Update channel pointer — putDef creates v2 (server-assigned).
+	putDef(h, restDef("p"))
 	h.Handle(Envelope{Action: "put_channel", Payload: mustMarshal(t, PutChannelReq{Name: "p", Channel: "stable", Version: 2})})
 	if channelVersion(listChannels(h, t, "p"), "stable") != 2 {
 		t.Error("expected stable to advance to v2")
@@ -372,7 +372,7 @@ func TestPromoteChannel_CopiesAll(t *testing.T) {
 	h, cleanup := newTestHandlers(t)
 	defer cleanup()
 
-	batchApply(h, "staging", false, restDef("a", 1), restDef("b", 1))
+	batchApply(h, "staging", false, restDef("a"), restDef("b"))
 
 	pr := h.Handle(Envelope{Action: "promote_channel", Payload: mustMarshal(t, PromoteChannelReq{From: "staging", To: "latest"})})
 	if !pr.OK {
@@ -390,7 +390,7 @@ func TestPromoteChannel_StagingPreserved(t *testing.T) {
 	h, cleanup := newTestHandlers(t)
 	defer cleanup()
 
-	batchApply(h, "staging", false, restDef("p", 1))
+	batchApply(h, "staging", false, restDef("p"))
 	h.Handle(Envelope{Action: "promote_channel", Payload: mustMarshal(t, PromoteChannelReq{From: "staging", To: "latest"})})
 
 	// staging pointer must still exist.
@@ -403,7 +403,7 @@ func TestPromoteChannel_Subtree(t *testing.T) {
 	h, cleanup := newTestHandlers(t)
 	defer cleanup()
 
-	batchApply(h, "staging", false, switchDef("child", 1), childProcessDef("parent", 1, "child", 0), restDef("unrelated", 1))
+	batchApply(h, "staging", false, switchDef("child"), childProcessDef("parent", "child", 0), restDef("unrelated"))
 
 	proc := "parent"
 	pr := h.Handle(Envelope{Action: "promote_channel", Payload: mustMarshal(t, PromoteChannelReq{From: "staging", To: "latest", Process: &proc})})
@@ -430,7 +430,7 @@ func TestChannelStatus_Clean(t *testing.T) {
 	h, cleanup := newTestHandlers(t)
 	defer cleanup()
 
-	batchApply(h, "stable", false, switchDef("child", 1), childProcessDef("parent", 1, "child", 0))
+	batchApply(h, "stable", false, switchDef("child"), childProcessDef("parent", "child", 0))
 
 	cs := h.Handle(Envelope{Action: "channel_status", Payload: mustMarshal(t, ChannelStatusReq{Channel: "stable"})})
 	if !cs.OK {
@@ -450,10 +450,10 @@ func TestChannelStatus_StaleRef(t *testing.T) {
 	defer cleanup()
 
 	// Apply child v1 + parent v1 (baked with child@v1).
-	batchApply(h, "stable", false, switchDef("child", 1), childProcessDef("parent", 1, "child", 0))
+	batchApply(h, "stable", false, switchDef("child"), childProcessDef("parent", "child", 0))
 
 	// Advance child to v2 on stable WITHOUT updating parent.
-	child2 := switchDef("child", 2)
+	child2 := switchDef("child")
 	child2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
 		map[string]any{"when": "default", "goto": "$end"},
 	}}}
@@ -490,10 +490,10 @@ func TestStartInstance_Channel(t *testing.T) {
 	h, cleanup := newTestHandlers(t)
 	defer cleanup()
 
-	// v1 on "stable", v2 on "latest".
-	batchApply(h, "stable", false, restDef("p", 1))
+	// v1 on "stable", v2 on "latest" (different content).
+	batchApply(h, "stable", false, restDef("p"))
 	batchApply(h, "latest", false, func() map[string]any {
-		d := restDef("p", 2)
+		d := restDef("p")
 		d["steps"] = []any{map[string]any{"id": "s1", "call": map[string]any{"type": "rest", "endpoint": "http://localhost/v2"}}}
 		return d
 	}())
@@ -517,9 +517,9 @@ func TestStartInstance_ExplicitVersionTakesPriority(t *testing.T) {
 	h, cleanup := newTestHandlers(t)
 	defer cleanup()
 
-	batchApply(h, "stable", false, restDef("p", 1))
+	batchApply(h, "stable", false, restDef("p"))
 	batchApply(h, "latest", false, func() map[string]any {
-		d := restDef("p", 2)
+		d := restDef("p")
 		d["steps"] = []any{map[string]any{"id": "s1", "call": map[string]any{"type": "rest", "endpoint": "http://localhost/v2"}}}
 		return d
 	}())
@@ -545,7 +545,7 @@ func TestStartInstance_InvalidChannel(t *testing.T) {
 	h, cleanup := newTestHandlers(t)
 	defer cleanup()
 
-	putDef(h, restDef("p", 1))
+	putDef(h, restDef("p"))
 
 	ch := "nonexistent"
 	r := h.Handle(Envelope{Action: "start_instance", Payload: mustMarshal(t, StartInstanceReq{

@@ -201,13 +201,12 @@ type Step struct {
 }
 
 // ProcessDefinition is the immutable versioned blueprint for a process.
-// Once published, a version must never be mutated — create a new version instead.
+// Versions are assigned by the server on apply; never include a version when submitting definitions.
 type ProcessDefinition struct {
-	Name        string            `json:"name"                 validate:"required" description:"Unique process identifier."`
-	Version     int               `json:"version"              validate:"min=1"    description:"Version number, must be ≥ 1. Once published, a version must never be mutated — create a new version instead."`
-	Steps       []*Step           `json:"steps"                validate:"required,min=1,dive" description:"Ordered list of execution steps. Control advances linearly unless a switch case redirects."`
-	InputSchema *schema.SchemaNode `json:"input_schema,omitempty"                              description:"JSON Schema used to validate the input payload when starting a new instance."`
-	Output      map[string]string `json:"output,omitempty"                                    description:"Expression map evaluated at completion to produce the process output. Keys become output field names."`
+	Name        string             `json:"name"         validate:"required" description:"Unique process identifier."`
+	Steps       []*Step            `json:"steps"        validate:"required,min=1,dive" description:"Ordered list of execution steps. Control advances linearly unless a switch case redirects."`
+	InputSchema *schema.SchemaNode `json:"input_schema,omitempty"          description:"JSON Schema used to validate the input payload when starting a new instance."`
+	Output      map[string]string  `json:"output,omitempty"                description:"Expression map evaluated at completion to produce the process output. Keys become output field names."`
 }
 
 // Normalize normalizes InputSchema and all step OutputSchemas in-place using the

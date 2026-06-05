@@ -387,7 +387,7 @@ func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInsta
 		child := &model.ProcessInstance{
 			ID:             uuid.NewString(),
 			ProcessName:    def.Name,
-			ProcessVersion: def.Version,
+			ProcessVersion: version,
 			StepQueue:      def.Steps,
 			ContextData:    map[string]any{"input": input, "outputs": map[string]any{}, "output_order": []string{}, "_spawn_step_id": step.ID},
 			Status:         model.StatusRunning,

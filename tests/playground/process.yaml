@@ -1,6 +1,5 @@
 # yaml-language-server: $schema=http://localhost:8888/process-schema.json
 name: order-pipeline
-version: 1
 input_schema:
   type: object
   properties:
@@ -43,12 +42,6 @@ output:
 ---
 # yaml-language-server: $schema=http://localhost:8888/process-schema.json
 name: child
-version: 1
-input_schema:
-  properties:
-    finish: 
-      type: boolean
-      
 steps:
   - id: one
     switch:

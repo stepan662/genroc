@@ -1,6 +1,6 @@
 {
   "process": "order-pipeline",
-  "version": 1,
+  "version": 0,
   "process_input": {
     "$ref": "#/$defs/input"
   },

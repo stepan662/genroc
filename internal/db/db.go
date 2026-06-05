@@ -123,14 +123,20 @@ type instanceRow struct {
 
 // ── Process Definitions ───────────────────────────────────────────────────────
 
-func (db *DB) SaveDefinition(def *model.ProcessDefinition) error {
+// VersionedDef pairs a ProcessDefinition with its server-assigned version number.
+type VersionedDef struct {
+	Version int
+	Def     *model.ProcessDefinition
+}
+
+func (db *DB) SaveDefinition(def *model.ProcessDefinition, version int) error {
 	data, err := json.Marshal(def)
 	if err != nil {
 		return err
 	}
 	row := &definitionRow{
 		Name:       def.Name,
-		Version:    def.Version,
+		Version:    version,
 		Definition: string(data),
 		CreatedAt:  time.Now().UTC(),
 	}
@@ -173,7 +179,7 @@ func (db *DB) LatestVersion(name string) (int, error) {
 	return int(v.Int64), nil
 }
 
-func (db *DB) ListDefinitions() ([]model.ProcessDefinition, error) {
+func (db *DB) ListDefinitions() ([]VersionedDef, error) {
 	var rows []definitionRow
 	err := db.bun.NewSelect().
 		Model(&rows).
@@ -182,11 +188,13 @@ func (db *DB) ListDefinitions() ([]model.ProcessDefinition, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make([]model.ProcessDefinition, len(rows))
+	out := make([]VersionedDef, len(rows))
 	for i, r := range rows {
-		if err := json.Unmarshal([]byte(r.Definition), &out[i]); err != nil {
+		var def model.ProcessDefinition
+		if err := json.Unmarshal([]byte(r.Definition), &def); err != nil {
 			return nil, err
 		}
+		out[i] = VersionedDef{Version: r.Version, Def: &def}
 	}
 	return out, nil
 }
@@ -240,8 +248,8 @@ func (db *DB) ListChannels(name string) (map[string]int, error) {
 }
 
 // LoadDefinitionsOnChannel returns all process definitions currently pointed to
-// by the given channel, one per process name.
-func (db *DB) LoadDefinitionsOnChannel(channel string) ([]*model.ProcessDefinition, error) {
+// by the given channel, one per process name, paired with their version numbers.
+func (db *DB) LoadDefinitionsOnChannel(channel string) ([]VersionedDef, error) {
 	var rows []channelRow
 	if err := db.bun.NewSelect().
 		Model(&rows).
@@ -249,13 +257,13 @@ func (db *DB) LoadDefinitionsOnChannel(channel string) ([]*model.ProcessDefiniti
 		Scan(context.Background()); err != nil {
 		return nil, err
 	}
-	out := make([]*model.ProcessDefinition, 0, len(rows))
+	out := make([]VersionedDef, 0, len(rows))
 	for _, r := range rows {
 		def, err := db.GetDefinition(r.Name, r.Version)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, def)
+		out = append(out, VersionedDef{Version: r.Version, Def: def})
 	}
 	return out, nil
 }

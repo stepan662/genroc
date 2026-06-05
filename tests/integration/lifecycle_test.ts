@@ -14,7 +14,6 @@ test("lifecycle — task step completes when service returns ok", async () => {
   await client.PUT("/definitions", {
     body: {
       name,
-      version: 1,
       steps: [
         {
           type: "task" as const,
@@ -49,7 +48,6 @@ test("lifecycle — task step fails and retries then marks failed", async () => 
   await client.PUT("/definitions", {
     body: {
       name,
-      version: 1,
       steps: [
         {
           type: "task" as const,
@@ -82,7 +80,6 @@ test("lifecycle — conditional routes to correct branch", async () => {
   const def = await client.PUT("/definitions", {
     body: {
       name,
-      version: 1,
       input_schema: {
         type: "object",
         properties: {
@@ -156,7 +153,6 @@ test("lifecycle — task fails when output violates output_schema", async () => 
   await client.PUT("/definitions", {
     body: {
       name,
-      version: 1,
       steps: [
         {
           id: "charge",

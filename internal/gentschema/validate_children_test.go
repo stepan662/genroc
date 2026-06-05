@@ -12,22 +12,23 @@ import (
 )
 
 // stubGetter implements DefinitionGetter using a name-keyed map.
+// All stubs are treated as v1; version mismatches are not checked.
 type stubGetter map[string]*model.ProcessDefinition
 
 func (s stubGetter) GetDefinition(name string, version int) (*model.ProcessDefinition, error) {
 	def, ok := s[name]
-	if !ok || (version != 0 && def.Version != version) {
+	if !ok {
 		return nil, fmt.Errorf("definition %q v%d not found", name, version)
 	}
 	return def, nil
 }
 
 func (s stubGetter) LatestVersion(name string) (int, error) {
-	def, ok := s[name]
+	_, ok := s[name]
 	if !ok {
 		return 0, fmt.Errorf("no definitions found for %q", name)
 	}
-	return def.Version, nil
+	return 1, nil
 }
 
 // normalizedSchema parses a JSON schema string and normalises it, as the DB
@@ -50,8 +51,7 @@ func normalizedSchema(t *testing.T, raw string) *schema.SchemaNode {
 func childDef(t *testing.T, name string, rawSchema string) *model.ProcessDefinition {
 	t.Helper()
 	def := &model.ProcessDefinition{
-		Name:    name,
-		Version: 1,
+		Name: name,
 		Steps: []*model.Step{
 			{ID: "noop", Switch: model.SwitchMap{{When: "default", Goto: model.GotoEnd}}},
 		},
@@ -68,8 +68,7 @@ func childDef(t *testing.T, name string, rawSchema string) *model.ProcessDefinit
 func parentDef(t *testing.T, inputSchemaRaw string, processes []model.ChildProcessEntry) *model.ProcessDefinition {
 	t.Helper()
 	def := &model.ProcessDefinition{
-		Name:    "parent",
-		Version: 1,
+		Name: "parent",
 		Steps: []*model.Step{
 			{
 				ID: "spawn",
@@ -102,14 +101,14 @@ const parentInputSchema = `{
 
 func assertValidateOK(t *testing.T, def *model.ProcessDefinition, getter gentschema.DefinitionGetter) {
 	t.Helper()
-	if err := gentschema.ValidateChildProcessRefs(def, getter); err != nil {
+	if err := gentschema.ValidateChildProcessRefs(def, 1, getter); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
 
 func assertValidateErr(t *testing.T, def *model.ProcessDefinition, getter gentschema.DefinitionGetter, wantSubstr string) {
 	t.Helper()
-	err := gentschema.ValidateChildProcessRefs(def, getter)
+	err := gentschema.ValidateChildProcessRefs(def, 1, getter)
 	if err == nil {
 		t.Errorf("expected error containing %q, got nil", wantSubstr)
 		return
@@ -123,8 +122,7 @@ func assertValidateErr(t *testing.T, def *model.ProcessDefinition, getter gentsc
 
 func TestValidateChildProcessRefs_noChildProcessSteps(t *testing.T) {
 	def := &model.ProcessDefinition{
-		Name:    "parent",
-		Version: 1,
+		Name: "parent",
 		Steps: []*model.Step{
 			{ID: "fetch", Call: &model.Call{Type: model.CallTypeREST, Endpoint: "http://example.com"}},
 		},
@@ -255,7 +253,7 @@ func TestValidateChildProcessRefs_badExpression(t *testing.T) {
 	def := parentDef(t, "", []model.ChildProcessEntry{
 		{Name: "worker", Version: 1, Input: map[string]string{"x": "{{input.amount}}"}},
 	})
-	if err := gentschema.ValidateChildProcessRefs(def, getter); err == nil {
+	if err := gentschema.ValidateChildProcessRefs(def, 1, getter); err == nil {
 		t.Error("expected error for unresolvable expression, got nil")
 	}
 }

@@ -14,7 +14,14 @@ func runGenerate(t *testing.T, defJSON string) gentschema.SchemaFile {
 	if err := json.Unmarshal([]byte(defJSON), &def); err != nil {
 		t.Fatalf("unmarshal definition: %v", err)
 	}
-	out, err := gentschema.Generate(&def)
+	// Extract version from raw JSON; model no longer carries it.
+	var raw map[string]any
+	json.Unmarshal([]byte(defJSON), &raw)
+	version := 0
+	if v, ok := raw["version"].(float64); ok {
+		version = int(v)
+	}
+	out, err := gentschema.Generate(&def, version)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -27,7 +34,13 @@ func runGenerateErr(t *testing.T, defJSON string) error {
 	if err := json.Unmarshal([]byte(defJSON), &def); err != nil {
 		t.Fatalf("unmarshal definition: %v", err)
 	}
-	_, err := gentschema.Generate(&def)
+	var raw map[string]any
+	json.Unmarshal([]byte(defJSON), &raw)
+	version := 0
+	if v, ok := raw["version"].(float64); ok {
+		version = int(v)
+	}
+	_, err := gentschema.Generate(&def, version)
 	return err
 }
 

@@ -61,8 +61,7 @@ var registry = func() []actionDef {
 			Summary: "Register or update a process definition",
 			Tags:    []string{"Definitions"},
 			Req: model.ProcessDefinition{
-				Name:    "order_pipeline",
-				Version: 1,
+				Name: "order_pipeline",
 				InputSchema: &schema.SchemaNode{
 					Type: schema.SchemaType{"object"},
 					Properties: map[string]*schema.SchemaNode{
@@ -167,9 +166,8 @@ var registry = func() []actionDef {
 				AutoUpdateParents: false,
 				Definitions: []model.ProcessDefinition{
 					{
-						Name:    "child_process",
-						Version: 1,
-						Steps:   []*model.Step{{ID: "run", Call: &model.Call{Type: model.CallTypeREST, Endpoint: "http://localhost:9001/run"}}},
+						Name:  "child_process",
+						Steps: []*model.Step{{ID: "run", Call: &model.Call{Type: model.CallTypeREST, Endpoint: "http://localhost:9001/run"}}},
 					},
 				},
 			},
@@ -252,9 +250,8 @@ var registry = func() []actionDef {
 			Tags:    []string{"Definitions"},
 			Req: []model.ProcessDefinition{
 				{
-					Name:    "order_pipeline",
-					Version: 1,
-					Steps:   []*model.Step{{ID: "charge", Call: &model.Call{Type: model.CallTypeREST, Endpoint: "http://localhost:9001/charge"}}},
+					Name:  "order_pipeline",
+					Steps: []*model.Step{{ID: "charge", Call: &model.Call{Type: model.CallTypeREST, Endpoint: "http://localhost:9001/charge"}}},
 				},
 			},
 			Resp: []map[string]any{{"process": "order_pipeline", "version": 1}},

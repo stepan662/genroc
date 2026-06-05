@@ -22,37 +22,25 @@ async function applyBatch(
   return data as Array<{ name: string; version: number; saved: boolean }>;
 }
 
-function switchDef(name: string, version: number) {
+function switchDef(name: string) {
   return {
     name,
-    version,
     steps: [{ id: "s1", switch: [{ when: "default", goto: "$end" }] }],
   };
 }
 
-function restDef(
-  name: string,
-  version: number,
-  endpoint = "http://localhost/x",
-) {
+function restDef(name: string, endpoint = "http://localhost/x") {
   return {
     name,
-    version,
     steps: [{ id: "s1", call: { type: "rest" as const, endpoint } }],
   };
 }
 
-function childDef(
-  name: string,
-  version: number,
-  childName: string,
-  childVersion = 0,
-) {
+function childDef(name: string, childName: string, childVersion = 0) {
   const child: Record<string, unknown> = { name: childName };
   if (childVersion !== 0) child.version = childVersion;
   return {
     name,
-    version,
     steps: [
       {
         id: "spawn",
@@ -67,11 +55,11 @@ function childDef(
 test("channels — apply sets channel pointer and deduplicates unchanged content", async () => {
   const name = uid("proc");
 
-  const first = await applyBatch([switchDef(name, 1)], "stable");
+  const first = await applyBatch([switchDef(name)], "stable");
   expect(first).toMatchObject([{ name, version: 1, saved: true }]);
 
   // Same content again — should deduplicate.
-  const second = await applyBatch([switchDef(name, 1)], "stable");
+  const second = await applyBatch([switchDef(name)], "stable");
   expect(second).toMatchObject([{ name, version: 1, saved: false }]);
 
   // Verify channel pointer via list_channels.
@@ -87,8 +75,8 @@ test("channels — apply sets channel pointer and deduplicates unchanged content
 test("channels — start_instance resolves version from channel", async () => {
   const name = uid("proc");
 
-  await applyBatch([restDef(name, 1, "http://localhost/v1")], "stable");
-  await applyBatch([restDef(name, 2, "http://localhost/v2")], "latest");
+  await applyBatch([restDef(name, "http://localhost/v1")], "stable");
+  await applyBatch([restDef(name, "http://localhost/v2")], "latest");
 
   // stable → v1
   const { data: inst1 } = await client.POST("/instances", {
@@ -106,8 +94,8 @@ test("channels — start_instance resolves version from channel", async () => {
 test("channels — explicit version takes priority over channel", async () => {
   const name = uid("proc");
 
-  await applyBatch([restDef(name, 1, "http://localhost/v1")], "stable");
-  await applyBatch([restDef(name, 2, "http://localhost/v2")], "latest");
+  await applyBatch([restDef(name, "http://localhost/v1")], "stable");
+  await applyBatch([restDef(name, "http://localhost/v2")], "latest");
 
   const { data: inst } = await client.POST("/instances", {
     body: { process: name, version: 2, channel: "stable" } as never,
@@ -122,7 +110,7 @@ test("channels — auto-update-parents cascades to dependent process on same cha
   const parentName = uid("parent");
 
   await applyBatch(
-    [switchDef(childName, 1), childDef(parentName, 1, childName)],
+    [switchDef(childName), childDef(parentName, childName)],
     "stable",
   );
 
@@ -130,7 +118,7 @@ test("channels — auto-update-parents cascades to dependent process on same cha
   const results = await applyBatch(
     [
       {
-        ...switchDef(childName, 2),
+        ...switchDef(childName),
         steps: [{ id: "s2", switch: [{ when: "default", goto: "$end" }] }],
       },
     ],
@@ -154,9 +142,9 @@ test("channels — auto-update-parents does not touch other channels", async () 
   const parentName = uid("parent");
 
   // Parent on "stable", child on both.
-  await applyBatch([switchDef(childName, 1)], "latest");
+  await applyBatch([switchDef(childName)], "latest");
   await applyBatch(
-    [switchDef(childName, 1), childDef(parentName, 1, childName)],
+    [switchDef(childName), childDef(parentName, childName)],
     "stable",
   );
 
@@ -164,7 +152,7 @@ test("channels — auto-update-parents does not touch other channels", async () 
   await applyBatch(
     [
       {
-        ...switchDef(childName, 2),
+        ...switchDef(childName),
         steps: [{ id: "s2", switch: [{ when: "default", goto: "$end" }] }],
       },
     ],
@@ -190,7 +178,7 @@ test("channels — channel_status reports stale refs after child is advanced", a
   const track = uid("track");
 
   await applyBatch(
-    [switchDef(childName, 1), childDef(parentName, 1, childName)],
+    [switchDef(childName), childDef(parentName, childName)],
     track,
   );
 
@@ -198,7 +186,7 @@ test("channels — channel_status reports stale refs after child is advanced", a
   await applyBatch(
     [
       {
-        ...switchDef(childName, 2),
+        ...switchDef(childName),
         steps: [{ id: "s2", switch: [{ when: "default", goto: "$end" }] }],
       },
     ],
@@ -233,7 +221,7 @@ test("channels — channel_status is clean when everything is coherent", async (
   const track = uid("track");
 
   await applyBatch(
-    [switchDef(childName, 1), childDef(parentName, 1, childName)],
+    [switchDef(childName), childDef(parentName, childName)],
     track,
   );
 
@@ -252,7 +240,7 @@ test("channels — promote copies all pointers from source to target channel", a
   const a = uid("a");
   const b = uid("b");
 
-  await applyBatch([switchDef(a, 1), switchDef(b, 1)], "staging");
+  await applyBatch([switchDef(a), switchDef(b)], "staging");
 
   const { data: promoteData, error } = await client.POST("/channels/promote", {
     body: { from: "staging", to: "promoted" },
@@ -283,9 +271,9 @@ test("channels — promote subtree only touches the process and its dependencies
 
   await applyBatch(
     [
-      switchDef(childName, 1),
-      childDef(parentName, 1, childName),
-      switchDef(unrelated, 1),
+      switchDef(childName),
+      childDef(parentName, childName),
+      switchDef(unrelated),
     ],
     "staging",
   );
@@ -312,7 +300,7 @@ test("channels — promote subtree only touches the process and its dependencies
 test("channels — process started by channel runs and completes", async () => {
   const name = uid("proc");
 
-  await applyBatch([switchDef(name, 1)], "stable");
+  await applyBatch([switchDef(name)], "stable");
 
   const { data: inst } = await client.POST("/instances", {
     body: { process: name, channel: "stable" } as never,

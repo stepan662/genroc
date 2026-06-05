@@ -12,7 +12,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 	}
 
 	t.Run("no schemas is a no-op", func(t *testing.T) {
-		d := ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{validStep("s1")}}
+		d := ProcessDefinition{Name: "p", Steps: []*Step{validStep("s1")}}
 		if err := d.Normalize(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -20,7 +20,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 
 	t.Run("simple InputSchema without refs is unchanged", func(t *testing.T) {
 		d := ProcessDefinition{
-			Name: "p", Version: 1, Steps: []*Step{validStep("s1")},
+			Name: "p", Steps: []*Step{validStep("s1")},
 			InputSchema: &schema.SchemaNode{
 				Type:       schema.SchemaType{"object"},
 				Properties: map[string]*schema.SchemaNode{"id": {Type: schema.SchemaType{"integer"}}},
@@ -36,7 +36,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 
 	t.Run("InputSchema $defs are flattened to root", func(t *testing.T) {
 		d := ProcessDefinition{
-			Name: "p", Version: 1, Steps: []*Step{validStep("s1")},
+			Name: "p", Steps: []*Step{validStep("s1")},
 			InputSchema: &schema.SchemaNode{
 				Type: schema.SchemaType{"object"},
 				Properties: map[string]*schema.SchemaNode{
@@ -77,7 +77,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 				"result": {Ref: "#/$defs/Result"},
 			},
 		}
-		d := ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{step}}
+		d := ProcessDefinition{Name: "p", Steps: []*Step{step}}
 		if err := d.Normalize(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -103,7 +103,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 				"result": {Ref: "#/$defs/Result"},
 			},
 		}
-		d := ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{step1, step2}}
+		d := ProcessDefinition{Name: "p", Steps: []*Step{step1, step2}}
 		if err := d.Normalize(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -117,7 +117,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 
 	t.Run("invalid $ref in InputSchema returns error", func(t *testing.T) {
 		d := ProcessDefinition{
-			Name: "p", Version: 1, Steps: []*Step{validStep("s1")},
+			Name: "p", Steps: []*Step{validStep("s1")},
 			InputSchema: &schema.SchemaNode{
 				Type:       schema.SchemaType{"object"},
 				Properties: map[string]*schema.SchemaNode{"x": {Ref: "#/$defs/Missing"}},
@@ -134,7 +134,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 			Type:       schema.SchemaType{"object"},
 			Properties: map[string]*schema.SchemaNode{"x": {Ref: "#/$defs/Missing"}},
 		}
-		d := ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{step}}
+		d := ProcessDefinition{Name: "p", Steps: []*Step{step}}
 		err := d.Normalize()
 		if err == nil {
 			t.Fatal("expected error for unresolved $ref, got nil")
@@ -146,7 +146,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 
 	t.Run("unused $defs are removed from InputSchema", func(t *testing.T) {
 		d := ProcessDefinition{
-			Name: "p", Version: 1, Steps: []*Step{validStep("s1")},
+			Name: "p", Steps: []*Step{validStep("s1")},
 			InputSchema: &schema.SchemaNode{
 				Type: schema.SchemaType{"object"},
 				Defs: map[string]*schema.SchemaNode{
@@ -182,19 +182,19 @@ func TestProcessDefinition_Validate(t *testing.T) {
 	}{
 		{
 			name:    "valid rest call step",
-			def:     ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{restStep("step1", "http://localhost/action")}},
+			def:     ProcessDefinition{Name: "p", Steps: []*Step{restStep("step1", "http://localhost/action")}},
 			wantErr: "",
 		},
 		{
 			name: "valid script call step",
-			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
+			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{ID: "run", Call: &Call{Type: CallTypeScript, Exec: "python3 foo.py"}},
 			}},
 			wantErr: "",
 		},
 		{
 			name: "valid switch-only step",
-			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
+			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{ID: "router", Switch: SwitchMap{
 					{When: "input.ok == true", Goto: "act"},
 					{When: "default", Goto: GotoEnd},
@@ -205,7 +205,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		},
 		{
 			name: "valid step with both call and switch",
-			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
+			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
@@ -219,50 +219,45 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		},
 		{
 			name:    "missing name",
-			def:     ProcessDefinition{Version: 1, Steps: []*Step{restStep("step1", "http://x")}},
+			def:     ProcessDefinition{Steps: []*Step{restStep("step1", "http://x")}},
 			wantErr: "name is required",
 		},
 		{
-			name:    "version zero",
-			def:     ProcessDefinition{Name: "p", Version: 0, Steps: []*Step{restStep("step1", "http://x")}},
-			wantErr: "version must have at least 1 item(s)",
-		},
-		{
 			name:    "no steps",
-			def:     ProcessDefinition{Name: "p", Version: 1},
+			def:     ProcessDefinition{Name: "p"},
 			wantErr: "steps",
 		},
 		{
 			name: "step with neither call nor switch",
-			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
+			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{ID: "empty"},
 			}},
 			wantErr: "must have a call or a switch",
 		},
 		{
 			name: "rest call missing endpoint",
-			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
+			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{ID: "s1", Call: &Call{Type: CallTypeREST}},
 			}},
 			wantErr: "call.endpoint is required",
 		},
 		{
 			name: "script call missing exec",
-			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
+			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{ID: "s1", Call: &Call{Type: CallTypeScript}},
 			}},
 			wantErr: "call.exec is required",
 		},
 		{
 			name: "unknown call type",
-			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
+			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{ID: "s1", Call: &Call{Type: "ftp", Endpoint: "ftp://x"}},
 			}},
 			wantErr: "call.type must be one of: rest, script",
 		},
 		{
 			name: "switch missing default case",
-			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
+			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{{When: "self.ok == true", Goto: "ship"}},
@@ -273,7 +268,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		},
 		{
 			name: "switch default is not the last case",
-			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
+			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
@@ -287,7 +282,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		},
 		{
 			name: "switch $end in non-default case is valid",
-			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
+			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
@@ -301,7 +296,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		},
 		{
 			name: "switch goto references unknown step",
-			def: ProcessDefinition{Name: "p", Version: 1, Steps: []*Step{
+			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
@@ -336,7 +331,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 
 func TestProcessDefinition_ValidateInput_Nullable(t *testing.T) {
 	def := ProcessDefinition{
-		Name: "p", Version: 1,
+		Name: "p",
 		InputSchema: &schema.SchemaNode{
 			Type:     schema.SchemaType{"object"},
 			Required: []string{"id"},

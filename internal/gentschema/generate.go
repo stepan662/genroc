@@ -29,11 +29,11 @@ type SchemaFile struct {
 }
 
 // Generate normalises all schemas in def and builds the SchemaFile output.
-func Generate(def *model.ProcessDefinition) (SchemaFile, error) {
+func Generate(def *model.ProcessDefinition, version int) (SchemaFile, error) {
 	if err := def.Normalize(); err != nil {
 		return SchemaFile{}, err
 	}
-	result := SchemaFile{Process: def.Name, Version: def.Version}
+	result := SchemaFile{Process: def.Name, Version: version}
 
 	named := make(map[string]*schema.SchemaNode)
 	if def.InputSchema != nil {
