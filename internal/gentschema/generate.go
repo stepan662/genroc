@@ -28,6 +28,28 @@ type SchemaFile struct {
 	Defs          map[string]*schema.SchemaNode `json:"$defs,omitempty"`
 }
 
+// buildSchemaContext derives the shared defs, tasks, and processInput from a definition.
+// Both Generate and ValidateChildProcessRefs use it to avoid duplicating setup.
+func buildSchemaContext(def *model.ProcessDefinition) (defs map[string]*schema.SchemaNode, tasks map[string]TaskSchemas, processInput *schema.SchemaNode, err error) {
+	named := make(map[string]*schema.SchemaNode)
+	if def.InputSchema != nil {
+		named["input"] = def.InputSchema
+	}
+	collectNamedOutputs(def.Steps, named)
+	if len(named) > 0 {
+		defs, err = flattenNamedSchemas(named)
+		if err != nil {
+			return
+		}
+	}
+	tasks = make(map[string]TaskSchemas)
+	collectTaskRefs(def.Steps, tasks)
+	if named["input"] != nil {
+		processInput = schemaRef("input")
+	}
+	return
+}
+
 // Generate normalises all schemas in def and builds the SchemaFile output.
 func Generate(def *model.ProcessDefinition, version int) (SchemaFile, error) {
 	if err := def.Normalize(); err != nil {
@@ -35,28 +57,13 @@ func Generate(def *model.ProcessDefinition, version int) (SchemaFile, error) {
 	}
 	result := SchemaFile{Process: def.Name, Version: version}
 
-	named := make(map[string]*schema.SchemaNode)
-	if def.InputSchema != nil {
-		named["input"] = def.InputSchema
+	defs, tasks, processInput, err := buildSchemaContext(def)
+	if err != nil {
+		return SchemaFile{}, err
 	}
-	collectNamedOutputs(def.Steps, named)
+	result.ProcessInput = processInput
 
-	var defs map[string]*schema.SchemaNode
-	if len(named) > 0 {
-		var err error
-		defs, err = flattenNamedSchemas(named)
-		if err != nil {
-			return SchemaFile{}, err
-		}
-	}
-
-	if named["input"] != nil {
-		result.ProcessInput = schemaRef("input")
-	}
-
-	tasks := make(map[string]TaskSchemas)
-	collectTaskRefs(def.Steps, tasks)
-	if _, err := buildInputs(def.Steps, nil, tasks, result.ProcessInput, defs); err != nil {
+	if err := buildInputs(def.Steps, tasks, processInput, defs); err != nil {
 		return SchemaFile{}, err
 	}
 
@@ -255,9 +262,8 @@ func flattenNamedSchemas(named map[string]*schema.SchemaNode) (map[string]*schem
 	return normalised.Defs, nil
 }
 
-func buildInputs(steps []*model.Step, _ []string, tasks map[string]TaskSchemas, processInput *schema.SchemaNode, defs map[string]*schema.SchemaNode) ([]string, error) {
+func buildInputs(steps []*model.Step, tasks map[string]TaskSchemas, processInput *schema.SchemaNode, defs map[string]*schema.SchemaNode) error {
 	required, optional := computeContextSets(steps)
-	var accumulated []string
 	for _, s := range steps {
 		if s.Call != nil {
 			ctx := contextSchema(required[s.ID], optional[s.ID], tasks, processInput)
@@ -268,7 +274,7 @@ func buildInputs(steps []*model.Step, _ []string, tasks map[string]TaskSchemas, 
 			if inMap || len(s.Params) > 0 {
 				input, err := inferInput(s, ctx, defs)
 				if err != nil {
-					return nil, err
+					return err
 				}
 				if !inMap {
 					ts.CallType = s.Call.Type
@@ -276,7 +282,6 @@ func buildInputs(steps []*model.Step, _ []string, tasks map[string]TaskSchemas, 
 				ts.Input = input
 				tasks[s.ID] = ts
 			}
-			accumulated = append(accumulated, s.ID)
 		}
 
 		if len(s.Switch) > 0 {
@@ -305,15 +310,15 @@ func buildInputs(steps []*model.Step, _ []string, tasks map[string]TaskSchemas, 
 				}
 				inferred, err := template.InferType(c.When, schema.FromNode(switchCtx))
 				if err != nil {
-					return nil, fmt.Errorf("step %q switch when %q: %w", s.ID, c.When, err)
+					return fmt.Errorf("step %q switch when %q: %w", s.ID, c.When, err)
 				}
 				if !isType(inferred.Node(), "boolean") {
-					return nil, fmt.Errorf("step %q switch when %q: expression must evaluate to boolean, got %q", s.ID, c.When, schemaTypeName(inferred.Node()))
+					return fmt.Errorf("step %q switch when %q: expression must evaluate to boolean, got %q", s.ID, c.When, schemaTypeName(inferred.Node()))
 				}
 			}
 		}
 	}
-	return accumulated, nil
+	return nil
 }
 
 func computeContextSets(steps []*model.Step) (required, optional map[string][]string) {

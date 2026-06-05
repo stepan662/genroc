@@ -50,8 +50,6 @@ func OpenPostgres(dsn string) (*DB, error) {
 	return open(bun.NewDB(sqldb, pgdialect.New()))
 }
 
-// Open is an alias for OpenSQLite kept for backward compatibility.
-func Open(path string) (*DB, error) { return OpenSQLite(path) }
 
 func open(bundb *bun.DB) (*DB, error) {
 	db := &DB{bun: bundb}

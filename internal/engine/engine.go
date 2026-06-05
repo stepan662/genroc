@@ -25,7 +25,6 @@ const (
 // instances and advances each one step at a time.
 type Engine struct {
 	db        *db.DB
-	eval      Evaluator
 	pollEvery time.Duration
 	log       *slog.Logger
 	sem       chan struct{}
@@ -40,7 +39,6 @@ func New(database *db.DB, pollEvery time.Duration, maxConcurrent int, log *slog.
 	workerID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
 	return &Engine{
 		db:        database,
-		eval:      Evaluator{},
 		pollEvery: pollEvery,
 		log:       log,
 		sem:       make(chan struct{}, maxConcurrent),
@@ -267,7 +265,7 @@ func (e *Engine) evalSwitch(inst *model.ProcessInstance, step *model.Step, selfO
 		if c.When == "default" {
 			return c.Goto, nil
 		}
-		ok, err := e.eval.EvalBool(c.When, inst.ContextData, selfOutput)
+		ok, err := evalBool(c.When, inst.ContextData, selfOutput)
 		if err != nil {
 			return "", fmt.Errorf("when %q: %w", c.When, err)
 		}
@@ -317,7 +315,7 @@ func (e *Engine) buildTaskData(inst *model.ProcessInstance, step *model.Step) (m
 	}
 	result := make(map[string]any, len(step.Params))
 	for name, expression := range step.Params {
-		val, err := e.eval.EvalAny(expression, inst.ContextData)
+		val, err := evalAny(expression, inst.ContextData)
 		if err != nil {
 			return nil, fmt.Errorf("param %q: %w", name, err)
 		}
@@ -384,7 +382,7 @@ func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInsta
 		}
 		input := make(map[string]any, len(entry.Input))
 		for k, expr := range entry.Input {
-			val, err := e.eval.EvalAny(expr, inst.ContextData)
+			val, err := evalAny(expr, inst.ContextData)
 			if err != nil {
 				return nil, true, e.failInstance(inst, fmt.Sprintf("step %q child_process[%d] input %q: %v", step.ID, i, k, err))
 			}
@@ -461,7 +459,7 @@ func (e *Engine) computeOutput(inst *model.ProcessInstance) error {
 	}
 	result := make(map[string]any, len(def.Output))
 	for k, expr := range def.Output {
-		val, err := e.eval.EvalAny(expr, inst.ContextData)
+		val, err := evalAny(expr, inst.ContextData)
 		if err != nil {
 			return fmt.Errorf("output %q: %w", k, err)
 		}
@@ -488,7 +486,7 @@ func (e *Engine) resolveHeaders(inst *model.ProcessInstance, call *model.Call) (
 	}
 	resolved := make(map[string]string, len(call.Headers))
 	for k, expr := range call.Headers {
-		val, err := e.eval.EvalAny(expr, inst.ContextData)
+		val, err := evalAny(expr, inst.ContextData)
 		if err != nil {
 			return nil, fmt.Errorf("header %q: %w", k, err)
 		}

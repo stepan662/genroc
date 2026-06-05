@@ -8,8 +8,6 @@ import (
 )
 
 func TestEvaluator(t *testing.T) {
-	eval := Evaluator{}
-
 	tests := []struct {
 		expr    string
 		ctx     map[string]interface{}
@@ -27,7 +25,7 @@ func TestEvaluator(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.expr, func(t *testing.T) {
-			got, err := eval.Eval(tt.expr, tt.ctx)
+			got, err := evalBool(tt.expr, tt.ctx, nil)
 			if tt.wantErr {
 				if err == nil {
 					t.Error("expected error, got nil")
@@ -39,14 +37,13 @@ func TestEvaluator(t *testing.T) {
 				return
 			}
 			if got != tt.want {
-				t.Errorf("Eval(%q) = %v, want %v", tt.expr, got, tt.want)
+				t.Errorf("evalBool(%q) = %v, want %v", tt.expr, got, tt.want)
 			}
 		})
 	}
 }
 
 func TestEvaluator_EvalBool_WithSelf(t *testing.T) {
-	eval := Evaluator{}
 	ctx := map[string]any{"outputs": map[string]any{}, "input": map[string]any{}}
 
 	tests := []struct {
@@ -63,12 +60,12 @@ func TestEvaluator_EvalBool_WithSelf(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := eval.EvalBool(tt.expr, ctx, tt.self)
+			got, err := evalBool(tt.expr, ctx, tt.self)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if got != tt.want {
-				t.Errorf("EvalBool(%q) = %v, want %v", tt.expr, got, tt.want)
+				t.Errorf("evalBool(%q) = %v, want %v", tt.expr, got, tt.want)
 			}
 		})
 	}

@@ -42,7 +42,7 @@ func testBackends(t *testing.T) []backend {
 		t.Fatal(err)
 	}
 	f.Close()
-	sqlite, err := Open(f.Name())
+	sqlite, err := OpenSQLite(f.Name())
 	if err != nil {
 		os.Remove(f.Name())
 		t.Fatal(err)

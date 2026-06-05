@@ -66,19 +66,157 @@ func Navigate(s *SchemaNode, defs map[string]*SchemaNode, path string) (*SchemaN
 // LookupProperty returns the subschema for a single named property within s.
 // Optional properties are returned wrapped as nullable.
 func LookupProperty(s *SchemaNode, name string, defs map[string]*SchemaNode) (*SchemaNode, error) {
-	return lookupProperty(s, name, defs)
+	resolved, err := Deref(s, defs)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, kw := range []struct {
+		name     string
+		variants []*SchemaNode
+	}{
+		{"anyOf", resolved.AnyOf},
+		{"oneOf", resolved.OneOf},
+	} {
+		if kw.variants == nil {
+			continue
+		}
+		results := make([]*SchemaNode, 0, len(kw.variants))
+		hadNull := false
+		hadMiss := false
+		for i, v := range kw.variants {
+			if v == nil {
+				return nil, fmt.Errorf("cannot access .%s: %s[%d] is nil", name, kw.name, i)
+			}
+			if IsNullType(v) {
+				hadNull = true
+				continue
+			}
+			r, err := LookupProperty(v, name, defs)
+			if err != nil {
+				hadMiss = true
+				hadNull = true
+				continue
+			}
+			results = append(results, r)
+		}
+		if len(results) == 0 {
+			if hadMiss {
+				return nil, fmt.Errorf("field %q not found in any %s variant", name, kw.name)
+			}
+			return &SchemaNode{Type: SchemaType{"null"}}, nil
+		}
+		var result *SchemaNode
+		if allSame(results) {
+			result = results[0]
+		} else {
+			cp := make([]*SchemaNode, len(results))
+			copy(cp, results)
+			if kw.name == "oneOf" {
+				result = &SchemaNode{OneOf: cp}
+			} else {
+				result = &SchemaNode{AnyOf: cp}
+			}
+		}
+		if hadNull {
+			return WithNull(result), nil
+		}
+		return result, nil
+	}
+
+	if resolved.Properties == nil {
+		return nil, fmt.Errorf("cannot access .%s: schema has no properties", name)
+	}
+	prop, ok := resolved.Properties[name]
+	if !ok {
+		return nil, fmt.Errorf("field %q not found in schema", name)
+	}
+	result, err := Deref(prop, defs)
+	if err != nil {
+		return nil, err
+	}
+	if !isRequired(resolved, name) {
+		return WithNull(result), nil
+	}
+	return result, nil
 }
 
 // InferIndex returns the (nullable) element type for array index access on s.
 // Always nullable because the index may be out of bounds at runtime.
 func InferIndex(s *SchemaNode, defs map[string]*SchemaNode) (*SchemaNode, error) {
-	return inferIndex(s, defs)
+	resolved, err := Deref(s, defs)
+	if err != nil {
+		return nil, err
+	}
+	resolved = StripNull(resolved)
+
+	for _, variants := range [][]*SchemaNode{resolved.AnyOf, resolved.OneOf} {
+		if variants == nil {
+			continue
+		}
+		results := make([]*SchemaNode, 0, len(variants))
+		hadNull := false
+		for _, v := range variants {
+			if v == nil {
+				continue
+			}
+			if IsNullType(v) {
+				hadNull = true
+				continue
+			}
+			r, err := InferIndex(v, defs)
+			if err != nil {
+				hadNull = true
+				continue
+			}
+			results = append(results, r)
+		}
+		if len(results) == 0 {
+			return &SchemaNode{Type: SchemaType{"null"}}, nil
+		}
+		var result *SchemaNode
+		if allSame(results) {
+			result = results[0]
+		} else {
+			result = &SchemaNode{AnyOf: results}
+		}
+		if hadNull && !HasNullType(result) {
+			return WithNull(result), nil
+		}
+		return result, nil
+	}
+
+	if !resolved.Type.Contains("array") {
+		t := ""
+		if len(resolved.Type) > 0 {
+			t = resolved.Type[0]
+		}
+		return nil, fmt.Errorf("index access [n] requires an array schema, got type %q", t)
+	}
+	if resolved.Items == nil {
+		return &SchemaNode{}, nil
+	}
+	return WithNull(resolved.Items), nil
 }
 
 // Deref follows a $ref pointer if present, looking it up in defs.
 // Returns s unchanged if no $ref is present.
 func Deref(s *SchemaNode, defs map[string]*SchemaNode) (*SchemaNode, error) {
-	return derefNav(s, defs)
+	if s == nil || s.Ref == "" {
+		return s, nil
+	}
+	if defs == nil {
+		return nil, fmt.Errorf("cannot resolve $ref %q: no defs available", s.Ref)
+	}
+	const prefix = "#/$defs/"
+	if !strings.HasPrefix(s.Ref, prefix) {
+		return nil, fmt.Errorf("unsupported $ref %q: only #/$defs/<name> is supported", s.Ref)
+	}
+	target, ok := defs[strings.TrimPrefix(s.Ref, prefix)]
+	if !ok || target == nil {
+		return nil, fmt.Errorf("$ref %q not found in defs", s.Ref)
+	}
+	return target, nil
 }
 
 // IsNullType reports whether s is exactly {type:"null"}.
@@ -206,165 +344,15 @@ func navigateSchema(s *SchemaNode, defs map[string]*SchemaNode, steps []pathStep
 	for _, step := range steps {
 		var err error
 		if step.prop != "" {
-			current, err = lookupProperty(current, step.prop, defs)
+			current, err = LookupProperty(current, step.prop, defs)
 		} else {
-			current, err = inferIndex(current, defs)
+			current, err = InferIndex(current, defs)
 		}
 		if err != nil {
 			return nil, err
 		}
 	}
 	return current, nil
-}
-
-func lookupProperty(s *SchemaNode, name string, defs map[string]*SchemaNode) (*SchemaNode, error) {
-	resolved, err := derefNav(s, defs)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, kw := range []struct {
-		name     string
-		variants []*SchemaNode
-	}{
-		{"anyOf", resolved.AnyOf},
-		{"oneOf", resolved.OneOf},
-	} {
-		if kw.variants == nil {
-			continue
-		}
-		results := make([]*SchemaNode, 0, len(kw.variants))
-		hadNull := false
-		hadMiss := false
-		for i, v := range kw.variants {
-			if v == nil {
-				return nil, fmt.Errorf("cannot access .%s: %s[%d] is nil", name, kw.name, i)
-			}
-			if IsNullType(v) {
-				hadNull = true
-				continue
-			}
-			r, err := lookupProperty(v, name, defs)
-			if err != nil {
-				hadMiss = true
-				hadNull = true
-				continue
-			}
-			results = append(results, r)
-		}
-		if len(results) == 0 {
-			if hadMiss {
-				return nil, fmt.Errorf("field %q not found in any %s variant", name, kw.name)
-			}
-			return &SchemaNode{Type: SchemaType{"null"}}, nil
-		}
-		var result *SchemaNode
-		if allSame(results) {
-			result = results[0]
-		} else {
-			cp := make([]*SchemaNode, len(results))
-			copy(cp, results)
-			if kw.name == "oneOf" {
-				result = &SchemaNode{OneOf: cp}
-			} else {
-				result = &SchemaNode{AnyOf: cp}
-			}
-		}
-		if hadNull {
-			return WithNull(result), nil
-		}
-		return result, nil
-	}
-
-	if resolved.Properties == nil {
-		return nil, fmt.Errorf("cannot access .%s: schema has no properties", name)
-	}
-	prop, ok := resolved.Properties[name]
-	if !ok {
-		return nil, fmt.Errorf("field %q not found in schema", name)
-	}
-	result, err := derefNav(prop, defs)
-	if err != nil {
-		return nil, err
-	}
-	if !isRequired(resolved, name) {
-		return WithNull(result), nil
-	}
-	return result, nil
-}
-
-func inferIndex(s *SchemaNode, defs map[string]*SchemaNode) (*SchemaNode, error) {
-	resolved, err := derefNav(s, defs)
-	if err != nil {
-		return nil, err
-	}
-	resolved = StripNull(resolved)
-
-	for _, variants := range [][]*SchemaNode{resolved.AnyOf, resolved.OneOf} {
-		if variants == nil {
-			continue
-		}
-		results := make([]*SchemaNode, 0, len(variants))
-		hadNull := false
-		for _, v := range variants {
-			if v == nil {
-				continue
-			}
-			if IsNullType(v) {
-				hadNull = true
-				continue
-			}
-			r, err := inferIndex(v, defs)
-			if err != nil {
-				hadNull = true
-				continue
-			}
-			results = append(results, r)
-		}
-		if len(results) == 0 {
-			return &SchemaNode{Type: SchemaType{"null"}}, nil
-		}
-		var result *SchemaNode
-		if allSame(results) {
-			result = results[0]
-		} else {
-			result = &SchemaNode{AnyOf: results}
-		}
-		if hadNull && !HasNullType(result) {
-			return WithNull(result), nil
-		}
-		return result, nil
-	}
-
-	if !resolved.Type.Contains("array") {
-		t := ""
-		if len(resolved.Type) > 0 {
-			t = resolved.Type[0]
-		}
-		return nil, fmt.Errorf("index access [n] requires an array schema, got type %q", t)
-	}
-	if resolved.Items == nil {
-		return &SchemaNode{}, nil
-	}
-	return WithNull(resolved.Items), nil
-}
-
-func derefNav(s *SchemaNode, defs map[string]*SchemaNode) (*SchemaNode, error) {
-	if s == nil || s.Ref == "" {
-		return s, nil
-	}
-	if defs == nil {
-		return nil, fmt.Errorf("cannot resolve $ref %q: no defs available", s.Ref)
-	}
-	const prefix = "#/$defs/"
-	if !strings.HasPrefix(s.Ref, prefix) {
-		return nil, fmt.Errorf("unsupported $ref %q: only #/$defs/<name> is supported", s.Ref)
-	}
-	target, ok := defs[strings.TrimPrefix(s.Ref, prefix)]
-	if !ok || target == nil {
-		return nil, fmt.Errorf("$ref %q not found in defs", s.Ref)
-	}
-	return target, nil
 }
 
 func isRequired(s *SchemaNode, name string) bool {
