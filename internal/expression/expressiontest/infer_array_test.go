@@ -67,7 +67,7 @@ func TestInfer_Array_MemberAccessFails(t *testing.T) {
 // Comparison on an array field always returns boolean.
 func TestInfer_Array_ComparisonIsBoolean(t *testing.T) {
 	c := ctx(t, arrayCtxJSON)
-	assertSchema(t, infer(t, "input.tags == nil", c), `{"type":"boolean"}`)
+	assertSchema(t, infer(t, "input.tags == null", c), `{"type":"boolean"}`)
 }
 
 // Arithmetic on an array type fails.
@@ -88,7 +88,7 @@ func TestInfer_Array_LiteralUnsupported(t *testing.T) {
 // Nullable array: conditional with nil preserves the items schema.
 func TestInfer_Array_NullablePreservesItems(t *testing.T) {
 	c := ctx(t, arrayCtxJSON)
-	assertSchema(t, infer(t, "true ? input.tags : nil", c), `{
+	assertSchema(t, infer(t, "true ? input.tags : null", c), `{
 		"type": ["array", "null"],
 		"items": { "type": "string" }
 	}`)
@@ -190,12 +190,12 @@ const optionalArrayCtxJSON = `{
 	"required": ["outputs"]
 }`
 
-// x[0].score is nullable; "!= nil" narrows the then-branch to non-nullable number.
+// x[0].score is nullable; "!= null" narrows the then-branch to non-nullable number.
 // The else literal 0 is integer, so the ternary is oneOf[number, integer].
 // The key assertion is that the result is NOT nullable — narrowing worked.
 func TestInfer_Array_Index_NullNarrowing_TernaryReturnsNumber(t *testing.T) {
 	c := ctx(t, optionalArrayCtxJSON)
-	assertSchema(t, infer(t, "outputs.results[0].score != nil ? outputs.results[0].score : 0", c), `{
+	assertSchema(t, infer(t, "outputs.results[0].score != null ? outputs.results[0].score : 0", c), `{
 		"oneOf": [{"type":"number"}, {"type":"integer"}]
 	}`)
 }
@@ -205,11 +205,11 @@ func TestInfer_Array_Index_NullNarrowing_TernaryReturnsNumber(t *testing.T) {
 // narrowCondition can guard paths like "outputs.results[0].score".
 func TestInfer_Array_Index_NullNarrowing_ArithmeticOnTwoElements(t *testing.T) {
 	c := ctx(t, optionalArrayCtxJSON)
-	expr := "(outputs.results[0].score != nil ? outputs.results[0].score : 0) + (outputs.results[1].score != nil ? outputs.results[1].score : 0)"
+	expr := "(outputs.results[0].score != null ? outputs.results[0].score : 0) + (outputs.results[1].score != null ? outputs.results[1].score : 0)"
 	assertSchema(t, infer(t, expr, c), `{"type":"number"}`)
 }
 
-// --- Already-nullable array combined with nil stays the same.
+// --- Already-nullable array combined with null stays the same.
 func TestInfer_Array_AlreadyNullableStable(t *testing.T) {
 	c := ctx(t, `{
 		"type": "object",
@@ -224,7 +224,7 @@ func TestInfer_Array_AlreadyNullableStable(t *testing.T) {
 		},
 		"required": ["input"]
 	}`)
-	assertSchema(t, infer(t, "true ? input.tags : nil", c), `{
+	assertSchema(t, infer(t, "true ? input.tags : null", c), `{
 		"type": ["array", "null"],
 		"items": { "type": "string" }
 	}`)

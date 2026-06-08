@@ -70,8 +70,11 @@ func inferNode(node ast.Node, ictx inferCtx) (*schema.SchemaNode, error) {
 	case *ast.BoolNode:
 		return typeSchema("boolean"), nil
 	case *ast.NilNode:
-		return typeSchema("null"), nil
+		return nil, fmt.Errorf("nil is not supported; use null")
 	case *ast.IdentifierNode:
+		if n.Value == "null" {
+			return typeSchema("null"), nil
+		}
 		if s, ok := ictx.guards[n.Value]; ok {
 			return s, nil
 		}
@@ -187,7 +190,7 @@ func narrowCondition(cond ast.Node, ictx inferCtx) (thenCtx, elseCtx inferCtx) {
 		return
 	}
 
-	_, litIsNull := litNode.(*ast.NilNode)
+	litIsNull := isNullLiteral(litNode)
 
 	if bin.Operator == "==" {
 		thenCtx = ictx.withGuard(path, litSchema)
@@ -208,11 +211,18 @@ func narrowCondition(cond ast.Node, ictx inferCtx) (thenCtx, elseCtx inferCtx) {
 }
 
 func isLiteralNode(n ast.Node) bool {
-	switch n.(type) {
-	case *ast.NilNode, *ast.BoolNode, *ast.StringNode, *ast.IntegerNode, *ast.FloatNode:
+	switch n := n.(type) {
+	case *ast.BoolNode, *ast.StringNode, *ast.IntegerNode, *ast.FloatNode:
 		return true
+	case *ast.IdentifierNode:
+		return n.Value == "null"
 	}
 	return false
+}
+
+func isNullLiteral(n ast.Node) bool {
+	id, ok := n.(*ast.IdentifierNode)
+	return ok && id.Value == "null"
 }
 
 func nodePath(node ast.Node) string {

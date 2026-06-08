@@ -24,8 +24,8 @@ func TestEval_BoolLiteralTrue(t *testing.T) {
 func TestEval_BoolLiteralFalse(t *testing.T) {
 	assertEq(t, evalOK(t, "false", nil), false)
 }
-func TestEval_NilLiteral(t *testing.T) {
-	assertEq(t, evalOK(t, "nil", nil), nil)
+func TestEval_NullLiteral(t *testing.T) {
+	assertEq(t, evalOK(t, "null", nil), nil)
 }
 
 // --- Field access ---
@@ -202,8 +202,8 @@ func TestEval_Index_NilSubject_ReturnsNil(t *testing.T) {
 
 // --- Null coalescing ---
 
-func TestEval_NullCoalesce_NilLiteral_ReturnsRight(t *testing.T) {
-	assertEq(t, evalOK(t, "nil ?? 42", nil), 42)
+func TestEval_NullCoalesce_NullLiteral_ReturnsRight(t *testing.T) {
+	assertEq(t, evalOK(t, "null ?? 42", nil), 42)
 }
 
 func TestEval_NullCoalesce_NonNilLiteral_ReturnsLeft(t *testing.T) {
@@ -223,7 +223,7 @@ func TestEval_NullCoalesce_StringDefault(t *testing.T) {
 }
 
 func TestEval_NullCoalesce_Chained(t *testing.T) {
-	assertEq(t, evalOK(t, "nil ?? nil ?? 3", nil), 3)
+	assertEq(t, evalOK(t, "null ?? null ?? 3", nil), 3)
 }
 
 func TestEval_NullCoalesce_ShortCircuit(t *testing.T) {

@@ -55,7 +55,7 @@ func TestEvaluator_EvalBool_WithSelf(t *testing.T) {
 		{"self field true", "{{self.paid == true}}", map[string]any{"paid": true}, true},
 		{"self field false", "{{self.paid == true}}", map[string]any{"paid": false}, false},
 		{"self nested field", "{{self.result.ok == true}}", map[string]any{"result": map[string]any{"ok": true}}, true},
-		{"self nil when no action", "{{self == nil}}", nil, true},
+		{"self nil when no action", "{{self == null}}", nil, true},
 	}
 
 	for _, tt := range tests {

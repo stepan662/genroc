@@ -49,12 +49,18 @@ func TestNullableContract_Ge(t *testing.T) {
 	testNullableOperand(t, "x >= 1", nullableInteger)
 }
 
+// Equality comparisons against null are valid for any nullable type — tested via
+// InferType only, since expr-lang doesn't treat "null" as a built-in keyword.
 func TestNullableContract_Eq(t *testing.T) {
-	testNullableOperand(t, "x == nil", nullableInteger)
+	for _, ns := range nullableInteger {
+		t.Run(ns.name, func(t *testing.T) { infer(t, "x == null", ns.schema) })
+	}
 }
 
 func TestNullableContract_Neq(t *testing.T) {
-	testNullableOperand(t, "x != nil", nullableInteger)
+	for _, ns := range nullableInteger {
+		t.Run(ns.name, func(t *testing.T) { infer(t, "x != null", ns.schema) })
+	}
 }
 
 func TestNullableContract_And(t *testing.T) {

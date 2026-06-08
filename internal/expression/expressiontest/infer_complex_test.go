@@ -162,23 +162,23 @@ func TestInfer_Nullable_FieldReturnsSchema(t *testing.T) {
 // A conditional where one branch is nil produces a nullable type.
 func TestInfer_Nullable_ConditionalWithNil_String(t *testing.T) {
 	c := ctx(t, nullableCtxJSON)
-	assertSchema(t, infer(t, `input.id > 0 ? input.comment : nil`, c), `{"type":["string","null"]}`)
+	assertSchema(t, infer(t, `input.id > 0 ? input.comment : null`, c), `{"type":["string","null"]}`)
 }
 
 func TestInfer_Nullable_ConditionalWithNil_Integer(t *testing.T) {
 	c := ctx(t, nullableCtxJSON)
-	assertSchema(t, infer(t, `true ? input.id : nil`, c), `{"type":["integer","null"]}`)
+	assertSchema(t, infer(t, `true ? input.id : null`, c), `{"type":["integer","null"]}`)
 }
 
 // nil on the left branch works the same way.
 func TestInfer_Nullable_ConditionalNilFirst(t *testing.T) {
 	c := ctx(t, nullableCtxJSON)
-	assertSchema(t, infer(t, `false ? nil : input.id`, c), `{"type":["integer","null"]}`)
+	assertSchema(t, infer(t, `false ? null :input.id`, c), `{"type":["integer","null"]}`)
 }
 
 // Both branches nil → plain null type (not a type array).
 func TestInfer_Nullable_BothBranchesNil(t *testing.T) {
-	assertSchema(t, infer(t, `true ? nil : nil`, schema.Schema{}), `{"type":"null"}`)
+	assertSchema(t, infer(t, `true ? null :null`, schema.Schema{}), `{"type":"null"}`)
 }
 
 // Arithmetic on a nullable type fails — the null case is unhandled.
@@ -190,8 +190,8 @@ func TestInfer_Nullable_ArithmeticFails(t *testing.T) {
 // Comparisons on nullable types still return boolean.
 func TestInfer_Nullable_ComparisonIsBoolean(t *testing.T) {
 	c := ctx(t, nullableCtxJSON)
-	assertSchema(t, infer(t, "input.comment == nil", c), `{"type":"boolean"}`)
-	assertSchema(t, infer(t, "input.amount != nil", c), `{"type":"boolean"}`)
+	assertSchema(t, infer(t, "input.comment == null", c), `{"type":"boolean"}`)
+	assertSchema(t, infer(t, "input.amount != null", c), `{"type":"boolean"}`)
 }
 
 // A non-null + complex-type branch still falls back to oneOf.

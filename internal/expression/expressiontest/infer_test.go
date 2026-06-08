@@ -25,8 +25,8 @@ func TestInfer_BoolLiteral(t *testing.T) {
 	assertSchema(t, infer(t, "false", schema.Schema{}), `{"type":"boolean"}`)
 }
 
-func TestInfer_NilLiteral(t *testing.T) {
-	assertSchema(t, infer(t, "nil", schema.Schema{}), `{"type":"null"}`)
+func TestInfer_NullLiteral(t *testing.T) {
+	assertSchema(t, infer(t, "null", schema.Schema{}), `{"type":"null"}`)
 }
 
 // --- Field access ---
@@ -228,7 +228,7 @@ func TestInfer_NullCoalesce_NullableField_SameType(t *testing.T) {
 }
 
 func TestInfer_NullCoalesce_AlwaysNull_ReturnsRight(t *testing.T) {
-	assertSchema(t, infer(t, "nil ?? 0", schema.Schema{}), `{"type":"integer"}`)
+	assertSchema(t, infer(t, "null ?? 0", schema.Schema{}), `{"type":"integer"}`)
 }
 
 func TestInfer_NullCoalesce_NonNullableLeft_ReturnsLeft(t *testing.T) {

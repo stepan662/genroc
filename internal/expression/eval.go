@@ -29,8 +29,11 @@ func evalNode(node ast.Node, ctx map[string]any) (any, error) {
 	case *ast.BoolNode:
 		return n.Value, nil
 	case *ast.NilNode:
-		return nil, nil
+		return nil, fmt.Errorf("nil is not supported; use null")
 	case *ast.IdentifierNode:
+		if n.Value == "null" {
+			return nil, nil
+		}
 		return getField(ctx, n.Value)
 	case *ast.MemberNode:
 		return evalMember(n, ctx)
