@@ -138,6 +138,9 @@ func inferUnary(n *ast.UnaryNode, ictx inferCtx) (*schema.SchemaNode, error) {
 }
 
 func inferConditional(n *ast.ConditionalNode, ictx inferCtx) (*schema.SchemaNode, error) {
+	if _, err := inferNode(n.Cond, ictx); err != nil {
+		return nil, err
+	}
 	thenCtx, elseCtx := narrowCondition(n.Cond, ictx)
 	t, err := inferNode(n.Exp1, thenCtx)
 	if err != nil {
