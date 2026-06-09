@@ -6,28 +6,25 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"strings"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dialect"
-	"github.com/uptrace/bun/dialect/pgdialect"
-	"github.com/uptrace/bun/dialect/sqlitedialect"
-	"github.com/uptrace/bun/driver/pgdriver"
-	"github.com/uptrace/bun/migrate"
 	"github.com/xeipuuv/gojsonschema"
 
+	"gent/internal/db/gen"
 	"gent/internal/model"
 )
 
 //go:embed migrations/*.sql
 var sqlMigrations embed.FS
 
-// DB wraps a bun.DB and implements Store for both SQLite and PostgreSQL.
+// DB wraps a *sql.DB and implements all persistence for both SQLite and PostgreSQL.
 type DB struct {
-	bun *bun.DB
+	sqldb   *sql.DB
+	q       *dbgen.Queries
+	dialect string // "sqlite" | "postgres"
 }
 
 // OpenSQLite opens (or creates) the SQLite database at path and runs migrations.
@@ -38,108 +35,142 @@ func OpenSQLite(path string) (*DB, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	sqldb.SetMaxOpenConns(1) // SQLite supports only one writer at a time.
-	return open(bun.NewDB(sqldb, sqlitedialect.New()))
+	return open(sqldb, "sqlite")
 }
 
-// OpenPostgres opens a PostgreSQL connection using the given DSN and runs migrations.
+// OpenPostgres opens a PostgreSQL connection and runs migrations.
 // DSN format: postgres://user:password@host:port/database?sslmode=disable
 func OpenPostgres(dsn string) (*DB, error) {
-	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
+	sqldb, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open postgres: %w", err)
+	}
 	sqldb.SetMaxOpenConns(50)
 	sqldb.SetMaxIdleConns(25)
-	return open(bun.NewDB(sqldb, pgdialect.New()))
+	return open(sqldb, "postgres")
 }
 
-
-func open(bundb *bun.DB) (*DB, error) {
-	db := &DB{bun: bundb}
-	if err := db.migrate(); err != nil {
-		bundb.Close()
+func open(sqldb *sql.DB, dialect string) (*DB, error) {
+	if err := runMigrations(sqldb, dialect); err != nil {
+		sqldb.Close()
 		return nil, err
 	}
-	return db, nil
+	var dbtx dbgen.DBTX = sqldb
+	if dialect == "postgres" {
+		dbtx = pgRewriter{dbtx}
+	}
+	return &DB{sqldb: sqldb, q: dbgen.New(dbtx), dialect: dialect}, nil
 }
 
-func (db *DB) migrate() error {
-	ctx := context.Background()
-	subFS, err := fs.Sub(sqlMigrations, "migrations")
-	if err != nil {
-		return fmt.Errorf("migrations fs: %w", err)
-	}
-	ms := migrate.NewMigrations()
-	if err := ms.Discover(subFS); err != nil {
-		return fmt.Errorf("discover migrations: %w", err)
-	}
-	migrator := migrate.NewMigrator(db.bun, ms)
-	if err := migrator.Init(ctx); err != nil {
-		return fmt.Errorf("init migrator: %w", err)
-	}
-	if _, err := migrator.Migrate(ctx); err != nil {
-		return fmt.Errorf("run migrations: %w", err)
-	}
-	return nil
+// pgRewriter wraps a DBTX and translates SQLite-style placeholders (?N / ?)
+// to PostgreSQL-style ($N) before executing queries.
+// sqlc generates ?1, ?2, … for SQLite (positional) and $1, $2, … for Postgres.
+// At runtime we compile one binary using the SQLite-generated package, so
+// we must rewrite before sending queries to a Postgres connection.
+type pgRewriter struct{ dbgen.DBTX }
+
+func (r pgRewriter) ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error) {
+	return r.DBTX.ExecContext(ctx, rewritePlaceholders(q), args...)
+}
+func (r pgRewriter) PrepareContext(ctx context.Context, q string) (*sql.Stmt, error) {
+	return r.DBTX.PrepareContext(ctx, rewritePlaceholders(q))
+}
+func (r pgRewriter) QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error) {
+	return r.DBTX.QueryContext(ctx, rewritePlaceholders(q), args...)
+}
+func (r pgRewriter) QueryRowContext(ctx context.Context, q string, args ...any) *sql.Row {
+	return r.DBTX.QueryRowContext(ctx, rewritePlaceholders(q), args...)
 }
 
-func (db *DB) Close() error { return db.bun.Close() }
-
-// ── bun row models ────────────────────────────────────────────────────────────
-
-type channelRow struct {
-	bun.BaseModel `bun:"table:process_channels"`
-	Name          string    `bun:"name,pk"`
-	Channel       string    `bun:"channel,pk"`
-	Version       int       `bun:"version,notnull"`
-	UpdatedAt     time.Time `bun:"updated_at,notnull"`
+// rewritePlaceholders converts SQLite placeholder syntax to PostgreSQL:
+//   - ?N  (named positional, e.g. ?1) → $N   (same index, parameter reused)
+//   - ?   (plain positional)          → $N   (auto-incremented counter)
+func rewritePlaceholders(query string) string {
+	var b strings.Builder
+	b.Grow(len(query))
+	n := 0
+	for i := 0; i < len(query); {
+		if query[i] != '?' {
+			b.WriteByte(query[i])
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(query) && query[j] >= '0' && query[j] <= '9' {
+			j++
+		}
+		b.WriteByte('$')
+		if j > i+1 {
+			b.WriteString(query[i+1 : j]) // ?N → $N
+		} else {
+			n++
+			fmt.Fprintf(&b, "%d", n) // ? → $counter
+		}
+		i = j
+	}
+	return b.String()
 }
 
-type definitionRow struct {
-	bun.BaseModel `bun:"table:process_definitions"`
-	Name          string    `bun:"name,pk"`
-	Version       int       `bun:"version,pk"`
-	Definition    string    `bun:"definition,notnull"`
-	ContentHash   string    `bun:"content_hash,notnull"`
-	CreatedAt     time.Time `bun:"created_at,notnull"`
+func (db *DB) Close() error { return db.sqldb.Close() }
+
+// ph returns the positional placeholder for parameter n (1-indexed).
+func (db *DB) ph(n int) string {
+	if db.dialect == "postgres" {
+		return fmt.Sprintf("$%d", n)
+	}
+	return "?"
 }
 
+// ── time helpers ─────────────────────────────────────────────────────────────
+
+func nowUnix() int64 { return time.Now().UTC().Unix() }
+
+func toTime(unix int64) time.Time { return time.Unix(unix, 0).UTC() }
+
+func toTimePtr(n sql.NullInt64) *time.Time {
+	if !n.Valid {
+		return nil
+	}
+	t := toTime(n.Int64)
+	return &t
+}
+
+func fromTimePtr(t *time.Time) sql.NullInt64 {
+	if t == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: t.Unix(), Valid: true}
+}
+
+func nullStringPtr(n sql.NullString) *string {
+	if !n.Valid {
+		return nil
+	}
+	return &n.String
+}
+
+// ── Public types ──────────────────────────────────────────────────────────────
+
+// DependencyRow represents a row in process_dependencies.
+// Integer fields use int to match the types in handlers.go.
 type DependencyRow struct {
-	bun.BaseModel `bun:"table:process_dependencies"`
-	ParentName    string `bun:"parent_name,pk"`
-	ParentVersion int    `bun:"parent_version,pk"`
-	StepID        string `bun:"step_id,pk"`
-	ChildIdx      int    `bun:"child_idx,pk"`
-	ChildName     string `bun:"child_name,notnull"`
-	ChildVersion  int    `bun:"child_version,notnull"`
+	ParentName    string
+	ParentVersion int
+	StepID        string
+	ChildIdx      int
+	ChildName     string
+	ChildVersion  int
 }
 
+// StaleRefRow is returned by FindStaleRefs.
 type StaleRefRow struct {
-	ParentName     string `bun:"parent_name"`
-	ParentVersion  int    `bun:"parent_version"`
-	StepID         string `bun:"step_id"`
-	ChildName      string `bun:"child_name"`
-	BakedVersion   int    `bun:"baked_version"`
-	ChannelVersion int    `bun:"channel_version"`
+	ParentName     string
+	ParentVersion  int
+	StepID         string
+	ChildName      string
+	BakedVersion   int
+	ChannelVersion int
 }
-
-type instanceRow struct {
-	bun.BaseModel  `bun:"table:process_instances"`
-	ID             string     `bun:"id,pk"`
-	ProcessName    string     `bun:"process_name,notnull"`
-	ProcessVersion int        `bun:"process_version,notnull"`
-	StepQueue      string     `bun:"step_queue,notnull"`
-	ContextData    string     `bun:"context_data,notnull"`
-	ParentID       string     `bun:"parent_id,notnull"`
-	CallStack      string     `bun:"call_stack,notnull"`
-	RetryCount     int        `bun:"retry_count,notnull"`
-	NextRetryAt    *time.Time `bun:"next_retry_at"`
-	Status         string     `bun:"status,notnull"`
-	Error          string     `bun:"error,notnull"`
-	CreatedAt      time.Time  `bun:"created_at,notnull"`
-	UpdatedAt      time.Time  `bun:"updated_at,notnull"`
-	WorkerID       *string    `bun:"worker_id"`
-	LeaseExpiresAt *time.Time `bun:"lease_expires_at"`
-}
-
-// ── Process Definitions ───────────────────────────────────────────────────────
 
 // VersionedDef pairs a ProcessDefinition with its server-assigned version number.
 type VersionedDef struct {
@@ -147,46 +178,58 @@ type VersionedDef struct {
 	Def     *model.ProcessDefinition
 }
 
+// ── Process Definitions ───────────────────────────────────────────────────────
+
 func (db *DB) SaveDefinition(def *model.ProcessDefinition, version int, deps []DependencyRow, hash string) error {
 	data, err := json.Marshal(def)
 	if err != nil {
 		return err
 	}
-	row := &definitionRow{
+	ctx := context.Background()
+	tx, err := db.sqldb.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var txDbtx dbgen.DBTX = tx
+	if db.dialect == "postgres" {
+		txDbtx = pgRewriter{txDbtx}
+	}
+	qtx := dbgen.New(txDbtx)
+
+	if err := qtx.InsertDefinition(ctx, dbgen.InsertDefinitionParams{
 		Name:        def.Name,
-		Version:     version,
+		Version:     int64(version),
 		Definition:  string(data),
 		ContentHash: hash,
-		CreatedAt:   time.Now().UTC(),
+		CreatedAt:   nowUnix(),
+	}); err != nil {
+		return err
 	}
-	return db.bun.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
-		if _, err := tx.NewInsert().
-			Model(row).
-			On("CONFLICT (name, version) DO UPDATE SET definition = EXCLUDED.definition").
-			Exec(ctx); err != nil {
+	if err := qtx.DeleteDependencies(ctx, dbgen.DeleteDependenciesParams{
+		ParentName:    def.Name,
+		ParentVersion: int64(version),
+	}); err != nil {
+		return err
+	}
+	for _, d := range deps {
+		if err := qtx.InsertDependency(ctx, dbgen.InsertDependencyParams{
+			ParentName:    d.ParentName,
+			ParentVersion: int64(d.ParentVersion),
+			StepID:        d.StepID,
+			ChildIdx:      int64(d.ChildIdx),
+			ChildName:     d.ChildName,
+			ChildVersion:  int64(d.ChildVersion),
+		}); err != nil {
 			return err
 		}
-		if _, err := tx.NewDelete().
-			TableExpr("process_dependencies").
-			Where("parent_name = ? AND parent_version = ?", def.Name, version).
-			Exec(ctx); err != nil {
-			return err
-		}
-		if len(deps) > 0 {
-			if _, err := tx.NewInsert().Model(&deps).Exec(ctx); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	}
+	return tx.Commit()
 }
 
 func (db *DB) GetDefinition(name string, version int) (*model.ProcessDefinition, error) {
-	var row definitionRow
-	err := db.bun.NewSelect().
-		Model(&row).
-		Where("name = ? AND version = ?", name, version).
-		Scan(context.Background())
+	ctx := context.Background()
+	row, err := db.q.GetDefinition(ctx, dbgen.GetDefinitionParams{Name: name, Version: int64(version)})
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("definition %q v%d not found", name, version)
 	}
@@ -198,27 +241,18 @@ func (db *DB) GetDefinition(name string, version int) (*model.ProcessDefinition,
 }
 
 func (db *DB) LatestVersion(name string) (int, error) {
-	var v sql.NullInt64
-	err := db.bun.NewSelect().
-		TableExpr("process_definitions").
-		ColumnExpr("MAX(version)").
-		Where("name = ?", name).
-		Scan(context.Background(), &v)
+	v, err := db.q.LatestVersion(context.Background(), name)
 	if err != nil {
 		return 0, err
 	}
-	if !v.Valid {
+	if v == nil {
 		return 0, fmt.Errorf("no definitions found for %q", name)
 	}
-	return int(v.Int64), nil
+	return int(v.(int64)), nil
 }
 
 func (db *DB) ListDefinitions() ([]VersionedDef, error) {
-	var rows []definitionRow
-	err := db.bun.NewSelect().
-		Model(&rows).
-		OrderExpr("name, version").
-		Scan(context.Background())
+	rows, err := db.q.ListDefinitions(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -228,116 +262,129 @@ func (db *DB) ListDefinitions() ([]VersionedDef, error) {
 		if err := json.Unmarshal([]byte(r.Definition), &def); err != nil {
 			return nil, err
 		}
-		out[i] = VersionedDef{Version: r.Version, Def: &def}
+		out[i] = VersionedDef{Version: int(r.Version), Def: &def}
 	}
 	return out, nil
 }
 
 func (db *DB) GetDefinitionRaw(name string, version int) ([]byte, error) {
-	var row definitionRow
-	err := db.bun.NewSelect().
-		Model(&row).
-		Where("name = ? AND version = ?", name, version).
-		Scan(context.Background())
+	raw, err := db.q.GetDefinitionRaw(context.Background(), dbgen.GetDefinitionRawParams{
+		Name:    name,
+		Version: int64(version),
+	})
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("definition %q v%d not found", name, version)
 	}
 	if err != nil {
 		return nil, err
 	}
-	return []byte(row.Definition), nil
+	return []byte(raw), nil
 }
 
-// FindVersionByHash returns the highest version of name whose content_hash matches hash,
-// or an error if none exists. Old rows saved before migration have hash="" and never match.
 func (db *DB) FindVersionByHash(name, hash string) (int, error) {
-	var v sql.NullInt64
-	err := db.bun.NewSelect().
-		TableExpr("process_definitions").
-		ColumnExpr("MAX(version)").
-		Where("name = ? AND content_hash = ?", name, hash).
-		Scan(context.Background(), &v)
+	v, err := db.q.FindVersionByHash(context.Background(), dbgen.FindVersionByHashParams{
+		Name:        name,
+		ContentHash: hash,
+	})
 	if err != nil {
 		return 0, err
 	}
-	if !v.Valid {
+	if v == nil {
 		return 0, fmt.Errorf("no version found for %q with given hash", name)
 	}
-	return int(v.Int64), nil
+	return int(v.(int64)), nil
 }
 
 func (db *DB) GetDependencies(name string, version int) ([]DependencyRow, error) {
-	var rows []DependencyRow
-	err := db.bun.NewSelect().
-		Model(&rows).
-		Where("parent_name = ? AND parent_version = ?", name, version).
-		OrderExpr("step_id, child_idx").
-		Scan(context.Background())
+	rows, err := db.q.GetDependencies(context.Background(), dbgen.GetDependenciesParams{
+		ParentName:    name,
+		ParentVersion: int64(version),
+	})
 	if err != nil {
 		return nil, err
 	}
-	return rows, nil
+	out := make([]DependencyRow, len(rows))
+	for i, r := range rows {
+		out[i] = DependencyRow{
+			ParentName:    r.ParentName,
+			ParentVersion: int(r.ParentVersion),
+			StepID:        r.StepID,
+			ChildIdx:      int(r.ChildIdx),
+			ChildName:     r.ChildName,
+			ChildVersion:  int(r.ChildVersion),
+		}
+	}
+	return out, nil
 }
 
 func (db *DB) GetDependencyVersion(parentName string, parentVersion int, stepID string, childIdx int) (int, error) {
-	var row DependencyRow
-	err := db.bun.NewSelect().
-		Model(&row).
-		Where("parent_name = ? AND parent_version = ? AND step_id = ? AND child_idx = ?", parentName, parentVersion, stepID, childIdx).
-		Scan(context.Background())
+	v, err := db.q.GetDependencyVersion(context.Background(), dbgen.GetDependencyVersionParams{
+		ParentName:    parentName,
+		ParentVersion: int64(parentVersion),
+		StepID:        stepID,
+		ChildIdx:      int64(childIdx),
+	})
 	if err == sql.ErrNoRows {
 		return 0, fmt.Errorf("dependency not found for %q v%d step %q child %d", parentName, parentVersion, stepID, childIdx)
 	}
 	if err != nil {
 		return 0, err
 	}
-	return row.ChildVersion, nil
+	return int(v), nil
 }
 
 // FindParentsOf returns all processes on channel that have deps referencing any
 // of the given children. stale = dep version doesn't match the target; current = matches.
 // A parent is stale if ANY of its relevant deps are mismatched.
+// This query is hand-written because it requires a dynamic-length IN clause.
 func (db *DB) FindParentsOf(channel string, childVersions map[string]int) (stale, current []VersionedDef, err error) {
 	if len(childVersions) == 0 {
 		return nil, nil, nil
 	}
-	placeholders := make([]string, 0, len(childVersions))
 	args := []any{channel}
+	placeholders := make([]string, 0, len(childVersions))
 	for name := range childVersions {
-		placeholders = append(placeholders, "?")
 		args = append(args, name)
+		placeholders = append(placeholders, db.ph(len(args)))
 	}
 	query := fmt.Sprintf(`
 		SELECT pd.parent_name, pc.version AS parent_version, pd.child_name, pd.child_version AS baked_version
 		FROM process_dependencies pd
-		JOIN process_channels pc ON pc.name = pd.parent_name AND pc.channel = ?
+		JOIN process_channels pc ON pc.name = pd.parent_name AND pc.channel = %s
 		WHERE pd.parent_version = pc.version
 		  AND pd.child_name IN (%s)
-	`, strings.Join(placeholders, ", "))
-	var rows []struct {
-		ParentName    string `bun:"parent_name"`
-		ParentVersion int    `bun:"parent_version"`
-		ChildName     string `bun:"child_name"`
-		BakedVersion  int    `bun:"baked_version"`
-	}
-	if err := db.bun.NewRaw(query, args...).Scan(context.Background(), &rows); err != nil {
+	`, db.ph(1), strings.Join(placeholders, ", "))
+
+	rows, err := db.sqldb.QueryContext(context.Background(), query, args...)
+	if err != nil {
 		return nil, nil, err
 	}
+	defer rows.Close()
+
 	type entry struct {
 		version int
 		isStale bool
 	}
-	byName := make(map[string]*entry, len(rows))
-	for _, r := range rows {
-		e := byName[r.ParentName]
-		if e == nil {
-			e = &entry{version: r.ParentVersion}
-			byName[r.ParentName] = e
+	byName := make(map[string]*entry)
+	for rows.Next() {
+		var parentName, childName string
+		var parentVersion, bakedVersion int
+		if err := rows.Scan(&parentName, &parentVersion, &childName, &bakedVersion); err != nil {
+			return nil, nil, err
 		}
-		if r.BakedVersion != childVersions[r.ChildName] {
+		e := byName[parentName]
+		if e == nil {
+			e = &entry{version: parentVersion}
+			byName[parentName] = e
+		}
+		if bakedVersion != childVersions[childName] {
 			e.isStale = true
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
 	for name, e := range byName {
 		def, defErr := db.GetDefinition(name, e.version)
 		if defErr != nil {
@@ -354,88 +401,71 @@ func (db *DB) FindParentsOf(channel string, childVersions map[string]int) (stale
 }
 
 func (db *DB) FindStaleRefs(channel string) ([]StaleRefRow, error) {
-	var rows []StaleRefRow
-	err := db.bun.NewRaw(`
-		SELECT pd.parent_name, pc.version AS parent_version,
-		       pd.step_id, pd.child_name,
-		       pd.child_version AS baked_version, pc2.version AS channel_version
-		FROM process_dependencies pd
-		JOIN process_channels pc  ON pc.name  = pd.parent_name AND pc.channel = ?
-		JOIN process_channels pc2 ON pc2.name = pd.child_name  AND pc2.channel = ?
-		WHERE pd.parent_version = pc.version
-		  AND pd.child_version < pc2.version
-	`, channel, channel).Scan(context.Background(), &rows)
+	rows, err := db.q.FindStaleRefs(context.Background(), channel)
 	if err != nil {
 		return nil, err
 	}
-	return rows, nil
+	out := make([]StaleRefRow, len(rows))
+	for i, r := range rows {
+		out[i] = StaleRefRow{
+			ParentName:     r.ParentName,
+			ParentVersion:  int(r.ParentVersion),
+			StepID:         r.StepID,
+			ChildName:      r.ChildName,
+			BakedVersion:   int(r.BakedVersion),
+			ChannelVersion: int(r.ChannelVersion),
+		}
+	}
+	return out, nil
 }
 
 // ── Channels ──────────────────────────────────────────────────────────────────
 
 func (db *DB) SaveChannel(name, channel string, version int) error {
-	row := &channelRow{Name: name, Channel: channel, Version: version, UpdatedAt: time.Now().UTC()}
-	_, err := db.bun.NewInsert().
-		Model(row).
-		On("CONFLICT (name, channel) DO UPDATE SET version = EXCLUDED.version, updated_at = EXCLUDED.updated_at").
-		Exec(context.Background())
-	return err
+	return db.q.UpsertChannel(context.Background(), dbgen.UpsertChannelParams{
+		Name:      name,
+		Channel:   channel,
+		Version:   int64(version),
+		UpdatedAt: nowUnix(),
+	})
 }
 
 func (db *DB) GetChannel(name, channel string) (int, error) {
-	var row channelRow
-	err := db.bun.NewSelect().
-		Model(&row).
-		Where("name = ? AND channel = ?", name, channel).
-		Scan(context.Background())
+	v, err := db.q.GetChannel(context.Background(), dbgen.GetChannelParams{Name: name, Channel: channel})
 	if err == sql.ErrNoRows {
 		return 0, fmt.Errorf("process %q has no channel %q", name, channel)
 	}
-	return row.Version, err
+	return int(v), err
 }
 
 func (db *DB) DeleteChannel(name, channel string) error {
-	_, err := db.bun.NewDelete().
-		TableExpr("process_channels").
-		Where("name = ? AND channel = ?", name, channel).
-		Exec(context.Background())
-	return err
+	return db.q.DeleteChannel(context.Background(), dbgen.DeleteChannelParams{Name: name, Channel: channel})
 }
 
 func (db *DB) ListChannels(name string) (map[string]int, error) {
-	var rows []channelRow
-	err := db.bun.NewSelect().
-		Model(&rows).
-		Where("name = ?", name).
-		OrderExpr("channel").
-		Scan(context.Background())
+	rows, err := db.q.ListChannels(context.Background(), name)
 	if err != nil {
 		return nil, err
 	}
 	out := make(map[string]int, len(rows))
 	for _, r := range rows {
-		out[r.Channel] = r.Version
+		out[r.Channel] = int(r.Version)
 	}
 	return out, nil
 }
 
-// LoadDefinitionsOnChannel returns all process definitions currently pointed to
-// by the given channel, one per process name, paired with their version numbers.
 func (db *DB) LoadDefinitionsOnChannel(channel string) ([]VersionedDef, error) {
-	var rows []channelRow
-	if err := db.bun.NewSelect().
-		Model(&rows).
-		Where("channel = ?", channel).
-		Scan(context.Background()); err != nil {
+	rows, err := db.q.ListChannelsForChannel(context.Background(), channel)
+	if err != nil {
 		return nil, err
 	}
 	out := make([]VersionedDef, 0, len(rows))
 	for _, r := range rows {
-		def, err := db.GetDefinition(r.Name, r.Version)
+		def, err := db.GetDefinition(r.Name, int(r.Version))
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, VersionedDef{Version: r.Version, Def: def})
+		out = append(out, VersionedDef{Version: int(r.Version), Def: def})
 	}
 	return out, nil
 }
@@ -455,24 +485,22 @@ func (db *DB) SaveInstance(inst *model.ProcessInstance) error {
 	if err != nil {
 		return err
 	}
-	now := time.Now().UTC()
-	row := &instanceRow{
+	now := nowUnix()
+	return db.q.InsertInstance(context.Background(), dbgen.InsertInstanceParams{
 		ID:             inst.ID,
 		ProcessName:    inst.ProcessName,
-		ProcessVersion: inst.ProcessVersion,
+		ProcessVersion: int64(inst.ProcessVersion),
 		StepQueue:      string(queue),
 		ContextData:    string(ctx),
 		ParentID:       inst.ParentID,
 		CallStack:      string(callStack),
-		RetryCount:     inst.RetryCount,
-		NextRetryAt:    inst.NextRetryAt,
+		RetryCount:     int64(inst.RetryCount),
+		NextRetryAt:    fromTimePtr(inst.NextRetryAt),
 		Status:         string(inst.Status),
 		Error:          inst.Error,
 		CreatedAt:      now,
 		UpdatedAt:      now,
-	}
-	_, err = db.bun.NewInsert().Model(row).Exec(context.Background())
-	return err
+	})
 }
 
 func (db *DB) UpdateInstance(inst *model.ProcessInstance) error {
@@ -484,115 +512,138 @@ func (db *DB) UpdateInstance(inst *model.ProcessInstance) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.bun.NewUpdate().
-		TableExpr("process_instances").
-		Set("step_queue = ?", string(queue)).
-		Set("context_data = ?", string(ctx)).
-		Set("retry_count = ?", inst.RetryCount).
-		Set("next_retry_at = ?", inst.NextRetryAt).
-		Set("status = ?", string(inst.Status)).
-		Set("error = ?", inst.Error).
-		Set("updated_at = ?", time.Now().UTC()).
-		Set("worker_id = NULL").
-		Set("lease_expires_at = NULL").
-		Where("id = ?", inst.ID).
-		Exec(context.Background())
-	return err
+	return db.q.UpdateInstance(context.Background(), dbgen.UpdateInstanceParams{
+		ID:          inst.ID,
+		StepQueue:   string(queue),
+		ContextData: string(ctx),
+		RetryCount:  int64(inst.RetryCount),
+		NextRetryAt: fromTimePtr(inst.NextRetryAt),
+		Status:      string(inst.Status),
+		Error:       inst.Error,
+		UpdatedAt:   nowUnix(),
+	})
 }
 
 func (db *DB) RenewWorkerLeases(workerID string, leaseDur time.Duration) error {
-	expiry := time.Now().UTC().Add(leaseDur)
-	_, err := db.bun.NewUpdate().
-		TableExpr("process_instances").
-		Set("lease_expires_at = ?", expiry).
-		Where("worker_id = ?", workerID).
-		Exec(context.Background())
-	return err
+	return db.q.RenewWorkerLeases(context.Background(), dbgen.RenewWorkerLeasesParams{
+		WorkerID:       sql.NullString{String: workerID, Valid: true},
+		LeaseExpiresAt: sql.NullInt64{Int64: nowUnix() + int64(leaseDur.Seconds()), Valid: true},
+	})
 }
 
+// ClaimInstances is hand-written because SQLite and PostgreSQL require different
+// locking strategies: PostgreSQL uses FOR UPDATE SKIP LOCKED to safely handle
+// concurrent workers, while SQLite's single-writer model makes this unnecessary.
 func (db *DB) ClaimInstances(workerID string, leaseDur time.Duration, limit int) ([]*model.ProcessInstance, error) {
-	now := time.Now().UTC()
-	leaseExpiry := now.Add(leaseDur)
+	now := nowUnix()
+	leaseExpiry := now + int64(leaseDur.Seconds())
+	ctx := context.Background()
 
-	subq := db.bun.NewSelect().
-		TableExpr("process_instances").
-		Column("id").
-		Where("status = 'running'").
-		Where("(next_retry_at IS NULL OR next_retry_at <= ?)", now).
-		Where("(worker_id IS NULL OR lease_expires_at <= ?)", now).
-		Limit(limit)
-
-	// PostgreSQL needs FOR UPDATE SKIP LOCKED to prevent concurrent workers
-	// from racing to claim the same instance. SQLite's single-writer model
-	// makes this unnecessary there.
-	if db.bun.Dialect().Name() == dialect.PG {
-		subq = subq.For("UPDATE SKIP LOCKED")
+	var query string
+	if db.dialect == "postgres" {
+		query = `
+			UPDATE process_instances
+			SET worker_id = $1, lease_expires_at = $2
+			WHERE id IN (
+				SELECT id FROM process_instances
+				WHERE status = 'running'
+				  AND (next_retry_at IS NULL OR next_retry_at <= $3)
+				  AND (worker_id IS NULL OR lease_expires_at <= $4)
+				LIMIT $5
+				FOR UPDATE SKIP LOCKED
+			)
+			RETURNING id, process_name, process_version, step_queue, context_data, parent_id,
+			          call_stack, retry_count, next_retry_at, status, error,
+			          created_at, updated_at, worker_id, lease_expires_at`
+	} else {
+		query = `
+			UPDATE process_instances
+			SET worker_id = ?, lease_expires_at = ?
+			WHERE id IN (
+				SELECT id FROM process_instances
+				WHERE status = 'running'
+				  AND (next_retry_at IS NULL OR next_retry_at <= ?)
+				  AND (worker_id IS NULL OR lease_expires_at <= ?)
+				LIMIT ?
+			)
+			RETURNING id, process_name, process_version, step_queue, context_data, parent_id,
+			          call_stack, retry_count, next_retry_at, status, error,
+			          created_at, updated_at, worker_id, lease_expires_at`
 	}
 
-	var rows []instanceRow
-	_, err := db.bun.NewUpdate().
-		TableExpr("process_instances").
-		Set("worker_id = ?", workerID).
-		Set("lease_expires_at = ?", leaseExpiry).
-		Where("id IN (?)", subq).
-		Returning("*").
-		Exec(context.Background(), &rows)
+	rows, err := db.sqldb.QueryContext(ctx, query, workerID, leaseExpiry, now, now, limit)
 	if err != nil {
 		return nil, err
 	}
-	return toInstances(rows)
+	defer rows.Close()
+
+	var result []*model.ProcessInstance
+	for rows.Next() {
+		var r dbgen.ProcessInstance
+		if err := rows.Scan(
+			&r.ID, &r.ProcessName, &r.ProcessVersion,
+			&r.StepQueue, &r.ContextData, &r.ParentID,
+			&r.CallStack, &r.RetryCount, &r.NextRetryAt,
+			&r.Status, &r.Error, &r.CreatedAt, &r.UpdatedAt,
+			&r.WorkerID, &r.LeaseExpiresAt,
+		); err != nil {
+			return nil, err
+		}
+		inst, err := toInstance(r)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, inst)
+	}
+	return result, rows.Err()
 }
 
 func (db *DB) GetInstance(id string) (*model.ProcessInstance, error) {
-	var row instanceRow
-	err := db.bun.NewSelect().
-		Model(&row).
-		Where("id = ?", id).
-		Scan(context.Background())
+	r, err := db.q.GetInstance(context.Background(), id)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("instance not found")
 	}
 	if err != nil {
 		return nil, err
 	}
-	return toInstance(row)
+	return toInstance(r)
 }
 
 func (db *DB) ListInstances(status string) ([]*model.ProcessInstance, error) {
-	var rows []instanceRow
-	q := db.bun.NewSelect().Model(&rows).OrderExpr("created_at DESC")
-	if status != "" {
-		q = q.Where("status = ?", status)
+	ctx := context.Background()
+	var rows []dbgen.ProcessInstance
+	var err error
+	if status == "" {
+		rows, err = db.q.ListInstances(ctx)
+	} else {
+		rows, err = db.q.ListInstancesByStatus(ctx, status)
 	}
-	if err := q.Scan(context.Background()); err != nil {
+	if err != nil {
 		return nil, err
 	}
-	return toInstances(rows)
+	out := make([]*model.ProcessInstance, len(rows))
+	for i, r := range rows {
+		inst, err := toInstance(r)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = inst
+	}
+	return out, nil
 }
 
 // TryWakeParent is called when a child instance finishes (completed or failed).
 // It checks whether all siblings are done and, if so, either cascades failure to
-// all waiting ancestors in one query or wakes the direct parent with merged outputs.
-//
-// spawnStepID and spawnOrder are derived from the child's own context
-// (_spawn_step_id key) and the parent's stored context (the placeholder ID list).
+// the direct parent or wakes the parent with merged outputs.
 func (db *DB) TryWakeParent(child *model.ProcessInstance) error {
 	ctx := context.Background()
 
-	// Derive the spawn step ID from the child's own context.
 	spawnStepID, _ := child.ContextData["_spawn_step_id"].(string)
 	if spawnStepID == "" {
 		return fmt.Errorf("child %q missing _spawn_step_id in context", child.ID)
 	}
 
-	// Count siblings still in progress.
-	var remaining int
-	err := db.bun.NewSelect().
-		TableExpr("process_instances").
-		ColumnExpr("COUNT(*)").
-		Where("parent_id = ?", child.ParentID).
-		Where("status NOT IN ('completed', 'failed')").
-		Scan(ctx, &remaining)
+	remaining, err := db.q.CountActiveSiblings(ctx, child.ParentID)
 	if err != nil {
 		return fmt.Errorf("count siblings: %w", err)
 	}
@@ -600,22 +651,16 @@ func (db *DB) TryWakeParent(child *model.ProcessInstance) error {
 		return nil
 	}
 
-	// All siblings done — read their final state.
-	var siblingRows []instanceRow
-	if err := db.bun.NewSelect().
-		Model(&siblingRows).
-		Where("parent_id = ?", child.ParentID).
-		Scan(ctx); err != nil {
+	siblingRows, err := db.q.GetSiblings(ctx, child.ParentID)
+	if err != nil {
 		return fmt.Errorf("read siblings: %w", err)
 	}
 
-	// Index siblings by ID for ordered output building.
-	siblingByID := make(map[string]instanceRow, len(siblingRows))
+	siblingByID := make(map[string]dbgen.ProcessInstance, len(siblingRows))
 	for _, s := range siblingRows {
 		siblingByID[s.ID] = s
 	}
 
-	// Check for any failure.
 	var failedID, failedErr string
 	for _, s := range siblingRows {
 		if s.Status == string(model.StatusFailed) {
@@ -628,14 +673,8 @@ func (db *DB) TryWakeParent(child *model.ProcessInstance) error {
 		if child.ParentID == "" {
 			return nil
 		}
-		// Wake only the direct parent so the engine can evaluate its on_error rules.
-		// If the parent has no handler, failInstance → notifyParent → TryWakeParent
-		// propagates the failure one level up, giving each ancestor a chance to handle it.
-		var parentRow instanceRow
-		if err := db.bun.NewSelect().
-			Model(&parentRow).
-			Where("id = ?", child.ParentID).
-			Scan(ctx); err != nil {
+		parentRow, err := db.q.GetInstance(ctx, child.ParentID)
+		if err != nil {
 			return fmt.Errorf("fetch parent: %w", err)
 		}
 		var parentCtx map[string]any
@@ -651,23 +690,15 @@ func (db *DB) TryWakeParent(child *model.ProcessInstance) error {
 		if err != nil {
 			return fmt.Errorf("marshal parent context: %w", err)
 		}
-		_, err = db.bun.NewUpdate().
-			TableExpr("process_instances").
-			Set("status = ?", string(model.StatusRunning)).
-			Set("context_data = ?", string(patchedCtx)).
-			Set("updated_at = ?", time.Now().UTC()).
-			Where("id = ?", child.ParentID).
-			Where("status = ?", string(model.StatusWaiting)).
-			Exec(ctx)
-		return err
+		return db.q.WakeParent(ctx, dbgen.WakeParentParams{
+			ID:          child.ParentID,
+			ContextData: string(patchedCtx),
+			UpdatedAt:   nowUnix(),
+		})
 	}
 
-	// All succeeded — fetch the parent to get spawn order, child output schema, and patch its context.
-	var parentRow instanceRow
-	if err := db.bun.NewSelect().
-		Model(&parentRow).
-		Where("id = ?", child.ParentID).
-		Scan(ctx); err != nil {
+	parentRow, err := db.q.GetInstance(ctx, child.ParentID)
+	if err != nil {
 		return fmt.Errorf("fetch parent: %w", err)
 	}
 	var parentCtx map[string]any
@@ -675,7 +706,6 @@ func (db *DB) TryWakeParent(child *model.ProcessInstance) error {
 		return fmt.Errorf("unmarshal parent context: %w", err)
 	}
 
-	// Recover spawn order from the placeholder stored at spawn time.
 	var spawnOrder []string
 	if outputs, ok := parentCtx["outputs"].(map[string]any); ok {
 		switch v := outputs[spawnStepID].(type) {
@@ -690,7 +720,6 @@ func (db *DB) TryWakeParent(child *model.ProcessInstance) error {
 		}
 	}
 
-	// Read child_output_schema if the parent declared one (stored as a JSON string).
 	var childOutputSchema map[string]any
 	if s, ok := parentCtx["_spawn_child_output_schema"]; ok {
 		if raw, ok := s.(string); ok && raw != "" {
@@ -698,8 +727,6 @@ func (db *DB) TryWakeParent(child *model.ProcessInstance) error {
 		}
 	}
 
-	// Build the step output array in spawn order.
-	// Output is only included per child when child_output_schema is declared and validates.
 	type childResult struct {
 		ID     string `json:"id"`
 		Output any    `json:"output,omitempty"`
@@ -718,8 +745,6 @@ func (db *DB) TryWakeParent(child *model.ProcessInstance) error {
 			}
 			output := ctxData["output"]
 			if err := validateChildOutput(childOutputSchema, output); err != nil {
-				// Treat schema violation as a child failure — wake the direct parent so it can
-				// evaluate on_error; if no handler the normal propagation chain takes over.
 				reason := fmt.Sprintf("child process %q (%s) output validation: %v", id, row.ProcessName, err)
 				parentCtx["_child_error"] = map[string]any{
 					"step":    spawnStepID,
@@ -730,15 +755,11 @@ func (db *DB) TryWakeParent(child *model.ProcessInstance) error {
 				if merr != nil {
 					return fmt.Errorf("marshal parent context: %w", merr)
 				}
-				_, uerr := db.bun.NewUpdate().
-					TableExpr("process_instances").
-					Set("status = ?", string(model.StatusRunning)).
-					Set("context_data = ?", string(patchedCtx)).
-					Set("updated_at = ?", time.Now().UTC()).
-					Where("id = ?", child.ParentID).
-					Where("status = ?", string(model.StatusWaiting)).
-					Exec(ctx)
-				return uerr
+				return db.q.WakeParent(ctx, dbgen.WakeParentParams{
+					ID:          child.ParentID,
+					ContextData: string(patchedCtx),
+					UpdatedAt:   nowUnix(),
+				})
 			}
 			result.Output = output
 		}
@@ -754,35 +775,29 @@ func (db *DB) TryWakeParent(child *model.ProcessInstance) error {
 	if err != nil {
 		return fmt.Errorf("marshal parent context: %w", err)
 	}
-
-	// WHERE status='waiting' makes this idempotent if two siblings race here.
-	_, err = db.bun.NewUpdate().
-		TableExpr("process_instances").
-		Set("status = ?", string(model.StatusRunning)).
-		Set("context_data = ?", string(patchedCtx)).
-		Set("updated_at = ?", time.Now().UTC()).
-		Where("id = ?", child.ParentID).
-		Where("status = ?", string(model.StatusWaiting)).
-		Exec(ctx)
-	return err
+	return db.q.WakeParent(ctx, dbgen.WakeParentParams{
+		ID:          child.ParentID,
+		ContextData: string(patchedCtx),
+		UpdatedAt:   nowUnix(),
+	})
 }
 
 // ── row → model conversion ────────────────────────────────────────────────────
 
-func toInstance(r instanceRow) (*model.ProcessInstance, error) {
+func toInstance(r dbgen.ProcessInstance) (*model.ProcessInstance, error) {
 	inst := &model.ProcessInstance{
 		ID:             r.ID,
 		ProcessName:    r.ProcessName,
-		ProcessVersion: r.ProcessVersion,
+		ProcessVersion: int(r.ProcessVersion),
 		ParentID:       r.ParentID,
-		RetryCount:     r.RetryCount,
-		NextRetryAt:    r.NextRetryAt,
+		RetryCount:     int(r.RetryCount),
 		Status:         model.Status(r.Status),
 		Error:          r.Error,
-		CreatedAt:      r.CreatedAt,
-		UpdatedAt:      r.UpdatedAt,
-		WorkerID:       r.WorkerID,
-		LeaseExpiresAt: r.LeaseExpiresAt,
+		CreatedAt:      toTime(r.CreatedAt),
+		UpdatedAt:      toTime(r.UpdatedAt),
+		NextRetryAt:    toTimePtr(r.NextRetryAt),
+		WorkerID:       nullStringPtr(r.WorkerID),
+		LeaseExpiresAt: toTimePtr(r.LeaseExpiresAt),
 	}
 	if err := json.Unmarshal([]byte(r.StepQueue), &inst.StepQueue); err != nil {
 		return nil, fmt.Errorf("unmarshal step_queue: %w", err)
@@ -794,18 +809,6 @@ func toInstance(r instanceRow) (*model.ProcessInstance, error) {
 		return nil, fmt.Errorf("unmarshal call_stack: %w", err)
 	}
 	return inst, nil
-}
-
-func toInstances(rows []instanceRow) ([]*model.ProcessInstance, error) {
-	out := make([]*model.ProcessInstance, len(rows))
-	for i, r := range rows {
-		inst, err := toInstance(r)
-		if err != nil {
-			return nil, err
-		}
-		out[i] = inst
-	}
-	return out, nil
 }
 
 func validateChildOutput(schema map[string]any, output any) error {
