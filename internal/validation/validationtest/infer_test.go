@@ -7,7 +7,7 @@ import (
 
 func TestGenerate_Input_FirstTaskNoInput(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [{
 			"id": "charge",
 			"call": {"type": "rest", "endpoint": "http://x", "output_schema": { "type": "object", "properties": { "ok": { "type": "boolean" } } }}
@@ -18,7 +18,7 @@ func TestGenerate_Input_FirstTaskNoInput(t *testing.T) {
 
 func TestGenerate_Input_WithProcessInput(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"input_schema": { "type": "object", "properties": { "order_id": { "type": "integer" } } },
 		"steps": [{
 			"id": "charge",
@@ -30,7 +30,7 @@ func TestGenerate_Input_WithProcessInput(t *testing.T) {
 
 func TestGenerate_Input_PrecedingTaskOutput(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [
 			{
 				"id": "charge",
@@ -48,7 +48,7 @@ func TestGenerate_Input_PrecedingTaskOutput(t *testing.T) {
 
 func TestGenerate_Input_TaskWithNoOutputSkippedInContext(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [
 			{ "id": "log", "call": {"type": "rest", "endpoint": "http://x"} },
 			{
@@ -62,7 +62,7 @@ func TestGenerate_Input_TaskWithNoOutputSkippedInContext(t *testing.T) {
 
 func TestGenerate_Input_SwitchOnlyStepSkippedInContext(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [
 			{
 				"id": "charge",
@@ -88,7 +88,7 @@ func TestGenerate_Input_SwitchOnlyStepSkippedInContext(t *testing.T) {
 
 func TestGenerate_Input_Params(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"input_schema": {
 			"type": "object",
 			"properties": {
@@ -120,7 +120,7 @@ func TestGenerate_Input_Params(t *testing.T) {
 
 func TestGenerate_Input_ParamsOnlyTask(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"input_schema": { "type": "object", "properties": { "user_id": { "type": "string" } }, "required": ["user_id"] },
 		"steps": [{
 			"id": "log",
@@ -141,7 +141,7 @@ func TestGenerate_Input_ParamsOnlyTask(t *testing.T) {
 
 func TestGenerate_Input_Params_OneOfOutputPropertyAccess(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [
 			{
 				"id": "save_order",
@@ -171,7 +171,7 @@ func TestGenerate_MixedTemplate_NullableExpressionRejected(t *testing.T) {
 	// error is nullable on finale (reachable via both normal and on_error paths).
 	// Using it in a mixed template would silently produce "null_null" at runtime.
 	err := runGenerateErr(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [
 			{
 				"id": "start",
@@ -196,7 +196,7 @@ func TestGenerate_MixedTemplate_NullableExpressionRejected(t *testing.T) {
 func TestGenerate_MixedTemplate_NonNullableExpressionAccepted(t *testing.T) {
 	// error is required (exclusive error path), so using it in a mixed template is fine.
 	runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [
 			{
 				"id": "worker",
@@ -215,7 +215,7 @@ func TestGenerate_MixedTemplate_NonNullableExpressionAccepted(t *testing.T) {
 
 func TestGenerate_InvalidRef(t *testing.T) {
 	err := runGenerateErr(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [{"id":"s1","call":{"type":"rest","endpoint":"http://x"}}],
 		"input_schema": {
 			"properties": { "x": { "$ref": "#/$defs/Missing" } }
@@ -231,7 +231,7 @@ func TestGenerate_InvalidRef(t *testing.T) {
 
 func TestGenerate_Switch_SelfExpressionTypeChecked(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [
 			{
 				"id": "charge",
@@ -254,7 +254,7 @@ func TestGenerate_Switch_SelfExpressionTypeChecked(t *testing.T) {
 
 func TestGenerate_Switch_OutputsExpressionTypeChecked(t *testing.T) {
 	runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [
 			{
 				"id": "charge",
@@ -272,7 +272,7 @@ func TestGenerate_Switch_OutputsExpressionTypeChecked(t *testing.T) {
 
 func TestGenerate_RecursiveStep_OwnOutputOptionalInParams(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"input_schema": {
 			"type": "object",
 			"properties": { "tasks": { "type": "array", "items": { "type": "string" } } },
@@ -310,7 +310,7 @@ func TestGenerate_RecursiveStep_OwnOutputOptionalInParams(t *testing.T) {
 
 func TestGenerate_SwitchStep_NextStepNotReachableViaFallthrough(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [
 			{
 				"id": "decide",
@@ -334,7 +334,7 @@ func TestGenerate_SwitchStep_NextStepNotReachableViaFallthrough(t *testing.T) {
 
 func TestGenerate_Switch_OneOfAllBooleanAccepted(t *testing.T) {
 	runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [{
 			"id": "check",
 			"call": {"type": "rest", "endpoint": "http://x", "output_schema": {
@@ -352,7 +352,7 @@ func TestGenerate_Switch_OneOfAllBooleanAccepted(t *testing.T) {
 
 func TestGenerate_Switch_OneOfBooleanOptionalFieldRejected(t *testing.T) {
 	err := runGenerateErr(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"input_schema": {
 			"type": "object",
 			"properties": { "go_then": { "oneOf": [{"type": "boolean"}] } }
@@ -372,7 +372,7 @@ func TestGenerate_Switch_OneOfBooleanOptionalFieldRejected(t *testing.T) {
 
 func TestGenerate_Switch_NullableBooleanRejected(t *testing.T) {
 	err := runGenerateErr(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"input_schema": {
 			"type": "object",
 			"properties": { "go_then": { "type": "boolean" } }
@@ -395,7 +395,7 @@ func TestGenerate_Switch_NullableBooleanRejected(t *testing.T) {
 
 func TestGenerate_Switch_MixedTemplateRejectsStringResult(t *testing.T) {
 	err := runGenerateErr(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [
 			{
 				"id": "check",

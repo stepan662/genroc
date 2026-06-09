@@ -19,7 +19,6 @@ type TaskSchemas struct {
 // SchemaFile is the top-level output.
 type SchemaFile struct {
 	Process       string                        `json:"process"`
-	Version       int                           `json:"version"`
 	ProcessInput  *schema.SchemaNode            `json:"process_input,omitempty"`
 	ProcessOutput *schema.SchemaNode            `json:"process_output,omitempty"`
 	Tasks         map[string]TaskSchemas        `json:"tasks,omitempty"`
@@ -49,11 +48,11 @@ func buildSchemaContext(def *model.ProcessDefinition) (defs map[string]*schema.S
 }
 
 // Generate normalises all schemas in def and builds the SchemaFile output.
-func Generate(def *model.ProcessDefinition, version int) (SchemaFile, error) {
+func Generate(def *model.ProcessDefinition) (SchemaFile, error) {
 	if err := def.Normalize(); err != nil {
 		return SchemaFile{}, err
 	}
-	result := SchemaFile{Process: def.Name, Version: version}
+	result := SchemaFile{Process: def.Name}
 
 	defs, tasks, processInput, err := buildSchemaContext(def)
 	if err != nil {

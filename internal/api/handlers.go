@@ -161,7 +161,7 @@ func (h *Handlers) putDefinition(raw json.RawMessage) Reply {
 	}
 	latestV, _ := h.db.LatestVersion(req.Name)
 	version := latestV + 1
-	if _, err := validation.Generate(&req.ProcessDefinition, version); err != nil {
+	if _, err := validation.Generate(&req.ProcessDefinition); err != nil {
 		return errReply(err)
 	}
 	if err := validation.ValidateChildProcessRefs(&req.ProcessDefinition, version, h.db); err != nil {
@@ -512,7 +512,7 @@ func (h *Handlers) applyBatch(defs []model.ProcessDefinition, channel string, au
 		if err := def.Validate(); err != nil {
 			return nil, fmt.Errorf("%s: %w", def.Name, err)
 		}
-		if _, err := validation.Generate(defForValidation, newVersion); err != nil {
+		if _, err := validation.Generate(defForValidation); err != nil {
 			return nil, fmt.Errorf("%s: %w", def.Name, err)
 		}
 		if err := validation.ValidateChildProcessRefs(defForValidation, newVersion, getter); err != nil {
@@ -627,7 +627,7 @@ func (h *Handlers) cascadeUpdate(channel string, changedVersions map[string]int,
 
 			defForValidation := applyDepsToDefCopy(vd.Def, newDeps)
 			getter := &batchGetter{db: h.db}
-			if _, err := validation.Generate(defForValidation, newVersion); err != nil {
+			if _, err := validation.Generate(defForValidation); err != nil {
 				return nil, fmt.Errorf("auto-update %s: schema incompatible after child upgrade: %w", vd.Def.Name, err)
 			}
 			if err := validation.ValidateChildProcessRefs(defForValidation, newVersion, getter); err != nil {
@@ -959,7 +959,7 @@ func (h *Handlers) validateDefinitions(raw json.RawMessage) Reply {
 		if err := def.Validate(); err != nil {
 			return errReply(fmt.Errorf("%s: %w", def.Name, err))
 		}
-		sf, err := validation.Generate(def, 0)
+		sf, err := validation.Generate(def)
 		if err != nil {
 			return errReply(fmt.Errorf("%s: %w", def.Name, err))
 		}

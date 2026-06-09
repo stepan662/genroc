@@ -10,7 +10,6 @@ test("child_process — step without child_output_schema after a step with one d
   await client.PUT("/definitions", {
     body: {
       name: leafWithOutput,
-      version: 1,
       steps: [{ id: "done", switch: [{ when: "default", goto: "$end" }] }],
       output: { value: "{{1}}" },
     },
@@ -19,7 +18,6 @@ test("child_process — step without child_output_schema after a step with one d
   await client.PUT("/definitions", {
     body: {
       name: leafNoOutput,
-      version: 1,
       steps: [{ id: "done", switch: [{ when: "default", goto: "$end" }] }],
     },
   });
@@ -27,7 +25,7 @@ test("child_process — step without child_output_schema after a step with one d
   await client.PUT("/definitions", {
     body: {
       name: parentName,
-      version: 1,
+
       steps: [
         {
           id: "step_a",
@@ -52,7 +50,9 @@ test("child_process — step without child_output_schema after a step with one d
     },
   });
 
-  const { data, error } = await client.POST("/instances", { body: { process: parentName } });
+  const { data, error } = await client.POST("/instances", {
+    body: { process: parentName },
+  });
   expect(error).toBeUndefined();
 
   const status = await waitForInstance(data!.id, 10_000);
@@ -70,7 +70,6 @@ test("child_process — output validation failure error includes process name", 
   await client.PUT("/definitions", {
     body: {
       name: childName,
-      version: 1,
       steps: [{ id: "done", switch: [{ when: "default", goto: "$end" }] }],
     },
   });
@@ -79,7 +78,6 @@ test("child_process — output validation failure error includes process name", 
   await client.PUT("/definitions", {
     body: {
       name: parentName,
-      version: 1,
       steps: [
         {
           id: "spawn",
@@ -97,13 +95,17 @@ test("child_process — output validation failure error includes process name", 
     },
   });
 
-  const { data, error } = await client.POST("/instances", { body: { process: parentName } });
+  const { data, error } = await client.POST("/instances", {
+    body: { process: parentName },
+  });
   expect(error).toBeUndefined();
 
   const status = await waitForInstance(data!.id, 10_000);
   expect(status).toBe("failed");
 
-  const { data: inst } = await client.GET("/instances/{id}", { params: { path: { id: data!.id } } });
+  const { data: inst } = await client.GET("/instances/{id}", {
+    params: { path: { id: data!.id } },
+  });
   expect(inst?.error).toContain(childName);
 });
 
@@ -113,7 +115,6 @@ test("child_process — recursive spawn completes with correct aggregated output
   await client.PUT("/definitions", {
     body: {
       name: processName,
-      version: 1,
       input_schema: {
         type: "object",
         properties: { ttl: { type: "integer" } },
@@ -122,7 +123,10 @@ test("child_process — recursive spawn completes with correct aggregated output
       steps: [
         {
           id: "recursion_condition",
-          switch: [{ when: "{{input.ttl > 0}}", goto: "#recursion" }, { when: "default", goto: "$end" }],
+          switch: [
+            { when: "{{input.ttl > 0}}", goto: "#recursion" },
+            { when: "default", goto: "$end" },
+          ],
         },
         {
           id: "recursion",
@@ -147,9 +151,12 @@ test("child_process — recursive spawn completes with correct aggregated output
     },
   });
 
-  const { data: startData, error: startError } = await client.POST("/instances", {
-    body: { process: processName, input: { ttl: 2 } },
-  });
+  const { data: startData, error: startError } = await client.POST(
+    "/instances",
+    {
+      body: { process: processName, input: { ttl: 2 } },
+    },
+  );
   expect(startError).toBeUndefined();
   const id = startData!.id;
 

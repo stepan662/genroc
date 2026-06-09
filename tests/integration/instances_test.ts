@@ -7,7 +7,7 @@ async function ensureDefinition() {
   await client.PUT("/definitions", {
     body: {
       name: processName,
-      version: 1,
+
       input_schema: {
         type: "object",
         properties: { order_id: { type: "number" } },
@@ -86,7 +86,7 @@ test("POST /instances — what happens when referencing types?", async () => {
   await client.PUT("/definitions", {
     body: {
       name: processName,
-      version: 1,
+
       input_schema: {
         $ref: "#/$defs/order",
         $defs: {

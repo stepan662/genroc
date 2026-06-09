@@ -14,13 +14,7 @@ func runGenerate(t *testing.T, defJSON string) validation.SchemaFile {
 	if err := json.Unmarshal([]byte(defJSON), &def); err != nil {
 		t.Fatalf("unmarshal definition: %v", err)
 	}
-	var raw map[string]any
-	json.Unmarshal([]byte(defJSON), &raw)
-	version := 0
-	if v, ok := raw["version"].(float64); ok {
-		version = int(v)
-	}
-	out, err := validation.Generate(&def, version)
+	out, err := validation.Generate(&def)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -33,13 +27,7 @@ func runGenerateErr(t *testing.T, defJSON string) error {
 	if err := json.Unmarshal([]byte(defJSON), &def); err != nil {
 		t.Fatalf("unmarshal definition: %v", err)
 	}
-	var raw map[string]any
-	json.Unmarshal([]byte(defJSON), &raw)
-	version := 0
-	if v, ok := raw["version"].(float64); ok {
-		version = int(v)
-	}
-	_, err := validation.Generate(&def, version)
+	_, err := validation.Generate(&def)
 	return err
 }
 

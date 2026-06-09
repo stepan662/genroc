@@ -7,11 +7,11 @@ import (
 
 func TestGenerate_NoSchemas(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [{"id":"s1","call":{"type":"rest","endpoint":"http://x"}}]
 	}`)
-	if out.Process != "p" || out.Version != 1 {
-		t.Errorf("metadata: got process=%q version=%d", out.Process, out.Version)
+	if out.Process != "p" {
+		t.Errorf("metadata: got process=%q", out.Process)
 	}
 	if out.ProcessInput != nil {
 		t.Error("process_input should be absent")
@@ -26,7 +26,7 @@ func TestGenerate_NoSchemas(t *testing.T) {
 
 func TestGenerate_ProcessInput(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "order", "version": 2,
+		"name": "order",
 		"steps": [{"id":"s1","call":{"type":"rest","endpoint":"http://x"}}],
 		"input_schema": {
 			"type": "object",
@@ -44,7 +44,7 @@ func TestGenerate_ProcessInput(t *testing.T) {
 
 func TestGenerate_TaskOutput(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [
 			{
 				"id": "charge",
@@ -68,7 +68,7 @@ func TestGenerate_TaskOutput(t *testing.T) {
 
 func TestGenerate_FlatStepsWithOutputs(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [
 			{
 				"id": "charge",
@@ -92,7 +92,7 @@ func TestGenerate_FlatStepsWithOutputs(t *testing.T) {
 
 func TestGenerate_InnerDefsPromotedToRoot(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [{"id":"s1","call":{"type":"rest","endpoint":"http://x"}}],
 		"input_schema": {
 			"type": "object",
@@ -120,7 +120,7 @@ func TestGenerate_InnerDefsPromotedToRoot(t *testing.T) {
 
 func TestGenerate_InnerDefsConflictRenamed(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"input_schema": {
 			"type": "object",
 			"$defs": { "Item": { "type": "string" } },
@@ -148,7 +148,7 @@ func TestGenerate_InnerDefsConflictRenamed(t *testing.T) {
 
 func TestGenerate_UnusedDefsRemoved(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [{
 			"id": "charge",
 			"call": {"type": "rest", "endpoint": "http://x", "output_schema": {

@@ -6,7 +6,7 @@ import (
 
 func TestGenerate_ContextSets_LinearChain_RequiredOutputNonNullable(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [
 			{
 				"id": "A",
@@ -33,7 +33,7 @@ func TestGenerate_ContextSets_LinearChain_RequiredOutputNonNullable(t *testing.T
 
 func TestGenerate_ContextSets_ExclusiveBranch_SkippedStepOutputNullable(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"input_schema": {
 			"type": "object",
 			"properties": { "take_fast": { "type": "boolean" } },
@@ -70,7 +70,7 @@ func TestGenerate_ContextSets_ExclusiveBranch_SkippedStepOutputNullable(t *testi
 
 func TestGenerate_ContextSets_PreBranchStepRequiredAtAllMergePoints(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [
 			{
 				"id": "pre",
@@ -103,7 +103,7 @@ func TestGenerate_ContextSets_PreBranchStepRequiredAtAllMergePoints(t *testing.T
 
 func TestGenerate_ContextSets_DefaultEndSwitch_SuccessorRequiredNotOptional(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [
 			{
 				"id": "decide",
@@ -131,7 +131,7 @@ func TestGenerate_ContextSets_DefaultEndSwitch_SuccessorRequiredNotOptional(t *t
 
 func TestGenerate_OnError_MixedPath_FailingStepOutputNullable(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [
 			{
 				"id": "start",
@@ -161,7 +161,7 @@ func TestGenerate_OnError_MixedPath_FailingStepOutputNullable(t *testing.T) {
 
 func TestGenerate_OnError_ExclusivePath_ErrorRequiredOutputAbsent(t *testing.T) {
 	out := runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [
 			{
 				"id": "worker",
@@ -191,7 +191,7 @@ func TestGenerate_OnError_ExclusivePath_ErrorRequiredOutputAbsent(t *testing.T) 
 func TestGenerate_OnError_EndTerminal_RecognisedAsTerminal(t *testing.T) {
 	// runGenerate fails the test on any Generate error, so a clean return is sufficient.
 	runGenerate(t, `{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": [
 			{
 				"id": "step",

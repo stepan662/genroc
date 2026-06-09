@@ -41,7 +41,7 @@ func TestHandle_PutAndListDefinitions(t *testing.T) {
 	defer cleanup()
 
 	payload, _ := json.Marshal(map[string]interface{}{
-		"name": "pipeline", "version": 1,
+		"name": "pipeline",
 		"steps": []map[string]interface{}{
 			{"id": "s1", "call": map[string]interface{}{"type": "rest", "endpoint": "http://localhost/x"}},
 		},
@@ -72,7 +72,7 @@ func TestHandle_StartAndGetInstance(t *testing.T) {
 
 	// Register definition first.
 	defPayload, _ := json.Marshal(map[string]interface{}{
-		"name": "p", "version": 1,
+		"name": "p",
 		"steps": []map[string]interface{}{
 			{"id": "s1", "call": map[string]interface{}{"type": "rest", "endpoint": "http://localhost/x"}},
 		},
@@ -119,12 +119,12 @@ func TestHandle_ValidationErrors(t *testing.T) {
 	}{
 		{
 			name:    "rest call without endpoint",
-			payload: `{"name":"p","version":1,"steps":[{"id":"s1","call":{"type":"rest"}}]}`,
+			payload: `{"name":"p","steps":[{"id":"s1","call":{"type":"rest"}}]}`,
 			wantErr: "call.endpoint is required",
 		},
 		{
 			name:    "unknown call type",
-			payload: `{"name":"p","version":1,"steps":[{"id":"s1","call":{"type":"ftp","endpoint":"x"}}]}`,
+			payload: `{"name":"p","steps":[{"id":"s1","call":{"type":"ftp","endpoint":"x"}}]}`,
 			wantErr: "call.type must be one of",
 		},
 		{

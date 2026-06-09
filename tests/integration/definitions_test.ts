@@ -3,7 +3,7 @@ import { client } from "../helpers/client.ts";
 
 const validDef = {
   name: `test_def_${crypto.randomUUID()}`,
-  version: 1,
+
   steps: [
     {
       type: "task" as const,
@@ -33,7 +33,7 @@ test("PUT /definitions — rejects task step without endpoint", async () => {
   const { data, error } = await client.PUT("/definitions", {
     body: {
       name: "bad",
-      version: 1,
+    
       steps: [
         {
           type: "task" as const,
@@ -52,7 +52,7 @@ test("PUT /definitions — rejects unknown step type", async () => {
   const { data, error } = await client.PUT("/definitions", {
     body: {
       name: "bad",
-      version: 1,
+    
       steps: [{ type: "parallel", id: "p1" }],
     },
   });
@@ -65,7 +65,7 @@ test("PUT /definitions — accepts valid definition", async () => {
   const { data, error } = await client.PUT("/definitions", {
     body: {
       name: "valid",
-      version: 1,
+    
       input_schema: {
         type: "object",
         properties: { foo: { type: "string" } },

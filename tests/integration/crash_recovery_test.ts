@@ -29,7 +29,7 @@ test("crash recovery — new worker re-executes an unconfirmed step after the pr
     await gent1.client.PUT("/definitions", {
       body: {
         name: processName,
-        version: 1,
+
         steps: [
           {
             id: "work",
