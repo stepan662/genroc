@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -300,6 +301,20 @@ func (e *Engine) queueFromStep(inst *model.ProcessInstance, stepID string) ([]*m
 	return nil, fmt.Errorf("goto step %q not found in %q v%d", stepID, inst.ProcessName, inst.ProcessVersion)
 }
 
+// isRetryAllowed reports whether a retry is safe for the given step and error.
+// For idempotent steps (the default) retries are always governed by on_error rules.
+// For non-idempotent steps, a retry is only allowed when we know the remote call
+// never started: start.* error codes, or an on_error rule with executed:false.
+func isRetryAllowed(step *model.Step, errCode string, matched *model.ErrorCase) bool {
+	if step.Idempotent == nil || *step.Idempotent {
+		return true
+	}
+	if matched != nil && matched.Executed != nil && !*matched.Executed {
+		return true
+	}
+	return strings.HasPrefix(errCode, "start.")
+}
+
 // matchOnError returns the first ErrorCase whose Code patterns match errCode,
 // or whose Code list is empty (catch-all). Returns nil when no rule matches.
 func matchOnError(step *model.Step, errCode string) *model.ErrorCase {
@@ -322,7 +337,7 @@ func matchOnError(step *model.Step, errCode string) *model.ErrorCase {
 func (e *Engine) handleCallError(inst *model.ProcessInstance, step *model.Step, errMsg, errCode string) error {
 	matched := matchOnError(step, errCode)
 
-	if matched != nil && inst.RetryCount < matched.Retries {
+	if matched != nil && inst.RetryCount < matched.Retries && isRetryAllowed(step, errCode, matched) {
 		inst.RetryCount++
 		next := time.Now().Add(transport.RetryDelay(inst.RetryCount))
 		inst.NextRetryAt = &next

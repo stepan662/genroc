@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os/exec"
 	"strconv"
@@ -24,7 +25,7 @@ type Request struct {
 }
 
 // Response carries the result of a Send call.
-// ErrorCode is non-empty on failure ("http.404", "script.1", "output.parse", etc.).
+// ErrorCode is non-empty on failure ("http.404", "script.1", "output.parse", "start.error", etc.).
 // ErrorMessage is a human-readable description of the failure (may include trimmed response body).
 // Body holds the raw decoded JSON body on success.
 type Response struct {
@@ -127,22 +128,34 @@ func sendScript(ctx context.Context, command string, body []byte) (*Response, er
 	return &Response{Body: b}, nil
 }
 
-// ClassifyGoError maps a transport-level Go error to a network error code.
+// ClassifyGoError maps a transport-level Go error to an error code.
 // Used for REST call failures that never received an HTTP response.
+//
+// Returns start.timeout or start.error when the failure happened during the
+// TCP dial phase (the server never received the request). Returns http.timeout
+// when the connection was established but no response arrived in time.
 func ClassifyGoError(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return "network.timeout"
+		var netErr *net.OpError
+		if errors.As(err, &netErr) && netErr.Op == "dial" {
+			return "start.timeout"
+		}
+		return "http.timeout"
 	}
-	return "network.error"
+	return "start.error"
 }
 
-// ClassifyScriptError maps a script-level Go error to a script error code.
-// Used for script failures that are not exec.ExitError (launch failure, context deadline).
+// ClassifyScriptError maps a script-level Go error to an error code.
+// Used for script failures that are not exec.ExitError.
+//
+// Returns start.exec when the process failed to launch (command not found,
+// permission denied, etc.). Returns script.timeout for context cancellations
+// where the process may have already started.
 func ClassifyScriptError(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return "script.timeout"
 	}
-	return "script.error"
+	return "start.exec"
 }
 
 // RetryDelay returns the backoff duration for a given retry attempt (exponential, capped at 5 min).

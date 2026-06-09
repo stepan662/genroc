@@ -71,6 +71,62 @@ func TestEvaluator_EvalBool_WithSelf(t *testing.T) {
 	}
 }
 
+func TestIsRetryAllowed(t *testing.T) {
+	bp := func(b bool) *bool { return &b }
+
+	tests := []struct {
+		name       string
+		idempotent *bool
+		errCode    string
+		matched    *model.ErrorCase
+		want       bool
+	}{
+		// idempotent nil / true — no restriction
+		{"nil idempotent allows http.500", nil, "http.500", nil, true},
+		{"nil idempotent allows any code", nil, "output.invalid", nil, true},
+		{"true idempotent allows http.500", bp(true), "http.500", nil, true},
+		{"true idempotent allows script.1", bp(true), "script.1", nil, true},
+
+		// idempotent false — start.* is always allowed
+		{"false: start.error allowed", bp(false), "start.error", nil, true},
+		{"false: start.timeout allowed", bp(false), "start.timeout", nil, true},
+		{"false: start.exec allowed", bp(false), "start.exec", nil, true},
+		{"false: start.anything allowed", bp(false), "start.whatever", nil, true},
+
+		// idempotent false — non-start.* blocked without override
+		{"false: http.500 blocked", bp(false), "http.500", nil, false},
+		{"false: http.timeout blocked", bp(false), "http.timeout", nil, false},
+		{"false: script.1 blocked", bp(false), "script.1", nil, false},
+		{"false: script.timeout blocked", bp(false), "script.timeout", nil, false},
+		{"false: output.invalid blocked", bp(false), "output.invalid", nil, false},
+		{"false: child.failed blocked", bp(false), "child.failed", nil, false},
+
+		// idempotent false — executed:false overrides any error code
+		{"false + executed:false allows http.422", bp(false), "http.422", &model.ErrorCase{Executed: bp(false)}, true},
+		{"false + executed:false allows http.500", bp(false), "http.500", &model.ErrorCase{Executed: bp(false)}, true},
+		{"false + executed:false allows output.invalid", bp(false), "output.invalid", &model.ErrorCase{Executed: bp(false)}, true},
+
+		// idempotent false — executed:true does not add restriction beyond default
+		{"false + executed:true still allows start.error", bp(false), "start.error", &model.ErrorCase{Executed: bp(true)}, true},
+		{"false + executed:true still blocks http.500", bp(false), "http.500", &model.ErrorCase{Executed: bp(true)}, false},
+
+		// idempotent false — nil matched (no on_error rule matched)
+		{"false + nil matched + start.error allowed", bp(false), "start.error", nil, true},
+		{"false + nil matched + http.500 blocked", bp(false), "http.500", nil, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			step := &model.Step{ID: "s", Idempotent: tt.idempotent,
+				Call: &model.Call{Type: model.CallTypeREST, Endpoint: "http://x"}}
+			got := isRetryAllowed(step, tt.errCode, tt.matched)
+			if got != tt.want {
+				t.Errorf("isRetryAllowed(%q) = %v, want %v", tt.errCode, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSwitchMap_JSON_RoundTrip(t *testing.T) {
 	original := model.SwitchMap{
 		{When: "self.paid == true", Goto: "ship"},

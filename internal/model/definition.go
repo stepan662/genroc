@@ -185,9 +185,10 @@ func (SwitchMap) JSONSchemaBytes() ([]byte, error) {
 // Rules are evaluated in order; the first match applies.
 // An empty Code list is a catch-all matching any error.
 type ErrorCase struct {
-	Code    []string `json:"code,omitempty"    description:"SQL LIKE patterns matched against the error code. '%' = any chars, '_' = one char. Empty = catch-all. Known codes — REST: http.NNN (e.g. http.500), network.timeout, network.error, output.parse, output.invalid; Script: script.N (exit code, e.g. script.1), script.timeout, script.error, output.parse; Child process: child.failed, output.invalid."`
-	Retries int      `json:"retries,omitempty" description:"Number of retries before following Goto or failing. 0 = no retries."`
-	Goto    string   `json:"goto,omitempty"    description:"Step to route to when retries are exhausted. '#step-id' or '$end'. Omit to fail the instance."`
+	Code     []string `json:"code,omitempty"     description:"SQL LIKE patterns matched against the error code. '%' = any chars, '_' = one char. Empty = catch-all. Known codes — REST: http.NNN (e.g. http.500), http.timeout, start.error, start.timeout, output.parse, output.invalid; Script: script.N (exit code, e.g. script.1), script.timeout, start.exec, output.parse; Child process: child.failed, output.invalid. start.* codes mean the call never reached the remote."`
+	Retries  int      `json:"retries,omitempty"  description:"Number of retries before following Goto or failing. 0 = no retries. On idempotent:false steps only start.* codes (or rules with executed:false) may have retries > 0."`
+	Goto     string   `json:"goto,omitempty"     description:"Step to route to when retries are exhausted. '#step-id' or '$end'. Omit to fail the instance."`
+	Executed *bool    `json:"executed,omitempty" description:"Override whether this error code means the remote call was executed. false = call did not execute (retries allowed on idempotent:false steps). true = call did execute. Omit to use the engine's default classification (start.* = not executed, everything else = executed)."`
 }
 
 func (e ErrorCase) MarshalJSON() ([]byte, error) {
@@ -231,12 +232,13 @@ func (e *ErrorCase) UnmarshalJSON(data []byte) error {
 // Switch expressions have access to the full context and to this step's own action
 // output under the name "self".
 type Step struct {
-	ID        string            `json:"id"           validate:"required" description:"Unique step identifier within this process. Used as a goto target in switch cases."`
-	Call      *Call             `json:"call,omitempty"                  description:"Describes the action to perform. Omit for switch-only (routing) steps."`
-	TimeoutMs int               `json:"timeout_ms,omitempty"            description:"Maximum execution time in milliseconds. 0 means no timeout."`
-	OnError   []ErrorCase       `json:"on_error,omitempty"              description:"Ordered error-routing rules evaluated when the call fails. First match wins."`
-	Params    map[string]string `json:"params,omitempty"                description:"Expression map evaluated against the current context to build the call's input. Keys become input field names."`
-	Switch    SwitchMap         `json:"switch,omitempty"                description:"Ordered routing rules evaluated after the call. Last case must be 'default'. Required if the step has no call or needs non-linear flow."`
+	ID         string            `json:"id"                  validate:"required" description:"Unique step identifier within this process. Used as a goto target in switch cases."`
+	Call       *Call             `json:"call,omitempty"                         description:"Describes the action to perform. Omit for switch-only (routing) steps."`
+	TimeoutMs  int               `json:"timeout_ms,omitempty"                   description:"Maximum execution time in milliseconds. 0 means no timeout."`
+	Idempotent *bool             `json:"idempotent,omitempty"                   description:"When false, the engine guarantees at-most-once execution: retries are only allowed for start.* errors (connection never established) or on_error rules with executed:false. Defaults to true (retryable)."`
+	OnError    []ErrorCase       `json:"on_error,omitempty"                     description:"Ordered error-routing rules evaluated when the call fails. First match wins."`
+	Params     map[string]string `json:"params,omitempty"                       description:"Expression map evaluated against the current context to build the call's input. Keys become input field names."`
+	Switch     SwitchMap         `json:"switch,omitempty"                       description:"Ordered routing rules evaluated after the call. Last case must be 'default'. Required if the step has no call or needs non-linear flow."`
 }
 
 // ProcessDefinition is the immutable versioned blueprint for a process.
@@ -345,6 +347,7 @@ func validateStep(s *Step, stepIDs map[string]struct{}) error {
 			}
 		}
 	}
+	nonIdempotent := s.Idempotent != nil && !*s.Idempotent
 	for i, ec := range s.OnError {
 		for _, pat := range ec.Code {
 			if !validLikePattern(pat) {
@@ -354,6 +357,21 @@ func validateStep(s *Step, stepIDs map[string]struct{}) error {
 		if ec.Goto != "" && ec.Goto != GotoEnd {
 			if _, ok := stepIDs[ec.Goto]; !ok {
 				return fmt.Errorf("step %q on_error[%d]: goto %q is not a known step", s.ID, i, ec.Goto)
+			}
+		}
+		if nonIdempotent && ec.Retries > 0 {
+			// executed:false is an explicit user override — allow retries regardless of pattern.
+			if ec.Executed != nil && !*ec.Executed {
+				continue
+			}
+			// Catch-all rules (empty Code) would match any error including executed ones.
+			if len(ec.Code) == 0 {
+				return fmt.Errorf("step %q on_error[%d]: catch-all rule cannot have retries on a non-idempotent step; restrict to start.%% or add executed:false", s.ID, i)
+			}
+			for _, pat := range ec.Code {
+				if !patternOnlyMatchesStart(pat) {
+					return fmt.Errorf("step %q on_error[%d]: pattern %q can match errors where the call may have executed; restrict to start.%% patterns or add executed:false to assert the call did not execute", s.ID, i, pat)
+				}
 			}
 		}
 	}
@@ -377,6 +395,20 @@ func validateStep(s *Step, stepIDs map[string]struct{}) error {
 
 func validLikePattern(p string) bool {
 	return strings.TrimSpace(p) != ""
+}
+
+// patternOnlyMatchesStart reports whether a LIKE pattern can exclusively match
+// error codes in the start.* namespace. It does this by computing the constant
+// prefix (the characters before the first '%' or '_' wildcard) and checking
+// that it starts with "start.". Patterns without wildcards must literally start
+// with "start.".
+func patternOnlyMatchesStart(p string) bool {
+	for i := 0; i < len(p); i++ {
+		if p[i] == '%' || p[i] == '_' {
+			return strings.HasPrefix(p[:i], "start.")
+		}
+	}
+	return strings.HasPrefix(p, "start.")
 }
 
 func validAcceptedStatusPattern(p string) bool {
