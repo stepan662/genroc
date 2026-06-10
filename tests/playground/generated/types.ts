@@ -10,3 +10,14 @@ export interface RecursionInput {}
 export interface RecursionOutput {
   num: number;
 }
+
+export interface Recursion2Input {}
+
+export interface Recursion2Output {
+  first: {
+    num?: number;
+  };
+  second: {
+    num?: number;
+  };
+}

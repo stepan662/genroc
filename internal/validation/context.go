@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"fmt"
 	"strings"
 
 	"gent/internal/model"
@@ -140,25 +141,15 @@ func outputContextSets(def *model.ProcessDefinition) (required, optional []strin
 	return
 }
 
-// computeContextSets computes, for each step, which prior step outputs are
-// always available (required) and which are only sometimes available (optional).
-// It also returns mustErr and mayErr maps indicating whether the $error context
-// key is always / sometimes present at each step.
-func computeContextSets(steps []*model.Step) (required, optional map[string][]string, mustErr, mayErr map[string]bool) {
+// buildPreds constructs the predecessor graph for the step slice.
+// preds[i] lists all edges that route into step i; the process start is
+// represented as predEdge{idx: -1} on step 0.
+func buildPreds(steps []*model.Step) [][]predEdge {
 	n := len(steps)
-	required = make(map[string][]string, n)
-	optional = make(map[string][]string, n)
-	mustErr = make(map[string]bool, n)
-	mayErr = make(map[string]bool, n)
-	if n == 0 {
-		return
-	}
-
 	idx := make(map[string]int, n)
 	for i, s := range steps {
 		idx[s.ID] = i
 	}
-
 	preds := make([][]predEdge, n)
 	preds[0] = append(preds[0], predEdge{idx: -1})
 	for i, s := range steps {
@@ -173,11 +164,6 @@ func computeContextSets(steps []*model.Step) (required, optional map[string][]st
 				addedNext = true
 			}
 		}
-		// Backward-compat: steps with no switch (valid before the switch-required rule)
-		// fall through to the next step in graph analysis.
-		if len(s.Switch) == 0 && i+1 < n {
-			preds[i+1] = append(preds[i+1], predEdge{idx: i})
-		}
 		for _, ec := range s.OnError {
 			if ec.Next != "" && ec.Next != model.GotoEnd {
 				if j, ok := idx[ec.Next]; ok {
@@ -186,13 +172,72 @@ func computeContextSets(steps []*model.Step) (required, optional map[string][]st
 			}
 		}
 	}
+	return preds
+}
+
+// checkReachability returns an error if any step cannot be reached from the
+// first step via switch gotos or on_error routes.
+func checkReachability(steps []*model.Step) error {
+	if len(steps) == 0 {
+		return nil
+	}
+	preds := buildPreds(steps)
+	reachable := make([]bool, len(steps))
+	reachable[0] = true
+	for {
+		changed := false
+		for i, ps := range preds {
+			if reachable[i] {
+				continue
+			}
+			for _, p := range ps {
+				if p.idx >= 0 && reachable[p.idx] {
+					reachable[i] = true
+					changed = true
+					break
+				}
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	for i, s := range steps {
+		if !reachable[i] {
+			return fmt.Errorf("step %q is unreachable: no switch or error handler routes to it", s.ID)
+		}
+	}
+	return nil
+}
+
+// computeContextSets computes, for each step, which prior step outputs are
+// always available (required) and which are only sometimes available (optional).
+// It also returns mustErr and mayErr maps indicating whether the $error context
+// key is always / sometimes present at each step.
+func computeContextSets(steps []*model.Step) (required, optional map[string][]string, mustErr, mayErr map[string]bool) {
+	n := len(steps)
+	required = make(map[string][]string, n)
+	optional = make(map[string][]string, n)
+	mustErr = make(map[string]bool, n)
+	mayErr = make(map[string]bool, n)
+	if n == 0 {
+		return
+	}
+
+	preds := buildPreds(steps)
 
 	hasOutput := make([]bool, n)
 	for i, s := range steps {
 		hasOutput[i] = stepHasOutput(s)
 	}
 
-	allTrue := func() []bool { s := make([]bool, n); for i := range s { s[i] = true }; return s }
+	allTrue := func() []bool {
+		s := make([]bool, n)
+		for i := range s {
+			s[i] = true
+		}
+		return s
+	}
 	allFalse := func() []bool { return make([]bool, n) }
 	eq := func(a, b []bool) bool {
 		for i := range a {

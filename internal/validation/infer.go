@@ -11,6 +11,9 @@ import (
 )
 
 func buildInputs(steps []*model.Step, tasks map[string]TaskSchemas, processInput *schema.SchemaNode, defs map[string]*schema.SchemaNode) error {
+	if err := checkReachability(steps); err != nil {
+		return err
+	}
 	required, optional, mustErr, mayErr := computeContextSets(steps)
 	for _, s := range steps {
 		if s.Call != nil {
