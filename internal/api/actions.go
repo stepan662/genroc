@@ -84,18 +84,20 @@ var registry = func() []actionDef {
 						},
 						TimeoutMs: 5000, OnError: []model.ErrorCase{{Retries: 3}},
 						Switch: model.SwitchMap{
-							{Case: "self.charged == true", Next: "ship"},
-							{Case: "self.charged == false", Next: "refund"},
+							{Case: "self.charged == true", Goto: "$ship"},
+							{Goto: "$refund"},
 						},
 					},
 					{
 						ID:        "ship",
 						Call:      &model.Call{Type: model.CallTypeREST, Endpoint: "http://localhost:9002/ship"},
+						Switch:    model.SwitchMap{{Goto: model.GotoEnd}},
 						TimeoutMs: 3000, OnError: []model.ErrorCase{{Retries: 2}},
 					},
 					{
 						ID:        "refund",
 						Call:      &model.Call{Type: model.CallTypeREST, Endpoint: "http://localhost:9003/refund"},
+						Switch:    model.SwitchMap{{Goto: model.GotoEnd}},
 						TimeoutMs: 3000, OnError: []model.ErrorCase{{Retries: 1}},
 					},
 				},

@@ -171,10 +171,11 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) error
 		return e.notifyParent(inst)
 	}
 
-	if gotoID == "" {
+	if gotoID == model.GotoNext {
 		inst.StepQueue = inst.StepQueue[1:]
 	} else {
-		newQueue, err := e.queueFromStep(inst, gotoID)
+		// gotoID is a step reference like "$ship" — strip the sigil.
+		newQueue, err := e.queueFromStep(inst, gotoID[1:])
 		if err != nil {
 			return e.failInstance(inst, err.Error())
 		}
@@ -265,21 +266,21 @@ func (e *Engine) executeAction(ctx context.Context, inst *model.ProcessInstance,
 	return resp.Body, false, nil
 }
 
-// evalSwitch walks the step's switch cases in order and returns the Next target
+// evalSwitch walks the step's switch cases in order and returns the Goto target
 // of the first case whose Case expression evaluates to true. An empty Case is a
 // catch-all that always matches and must be the last entry when present. Returns ""
-// when the switch list is empty or no case matches (fall-through to next step).
+// when the switch list is empty (should not happen on validated definitions).
 func (e *Engine) evalSwitch(inst *model.ProcessInstance, step *model.Step, selfOutput any) (string, error) {
 	for _, c := range step.Switch {
 		if c.Case == "" {
-			return c.Next, nil
+			return c.Goto, nil
 		}
 		ok, err := evalBool(c.Case, inst.ContextData, selfOutput)
 		if err != nil {
 			return "", fmt.Errorf("case %q: %w", c.Case, err)
 		}
 		if ok {
-			return c.Next, nil
+			return c.Goto, nil
 		}
 	}
 	return "", nil

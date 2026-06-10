@@ -6,10 +6,10 @@ const validDef = {
 
   steps: [
     {
-      type: "task" as const,
       id: "step1",
       call: { type: "rest" as const, endpoint: "http://localhost:19990/action" },
       timeout_ms: 1000,
+      switch: [{ goto: "end" }],
     },
   ],
 };
@@ -36,9 +36,9 @@ test("PUT /definitions — rejects task step without endpoint", async () => {
     
       steps: [
         {
-          type: "task" as const,
           id: "s1",
           call: { type: "rest" as const, endpoint: "http://localhost:19990/action" },
+          switch: [{ goto: "end" }],
         },
       ],
     },
@@ -53,7 +53,7 @@ test("PUT /definitions — rejects unknown step type", async () => {
     body: {
       name: "bad",
     
-      steps: [{ type: "parallel", id: "p1" }],
+      steps: [{ type: "parallel", id: "p1" } as any],
     },
   });
 
@@ -71,7 +71,7 @@ test("PUT /definitions — accepts valid definition", async () => {
         properties: { foo: { type: "string" } },
         required: ["foo"],
       },
-      steps: [{ type: "task", id: "t1" }],
+      steps: [{ type: "task", id: "t1" } as any],
     },
   });
 

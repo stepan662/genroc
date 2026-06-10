@@ -20,6 +20,7 @@ test("on_error — HTTP failure routes to recovery step", async () => {
           },
           on_error: [{ code: ["http.%"], next: "$recovery" }],
           timeout_ms: 2000,
+          switch: [{ goto: "next" }],
         },
         {
           id: "recovery",
@@ -33,6 +34,7 @@ test("on_error — HTTP failure routes to recovery step", async () => {
             },
           },
           timeout_ms: 2000,
+          switch: [{ goto: "end" }],
         },
       ],
     },
@@ -73,6 +75,7 @@ test("on_error — error context available in recovery step params", async () =>
           },
           on_error: [{ code: ["http.%"], next: "$recovery" }],
           timeout_ms: 2000,
+          switch: [{ goto: "next" }],
         },
         {
           id: "recovery",
@@ -87,6 +90,7 @@ test("on_error — error context available in recovery step params", async () =>
             },
           },
           timeout_ms: 2000,
+          switch: [{ goto: "end" }],
         },
       ],
     },
@@ -125,6 +129,7 @@ test("on_error — unmatched code fails instance", async () => {
           },
           on_error: [{ code: ["network.%"], next: "$unreachable" }],
           timeout_ms: 2000,
+          switch: [{ goto: "next" }],
         },
         {
           id: "unreachable",
@@ -133,6 +138,7 @@ test("on_error — unmatched code fails instance", async () => {
             endpoint: `http://localhost:${failMock.port}/action`,
           },
           timeout_ms: 500,
+          switch: [{ goto: "end" }],
         },
       ],
     },

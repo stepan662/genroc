@@ -10,7 +10,7 @@ test("child_process — step without child_output_schema after a step with one d
   await client.PUT("/definitions", {
     body: {
       name: leafWithOutput,
-      steps: [{ id: "done", switch: [{ next: "end" }] }],
+      steps: [{ id: "done", switch: [{ goto: "end" }] }],
       output: { value: "{{1}}" },
     },
   });
@@ -18,7 +18,7 @@ test("child_process — step without child_output_schema after a step with one d
   await client.PUT("/definitions", {
     body: {
       name: leafNoOutput,
-      steps: [{ id: "done", switch: [{ next: "end" }] }],
+      steps: [{ id: "done", switch: [{ goto: "end" }] }],
     },
   });
 
@@ -38,6 +38,7 @@ test("child_process — step without child_output_schema after a step with one d
               required: ["value"],
             },
           },
+          switch: [{ goto: "next" }],
         },
         {
           id: "step_b",
@@ -45,6 +46,7 @@ test("child_process — step without child_output_schema after a step with one d
             type: "child_process" as const,
             processes: [{ name: leafNoOutput }],
           },
+          switch: [{ goto: "end" }],
         },
       ],
     },
@@ -70,7 +72,7 @@ test("child_process — output validation failure error includes process name", 
   await client.PUT("/definitions", {
     body: {
       name: childName,
-      steps: [{ id: "done", switch: [{ next: "end" }] }],
+      steps: [{ id: "done", switch: [{ goto: "end" }] }],
     },
   });
 
@@ -90,6 +92,7 @@ test("child_process — output validation failure error includes process name", 
               required: ["required_field"],
             },
           },
+          switch: [{ goto: "end" }],
         },
       ],
     },
@@ -125,6 +128,7 @@ test("child_process — on_error routes to recovery when child fails", async () 
           id: "action",
           call: { type: "rest" as const, endpoint: `http://localhost:${failMock.port}/action` },
           timeout_ms: 2000,
+          switch: [{ goto: "end" }],
         },
       ],
     },
@@ -138,6 +142,7 @@ test("child_process — on_error routes to recovery when child fails", async () 
           id: "spawn",
           call: { type: "child_process" as const, processes: [{ name: childName }] },
           on_error: [{ code: ["child.%"], next: "$recovery" }],
+          switch: [{ goto: "next" }],
         },
         {
           id: "recovery",
@@ -151,6 +156,7 @@ test("child_process — on_error routes to recovery when child fails", async () 
             },
           },
           timeout_ms: 2000,
+          switch: [{ goto: "end" }],
         },
       ],
     },
@@ -181,6 +187,7 @@ test("child_process — no on_error on child_process step cascades to parent fai
           id: "action",
           call: { type: "rest" as const, endpoint: `http://localhost:${failMock.port}/action` },
           timeout_ms: 2000,
+          switch: [{ goto: "end" }],
         },
       ],
     },
@@ -193,6 +200,7 @@ test("child_process — no on_error on child_process step cascades to parent fai
         {
           id: "spawn",
           call: { type: "child_process" as const, processes: [{ name: childName }] },
+          switch: [{ goto: "end" }],
         },
       ],
     },
@@ -221,6 +229,7 @@ test("child_process — on_error bubbles to grandparent when parent has no handl
           id: "action",
           call: { type: "rest" as const, endpoint: `http://localhost:${failMock.port}/action` },
           timeout_ms: 2000,
+          switch: [{ goto: "end" }],
         },
       ],
     },
@@ -233,6 +242,7 @@ test("child_process — on_error bubbles to grandparent when parent has no handl
         {
           id: "spawn",
           call: { type: "child_process" as const, processes: [{ name: childName }] },
+          switch: [{ goto: "end" }],
         },
       ],
     },
@@ -246,6 +256,7 @@ test("child_process — on_error bubbles to grandparent when parent has no handl
           id: "spawn_middle",
           call: { type: "child_process" as const, processes: [{ name: middleName }] },
           on_error: [{ code: ["child.%"], next: "$recovery" }],
+          switch: [{ goto: "next" }],
         },
         {
           id: "recovery",
@@ -259,6 +270,7 @@ test("child_process — on_error bubbles to grandparent when parent has no handl
             },
           },
           timeout_ms: 2000,
+          switch: [{ goto: "end" }],
         },
       ],
     },
@@ -290,6 +302,7 @@ test("child_process — error context has correct code and step when child fails
           id: "action",
           call: { type: "rest" as const, endpoint: `http://localhost:${failMock.port}/action` },
           timeout_ms: 2000,
+          switch: [{ goto: "end" }],
         },
       ],
     },
@@ -303,6 +316,7 @@ test("child_process — error context has correct code and step when child fails
           id: "spawn",
           call: { type: "child_process" as const, processes: [{ name: childName }] },
           on_error: [{ code: ["child.%"], next: "$recovery" }],
+          switch: [{ goto: "next" }],
         },
         {
           id: "recovery",
@@ -316,6 +330,7 @@ test("child_process — error context has correct code and step when child fails
             },
           },
           timeout_ms: 2000,
+          switch: [{ goto: "end" }],
         },
       ],
     },
@@ -348,8 +363,8 @@ test("child_process — recursive spawn completes with correct aggregated output
         {
           id: "recursion_condition",
           switch: [
-            { case: "input.ttl > 0", next: "$recursion" },
-            { next: "end" },
+            { case: "input.ttl > 0", goto: "$recursion" },
+            { goto: "end" },
           ],
         },
         {
@@ -366,6 +381,7 @@ test("child_process — recursive spawn completes with correct aggregated output
               required: ["processes"],
             },
           },
+          switch: [{ goto: "end" }],
         },
       ],
       output: {

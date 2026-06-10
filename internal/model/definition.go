@@ -13,10 +13,13 @@ import (
 	"github.com/xeipuuv/gojsonschema"
 )
 
-// GotoEnd is the internal sentinel for process termination. It is stored in
-// SwitchCase.Next and ErrorCase.Next to signal that the instance should complete.
-// On the wire it appears as "end" (no prefix); step references use the "$" prefix.
-const GotoEnd = "$end"
+// GotoEnd signals process termination. Stored verbatim in SwitchCase.Goto and
+// compared against the goto value at runtime; on the wire it is literally "end".
+const GotoEnd = "end"
+
+// GotoNext signals advance to the next step in the sequence. Valid only on
+// non-terminal steps; using it on the last step is a validation error.
+const GotoNext = "next"
 
 // CallType identifies how the engine invokes a step's action.
 type CallType string
@@ -120,11 +123,12 @@ func (Call) JSONSchemaBytes() ([]byte, error) {
 
 // SwitchCase is a single entry in a Step's switch list: a boolean expression
 // evaluated against the process context (and this step's own output as "self"),
-// and the ID of the step to jump to when the expression is true.
+// and the routing target when the expression is true.
 // An empty Case means "catch-all" — it matches unconditionally and must be last.
+// Goto stores the raw wire value: "end", "next", or "$step-id".
 type SwitchCase struct {
 	Case string
-	Next string
+	Goto string
 }
 
 // SwitchMap is an ordered list of SwitchCase entries. It marshals as a plain
@@ -139,43 +143,49 @@ type SwitchMap []SwitchCase
 func (s SwitchMap) MarshalJSON() ([]byte, error) {
 	type wireCase struct {
 		Case string `json:"case,omitempty"`
-		Next string `json:"next"`
+		Goto string `json:"goto"`
 	}
 	items := make([]wireCase, len(s))
 	for i, c := range s {
-		nextWire := c.Next
-		if nextWire == GotoEnd {
-			nextWire = "end"
-		} else {
-			nextWire = "$" + nextWire
-		}
-		items[i] = wireCase{Case: c.Case, Next: nextWire}
+		items[i] = wireCase{Case: c.Case, Goto: c.Goto}
 	}
 	return json.Marshal(items)
 }
 
 func (s *SwitchMap) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*s = nil
+		return nil
+	}
+	// Scalar shorthand: "next", "end", or "$step-id" — desugars to a single catch-all.
+	if len(data) > 0 && data[0] == '"' {
+		var v string
+		if err := json.Unmarshal(data, &v); err != nil {
+			return fmt.Errorf("switch: %w", err)
+		}
+		if v != GotoEnd && v != GotoNext && !strings.HasPrefix(v, "$") {
+			return fmt.Errorf("switch: %q must be \"next\", \"end\", or a step reference like \"$step-id\"", v)
+		}
+		*s = SwitchMap{{Goto: v}}
+		return nil
+	}
+	// Array form.
 	var items []struct {
 		Case string `json:"case"`
-		Next string `json:"next"`
+		Goto string `json:"goto"`
 	}
 	if err := json.Unmarshal(data, &items); err != nil {
 		return fmt.Errorf("switch: %w", err)
 	}
 	*s = (*s)[:0]
 	for _, item := range items {
-		if item.Next == "" {
-			return fmt.Errorf("switch: next is required")
+		if item.Goto == "" {
+			return fmt.Errorf("switch: goto is required")
 		}
-		next := item.Next
-		if next == "end" {
-			next = GotoEnd
-		} else if strings.HasPrefix(next, "$") {
-			next = next[1:]
-		} else {
-			return fmt.Errorf("switch: next %q must be \"end\" or a step reference like \"$step-id\"", next)
+		if item.Goto != GotoEnd && item.Goto != GotoNext && !strings.HasPrefix(item.Goto, "$") {
+			return fmt.Errorf("switch: goto %q must be \"end\", \"next\", or a step reference like \"$step-id\"", item.Goto)
 		}
-		*s = append(*s, SwitchCase{Case: item.Case, Next: next})
+		*s = append(*s, SwitchCase{Case: item.Case, Goto: item.Goto})
 	}
 	return nil
 }
@@ -183,7 +193,28 @@ func (s *SwitchMap) UnmarshalJSON(data []byte) error {
 // JSONSchemaBytes returns the JSON Schema for SwitchMap so that OpenAPI
 // reflection produces the correct schema for its wire format.
 func (SwitchMap) JSONSchemaBytes() ([]byte, error) {
-	return []byte(`{"type":"array","description":"Ordered routing rules. Cases are evaluated in order; first match wins. Omit 'case' on the last entry for a catch-all. Use \"end\" as 'next' to terminate the instance.","items":{"type":"object","properties":{"case":{"type":"string","description":"Boolean expression evaluated against the context (and 'self' for this step's output). Omit for a catch-all that matches unconditionally; must be the last item."},"next":{"type":"string","description":"Step to jump to, prefixed with '$' (e.g. \"$my-step\"), or \"end\" to complete the instance."}},"required":["next"],"additionalProperties":false}}`), nil
+	return []byte(`{
+		"oneOf": [
+			{
+				"type": "string",
+				"description": "Shorthand for a single unconditional route. \"next\" advances to the next step (not valid on the last step), \"end\" terminates the instance, \"$step-id\" jumps to a named step."
+			},
+			{
+				"type": "array",
+				"description": "Ordered routing rules evaluated after the call. Cases are evaluated in order; first match wins. The last entry must be a catch-all (omit 'case').",
+				"items": {
+					"type": "object",
+					"properties": {
+						"case": {"type": "string", "description": "Boolean expression. Omit for a catch-all; must be last."},
+						"goto": {"type": "string", "description": "\"end\" to terminate, \"next\" to advance, or \"$step-id\" to jump to a step."}
+					},
+					"required": ["goto"],
+					"additionalProperties": false
+				},
+				"minItems": 1
+			}
+		]
+	}`), nil
 }
 
 // ErrorCase is a single error-routing rule evaluated when a step's call fails.
@@ -241,28 +272,25 @@ func (e *ErrorCase) UnmarshalJSON(data []byte) error {
 }
 
 // Step is a single unit of work in a process definition.
-// Each step may have a call, a switch, or both — but at least one is required.
+// Every step must have a switch (and optionally a call).
 //
-//   - Call-only (Call set, Switch empty): executes the call and advances to the
-//     next step in the list. If it is the last step, the instance completes.
-//   - Switch-only (Call nil, Switch non-empty): evaluates the switch to determine
-//     the next step without performing any external call.
-//   - Both: executes the call first, then evaluates the switch.
+//   - Call-only (Call set, Switch present): executes the call, then routes via switch.
+//   - Switch-only (Call nil, Switch present): pure routing step with no external call.
+//   - Both: executes the call first, then evaluates the switch (with this step's output as "self").
 //
-// When Switch is present it must contain a "default" case as the last entry.
-// Switch cases are evaluated in order; the first matching expression wins.
-// The "default" case always matches and must be present to make control flow explicit.
-// A Next value of GotoEnd ("end" on the wire) terminates the instance rather than jumping to a step.
-// Switch expressions have access to the full context and to this step's own action
-// output under the name "self".
+// Switch is always required. Use the scalar shorthand ("next", "end", "$step-id") for
+// simple linear flow, or an array of cases for conditional branching.
+// The last case must always be a catch-all (no "case" expression).
+// "end" terminates the instance; "next" advances to the next step in the list
+// (invalid on the last step — use "end" instead); "$step-id" jumps to a named step.
 type Step struct {
-	ID        string            `json:"id"                 validate:"required" description:"Unique step identifier within this process. Used as a next target in switch cases."`
+	ID        string            `json:"id"                 validate:"required" description:"Unique step identifier. 'end' and 'next' are reserved and cannot be used."`
 	Call      *Call             `json:"call,omitempty"                        description:"Describes the action to perform. Omit for switch-only (routing) steps."`
 	TimeoutMs int               `json:"timeout_ms,omitempty"                  description:"Maximum execution time in milliseconds. 0 means no timeout."`
 	OnlyOnce  *bool             `json:"only_once,omitempty"                   description:"When true, the engine guarantees at-most-once execution: retries are only allowed for pre.* errors (remote never reached) or on_error rules with not_reached:true. Defaults to false (retryable)."`
 	OnError   []ErrorCase       `json:"on_error,omitempty"                    description:"Ordered error-routing rules evaluated when the call fails. First match wins."`
 	Params    map[string]string `json:"params,omitempty"                      description:"Expression map evaluated against the current context to build the call's input. Keys become input field names."`
-	Switch    SwitchMap         `json:"switch,omitempty"                      description:"Ordered routing rules evaluated after the call. Omit 'case' on the last entry for a catch-all. Required if the step has no call or needs non-linear flow."`
+	Switch    SwitchMap         `json:"switch"                                description:"Required. Routing declaration: scalar shorthand (\"next\", \"end\", \"$step-id\") or an ordered list of conditional cases. The last case must be a catch-all (omit 'case')."`
 }
 
 // ProcessDefinition is the immutable versioned blueprint for a process.
@@ -320,22 +348,22 @@ func (d *ProcessDefinition) Validate() error {
 	for _, s := range d.Steps {
 		stepIDs[s.ID] = struct{}{}
 	}
-	for _, s := range d.Steps {
-		if err := validateStep(s, stepIDs); err != nil {
+	lastIdx := len(d.Steps) - 1
+	for i, s := range d.Steps {
+		if err := validateStep(s, stepIDs, i, lastIdx); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateStep(s *Step, stepIDs map[string]struct{}) error {
-	hasAction := s.Call != nil
-	hasSwitch := len(s.Switch) > 0
-
-	if !hasAction && !hasSwitch {
-		return fmt.Errorf("step %q must have a call or a switch", s.ID)
+func validateStep(s *Step, stepIDs map[string]struct{}, stepIdx, lastIdx int) error {
+	// Reserved step IDs.
+	if s.ID == GotoEnd || s.ID == GotoNext {
+		return fmt.Errorf("step ID %q is reserved", s.ID)
 	}
-	if hasAction {
+
+	if s.Call != nil {
 		switch s.Call.Type {
 		case CallTypeREST:
 			if s.Call.Endpoint == "" {
@@ -358,21 +386,34 @@ func validateStep(s *Step, stepIDs map[string]struct{}) error {
 			return fmt.Errorf("step %q: call.type must be one of: rest, script, child_process", s.ID)
 		}
 	}
-	if hasSwitch {
-		for i, c := range s.Switch {
-			isLast := i == len(s.Switch)-1
-			if c.Case == "" && !isLast {
-				return fmt.Errorf("step %q switch: catch-all at index %d must be the last case (unreachable cases after it)", s.ID, i)
-			}
-			if c.Next != GotoEnd {
-				if _, ok := stepIDs[c.Next]; !ok {
-					return fmt.Errorf("step %q switch: next %q is not a known step", s.ID, c.Next)
-				}
-			}
+
+	if len(s.Switch) == 0 {
+		return fmt.Errorf("step %q: switch is required", s.ID)
+	}
+
+	for i, c := range s.Switch {
+		isLast := i == len(s.Switch)-1
+		if c.Case == "" && !isLast {
+			return fmt.Errorf("step %q switch: catch-all at index %d must be the last case (unreachable cases after it)", s.ID, i)
 		}
-		if s.Switch[len(s.Switch)-1].Case != "" {
-			return fmt.Errorf("step %q switch: last case must be a catch-all (omit 'case' to match unconditionally)", s.ID)
+		switch {
+		case c.Goto == GotoEnd:
+			// always valid
+		case c.Goto == GotoNext:
+			if stepIdx == lastIdx {
+				return fmt.Errorf("step %q switch: 'next' is not allowed on the last step; use 'end' to terminate", s.ID)
+			}
+		case strings.HasPrefix(c.Goto, "$"):
+			stepID := c.Goto[1:]
+			if _, ok := stepIDs[stepID]; !ok {
+				return fmt.Errorf("step %q switch: goto %q is not a known step", s.ID, c.Goto)
+			}
+		default:
+			return fmt.Errorf("step %q switch: goto %q must be \"end\", \"next\", or a step reference like \"$step-id\"", s.ID, c.Goto)
 		}
+	}
+	if s.Switch[len(s.Switch)-1].Case != "" {
+		return fmt.Errorf("step %q switch: last case must be a catch-all (omit 'case' to match unconditionally)", s.ID)
 	}
 	onlyOnce := s.OnlyOnce != nil && *s.OnlyOnce
 	for i, ec := range s.OnError {

@@ -42,7 +42,7 @@ func TestGenerate_ContextSets_ExclusiveBranch_SkippedStepOutputNullable(t *testi
 		"steps": [
 			{
 				"id": "gate",
-				"switch": [{"case": "input.take_fast", "next": "$fast"}, {"next": "$slow"}]
+				"switch": [{"case": "input.take_fast", "goto": "$fast"}, {"goto": "$slow"}]
 			},
 			{
 				"id": "fast",
@@ -82,7 +82,7 @@ func TestGenerate_ContextSets_PreBranchStepRequiredAtAllMergePoints(t *testing.T
 			},
 			{
 				"id": "gate",
-				"switch": [{"case": "outputs.pre.id == 1", "next": "$path_a"}, {"next": "$path_b"}]
+				"switch": [{"case": "outputs.pre.id == 1", "goto": "$path_a"}, {"goto": "$path_b"}]
 			},
 			{ "id": "path_a", "call": {"type": "rest", "endpoint": "http://x"} },
 			{ "id": "path_b", "call": {"type": "rest", "endpoint": "http://x"} },
@@ -112,7 +112,7 @@ func TestGenerate_ContextSets_DefaultEndSwitch_SuccessorRequiredNotOptional(t *t
 					"properties": { "ok": { "type": "boolean" } },
 					"required": ["ok"]
 				}},
-				"switch": [{"case": "self.ok", "next": "$work"}, {"next": "end"}]
+				"switch": [{"case": "self.ok", "goto": "$work"}, {"goto": "end"}]
 			},
 			{
 				"id": "work",
@@ -170,7 +170,7 @@ func TestGenerate_OnError_ExclusivePath_ErrorRequiredOutputAbsent(t *testing.T) 
 					"properties": {"result": {"type": "string"}},
 					"required": ["result"]
 				}},
-				"switch": [{"next": "end"}],
+				"switch": [{"goto": "end"}],
 				"on_error": [{"next": "$handler"}]
 			},
 			{
@@ -186,6 +186,69 @@ func TestGenerate_OnError_ExclusivePath_ErrorRequiredOutputAbsent(t *testing.T) 
 	}
 	// Every path to handler is an error path, so error.code is always a string.
 	assertJSON(t, handlerInput.Properties["code"], `{"type": "string"}`)
+}
+
+func TestGenerate_Switch_ScalarNext_CreatesSequentialEdge(t *testing.T) {
+	// "switch": "next" (scalar) must behave identically to [{"goto": "next"}].
+	// a always precedes b, so a.ok is required (non-nullable) at b.
+	out := runGenerate(t, `{
+		"name": "p",
+		"steps": [
+			{
+				"id": "a",
+				"call": {"type": "rest", "endpoint": "http://x", "output_schema": {
+					"type": "object",
+					"properties": {"ok": {"type": "boolean"}},
+					"required": ["ok"]
+				}},
+				"switch": "next"
+			},
+			{
+				"id": "b",
+				"call": {"type": "rest", "endpoint": "http://x"},
+				"params": {"flag": "{{outputs.a.ok}}"},
+				"switch": "end"
+			}
+		]
+	}`)
+	bInput := out.Defs["b_input"]
+	if bInput == nil || bInput.Properties == nil {
+		t.Fatal("b input should have properties")
+	}
+	assertJSON(t, bInput.Properties["flag"], `{"type": "boolean"}`)
+}
+
+func TestGenerate_Switch_ScalarStepRef_CreatesJumpEdge(t *testing.T) {
+	// "switch": "$fast" (scalar) must behave identically to [{"goto": "$fast"}].
+	// gate unconditionally jumps to fast, so fast always runs and its output
+	// is required (non-nullable) at merge — in contrast to a conditional branch
+	// where fast could be skipped (making it nullable).
+	out := runGenerate(t, `{
+		"name": "p",
+		"steps": [
+			{"id": "gate", "switch": "$fast"},
+			{
+				"id": "fast",
+				"call": {"type": "rest", "endpoint": "http://x", "output_schema": {
+					"type": "object",
+					"properties": {"speed": {"type": "number"}},
+					"required": ["speed"]
+				}},
+				"switch": "next"
+			},
+			{
+				"id": "merge",
+				"call": {"type": "rest", "endpoint": "http://x"},
+				"params": {"s": "{{outputs.fast.speed}}"},
+				"switch": "end"
+			}
+		]
+	}`)
+	mergeInput := out.Defs["merge_input"]
+	if mergeInput == nil || mergeInput.Properties == nil {
+		t.Fatal("merge input should have properties")
+	}
+	assertJSON(t, mergeInput.Properties["s"], `{"type": "number"}`)
 }
 
 func TestGenerate_OnError_EndTerminal_RecognisedAsTerminal(t *testing.T) {

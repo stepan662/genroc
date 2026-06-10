@@ -65,6 +65,7 @@ test("crash recovery — new worker re-executes an unconfirmed step after the pr
             call: { type: "rest" as const, endpoint: `http://localhost:${mock.port}/action` },
             // Long enough that the step never times out before the crash.
             timeout_ms: 120_000,
+            switch: [{ goto: "end" }],
           },
         ],
       },

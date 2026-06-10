@@ -17,18 +17,18 @@ function uid(prefix: string) {
 function switchDef(name: string) {
   return {
     name,
-    steps: [{ id: "s1", switch: [{ next: "end" }] }],
+    steps: [{ id: "s1", switch: [{ goto: "end" }] }],
   };
 }
 
 function restDef(name: string, endpoint = "http://localhost/x") {
-  return { name, steps: [{ id: "s1", call: { type: "rest", endpoint } }] };
+  return { name, steps: [{ id: "s1", call: { type: "rest", endpoint }, switch: [{ goto: "end" }] }] };
 }
 
 function childDef(name: string, childName: string) {
   return {
     name,
-    steps: [{ id: "spawn", call: { type: "child_process", processes: [{ name: childName }] } }],
+    steps: [{ id: "spawn", call: { type: "child_process", processes: [{ name: childName }] }, switch: [{ goto: "end" }] }],
   };
 }
 
@@ -91,7 +91,7 @@ test("apply --auto-update-parents cascades to parent on same channel", () => {
   runCli(bin, ["apply", "-f", writeDefs([switchDef(childName), childDef(parentName, childName)]), "--channel", "stable"]);
 
   // Change child content and apply with --auto-update-parents.
-  const child2 = { ...switchDef(childName), steps: [{ id: "s2", switch: [{ next: "end" }] }] };
+  const child2 = { ...switchDef(childName), steps: [{ id: "s2", switch: [{ goto: "end" }] }] };
   const r = runCli(bin, ["apply", "-f", writeDefs([child2]), "--channel", "stable", "--auto-update-parents"]);
 
   expect(r.ok).toBe(true);
@@ -245,7 +245,7 @@ test("status -- reports stale ref after child is advanced without updating paren
   runCli(bin, ["apply", "-f", writeDefs([switchDef(childName), childDef(parentName, childName)]), "--channel", track]);
 
   // Advance child only.
-  const child2 = { ...switchDef(childName), steps: [{ id: "s2", switch: [{ next: "end" }] }] };
+  const child2 = { ...switchDef(childName), steps: [{ id: "s2", switch: [{ goto: "end" }] }] };
   runCli(bin, ["apply", "-f", writeDefs([child2]), "--channel", track]);
 
   const r = runCli(bin, ["status", "--channel", track]);

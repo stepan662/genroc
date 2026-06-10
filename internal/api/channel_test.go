@@ -20,7 +20,7 @@ func restDef(name string) map[string]any {
 	return map[string]any{
 		"name": name,
 		"steps": []any{
-			map[string]any{"id": "s1", "call": map[string]any{"type": "rest", "endpoint": "http://localhost/x"}},
+			map[string]any{"id": "s1", "call": map[string]any{"type": "rest", "endpoint": "http://localhost/x"}, "switch": []any{map[string]any{"goto": "end"}}},
 		},
 	}
 }
@@ -30,7 +30,7 @@ func switchDef(name string) map[string]any {
 		"name": name,
 		"steps": []any{
 			map[string]any{"id": "s1", "switch": []any{
-				map[string]any{"next": "end"},
+				map[string]any{"goto": "end"},
 			}},
 		},
 	}
@@ -47,7 +47,7 @@ func childProcessDef(name string, childName string, childVersion int) map[string
 			map[string]any{"id": "spawn", "call": map[string]any{
 				"type":      "child_process",
 				"processes": []any{child},
-			}},
+			}, "switch": []any{map[string]any{"goto": "end"}}},
 		},
 	}
 }
@@ -177,7 +177,7 @@ func TestApplyBatch_ContentDedup_SelfRef(t *testing.T) {
 			map[string]any{"id": "recurse", "call": map[string]any{
 				"type":      "child_process",
 				"processes": []any{map[string]any{"name": "recursive"}},
-			}},
+			}, "switch": []any{map[string]any{"goto": "end"}}},
 		},
 	}
 
@@ -212,7 +212,7 @@ func TestApplyBatch_VersionedSelfRefCreatesDep(t *testing.T) {
 			map[string]any{"id": "recurse", "call": map[string]any{
 				"type":      "child_process",
 				"processes": []any{map[string]any{"name": "recursive"}},
-			}},
+			}, "switch": []any{map[string]any{"goto": "end"}}},
 		},
 	}
 	batchApply(h, "latest", false, v1)
@@ -227,7 +227,7 @@ func TestApplyBatch_VersionedSelfRefCreatesDep(t *testing.T) {
 					map[string]any{"name": "recursive", "version": 1},
 					map[string]any{"name": "recursive"},
 				},
-			}},
+			}, "switch": []any{map[string]any{"goto": "end"}}},
 		},
 	}
 	r := batchApply(h, "latest", false, v2)
@@ -261,7 +261,7 @@ func TestApplyBatch_ContentDedup_ReuseOlderVersion(t *testing.T) {
 	// Step 2: update child → child@v2, cascade → parent@v2 (deps: child@v2).
 	child2 := switchDef("child")
 	child2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
-		map[string]any{"next": "end"},
+		map[string]any{"goto": "end"},
 	}}}
 	batchApply(h, "latest", true, child2)
 
@@ -298,7 +298,7 @@ func TestApplyBatch_ContentDedup_ChildVersionPerChannel(t *testing.T) {
 
 	child2 := switchDef("child")
 	child2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
-		map[string]any{"next": "end"},
+		map[string]any{"goto": "end"},
 	}}}
 
 	// ch-a: child@v1, parent@v1 (deps: child@v1).
@@ -355,7 +355,7 @@ func TestApplyBatch_NewVersionOnChange(t *testing.T) {
 
 	changed := restDef("p")
 	changed["steps"] = []any{
-		map[string]any{"id": "s1", "call": map[string]any{"type": "rest", "endpoint": "http://localhost/changed"}},
+		map[string]any{"id": "s1", "call": map[string]any{"type": "rest", "endpoint": "http://localhost/changed"}, "switch": []any{map[string]any{"goto": "end"}}},
 	}
 	r := batchApply(h, "latest", false, changed)
 	if !r.OK {
@@ -441,7 +441,7 @@ func TestApplyBatch_AutoUpdateParents_CascadeOnUnchangedChild(t *testing.T) {
 
 	child2 := switchDef("child")
 	child2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
-		map[string]any{"next": "end"},
+		map[string]any{"goto": "end"},
 	}}}
 
 	// child@v1 + parent@v1 on "latest".
@@ -489,7 +489,7 @@ func TestApplyBatch_AutoUpdateParents_Basic(t *testing.T) {
 	// Apply child v2 with auto-update-parents.
 	child2 := switchDef("child")
 	child2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
-		map[string]any{"next": "end"},
+		map[string]any{"goto": "end"},
 	}}}
 	r := batchApply(h, "stable", true, child2)
 	if !r.OK {
@@ -526,7 +526,7 @@ func TestApplyBatch_AutoUpdateParents_CascadeDedup(t *testing.T) {
 	// Update child on "latest" with auto-update — creates child@v2, parent@v2.
 	child2 := switchDef("child")
 	child2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
-		map[string]any{"next": "end"},
+		map[string]any{"goto": "end"},
 	}}}
 	batchApply(h, "latest", true, child2)
 	// Now: child@v2, parent@v2 on "latest".
@@ -564,7 +564,7 @@ func TestApplyBatch_AutoUpdateParents_Cascade(t *testing.T) {
 	// Update leaf: grandparent should also cascade.
 	leaf2 := switchDef("leaf")
 	leaf2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
-		map[string]any{"next": "end"},
+		map[string]any{"goto": "end"},
 	}}}
 	r := batchApply(h, "latest", true, leaf2)
 	if !r.OK {
@@ -593,7 +593,7 @@ func TestApplyBatch_AutoUpdateParents_OtherChannelUntouched(t *testing.T) {
 	// Update child on "latest" only.
 	child2 := switchDef("child")
 	child2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
-		map[string]any{"next": "end"},
+		map[string]any{"goto": "end"},
 	}}}
 	batchApply(h, "latest", true, child2)
 
@@ -739,7 +739,7 @@ func TestChannelStatus_StaleRef(t *testing.T) {
 	// Advance child to v2 on stable WITHOUT updating parent.
 	child2 := switchDef("child")
 	child2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
-		map[string]any{"next": "end"},
+		map[string]any{"goto": "end"},
 	}}}
 	batchApply(h, "stable", false, child2)
 
@@ -778,7 +778,7 @@ func TestStartInstance_Channel(t *testing.T) {
 	batchApply(h, "stable", false, restDef("p"))
 	batchApply(h, "latest", false, func() map[string]any {
 		d := restDef("p")
-		d["steps"] = []any{map[string]any{"id": "s1", "call": map[string]any{"type": "rest", "endpoint": "http://localhost/v2"}}}
+		d["steps"] = []any{map[string]any{"id": "s1", "call": map[string]any{"type": "rest", "endpoint": "http://localhost/v2"}, "switch": []any{map[string]any{"goto": "end"}}}}
 		return d
 	}())
 
@@ -804,7 +804,7 @@ func TestStartInstance_ExplicitVersionTakesPriority(t *testing.T) {
 	batchApply(h, "stable", false, restDef("p"))
 	batchApply(h, "latest", false, func() map[string]any {
 		d := restDef("p")
-		d["steps"] = []any{map[string]any{"id": "s1", "call": map[string]any{"type": "rest", "endpoint": "http://localhost/v2"}}}
+		d["steps"] = []any{map[string]any{"id": "s1", "call": map[string]any{"type": "rest", "endpoint": "http://localhost/v2"}, "switch": []any{map[string]any{"goto": "end"}}}}
 		return d
 	}())
 

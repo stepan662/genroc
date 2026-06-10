@@ -171,8 +171,8 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 }
 
 func TestProcessDefinition_Validate(t *testing.T) {
-	restStep := func(id, endpoint string) *Step {
-		return &Step{ID: id, Call: &Call{Type: CallTypeREST, Endpoint: endpoint}}
+	restStepEnd := func(id, endpoint string) *Step {
+		return &Step{ID: id, Call: &Call{Type: CallTypeREST, Endpoint: endpoint}, Switch: SwitchMap{{Goto: GotoEnd}}}
 	}
 
 	tests := []struct {
@@ -182,13 +182,13 @@ func TestProcessDefinition_Validate(t *testing.T) {
 	}{
 		{
 			name:    "valid rest call step",
-			def:     ProcessDefinition{Name: "p", Steps: []*Step{restStep("step1", "http://localhost/action")}},
+			def:     ProcessDefinition{Name: "p", Steps: []*Step{restStepEnd("step1", "http://localhost/action")}},
 			wantErr: "",
 		},
 		{
 			name: "valid script call step",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
-				{ID: "run", Call: &Call{Type: CallTypeScript, Exec: "python3 foo.py"}},
+				{ID: "run", Call: &Call{Type: CallTypeScript, Exec: "python3 foo.py"}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
 			wantErr: "",
 		},
@@ -196,10 +196,10 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "valid switch-only step",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{ID: "router", Switch: SwitchMap{
-					{Case: "input.ok == true", Next: "act"},
-					{Next: GotoEnd},
+					{Case: "input.ok == true", Goto: "$act"},
+					{Goto: GotoEnd},
 				}},
-				restStep("act", "http://x"),
+				restStepEnd("act", "http://x"),
 			}},
 			wantErr: "",
 		},
@@ -209,17 +209,17 @@ func TestProcessDefinition_Validate(t *testing.T) {
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
-						{Case: "self.ok == true", Next: "ship"},
-						{Next: GotoEnd},
+						{Case: "self.ok == true", Goto: "$ship"},
+						{Goto: GotoEnd},
 					},
 				},
-				restStep("ship", "http://x"),
+				restStepEnd("ship", "http://x"),
 			}},
 			wantErr: "",
 		},
 		{
 			name:    "missing name",
-			def:     ProcessDefinition{Steps: []*Step{restStep("step1", "http://x")}},
+			def:     ProcessDefinition{Steps: []*Step{restStepEnd("step1", "http://x")}},
 			wantErr: "name is required",
 		},
 		{
@@ -228,30 +228,37 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			wantErr: "steps",
 		},
 		{
-			name: "step with neither call nor switch",
+			name: "step without switch is rejected",
+			def: ProcessDefinition{Name: "p", Steps: []*Step{
+				{ID: "s", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"}},
+			}},
+			wantErr: "switch is required",
+		},
+		{
+			name: "step with no call and no switch is rejected",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{ID: "empty"},
 			}},
-			wantErr: "must have a call or a switch",
+			wantErr: "switch is required",
 		},
 		{
 			name: "rest call missing endpoint",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
-				{ID: "s1", Call: &Call{Type: CallTypeREST}},
+				{ID: "s1", Call: &Call{Type: CallTypeREST}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
 			wantErr: "call.endpoint is required",
 		},
 		{
 			name: "script call missing exec",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
-				{ID: "s1", Call: &Call{Type: CallTypeScript}},
+				{ID: "s1", Call: &Call{Type: CallTypeScript}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
 			wantErr: "call.exec is required",
 		},
 		{
 			name: "unknown call type",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
-				{ID: "s1", Call: &Call{Type: "ftp", Endpoint: "ftp://x"}},
+				{ID: "s1", Call: &Call{Type: "ftp", Endpoint: "ftp://x"}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
 			wantErr: "call.type must be one of: rest, script",
 		},
@@ -261,10 +268,10 @@ func TestProcessDefinition_Validate(t *testing.T) {
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
-						{Case: "self.ok == true", Next: "ship"},
+						{Case: "self.ok == true", Goto: "$ship"},
 					},
 				},
-				restStep("ship", "http://x"),
+				restStepEnd("ship", "http://x"),
 			}},
 			wantErr: `last case must be a catch-all`,
 		},
@@ -274,11 +281,11 @@ func TestProcessDefinition_Validate(t *testing.T) {
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
-						{Next: GotoEnd},
-						{Case: "self.ok == true", Next: "ship"},
+						{Goto: GotoEnd},
+						{Case: "self.ok == true", Goto: "$ship"},
 					},
 				},
-				restStep("ship", "http://x"),
+				restStepEnd("ship", "http://x"),
 			}},
 			wantErr: `catch-all at index 0 must be the last case`,
 		},
@@ -288,26 +295,66 @@ func TestProcessDefinition_Validate(t *testing.T) {
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
-						{Case: "self.error == true", Next: GotoEnd},
-						{Next: "ship"},
+						{Case: "self.error == true", Goto: GotoEnd},
+						{Goto: "$ship"},
 					},
 				},
-				restStep("ship", "http://x"),
+				restStepEnd("ship", "http://x"),
 			}},
 			wantErr: "",
 		},
 		{
-			name: "switch next references unknown step",
+			name: "switch goto references unknown step",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
-						{Case: "self.ok == true", Next: "nonexistent"},
-						{Next: GotoEnd},
+						{Case: "self.ok == true", Goto: "$nonexistent"},
+						{Goto: GotoEnd},
 					},
 				},
 			}},
-			wantErr: `next "nonexistent" is not a known step`,
+			wantErr: `goto "$nonexistent" is not a known step`,
+		},
+		{
+			name: "switch: next on last step is rejected",
+			def: ProcessDefinition{Name: "p", Steps: []*Step{
+				{ID: "only", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"}, Switch: SwitchMap{{Goto: GotoNext}}},
+			}},
+			wantErr: "'next' is not allowed on the last step",
+		},
+		{
+			name: "switch: next on non-last step is valid",
+			def: ProcessDefinition{Name: "p", Steps: []*Step{
+				{ID: "first", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"}, Switch: SwitchMap{{Goto: GotoNext}}},
+				restStepEnd("second", "http://x"),
+			}},
+			wantErr: "",
+		},
+		{
+			name: "switch: scalar next on non-last step is valid",
+			def: func() ProcessDefinition {
+				s := &Step{ID: "first", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"}}
+				if err := s.Switch.UnmarshalJSON([]byte(`"next"`)); err != nil {
+					panic(err)
+				}
+				return ProcessDefinition{Name: "p", Steps: []*Step{s, restStepEnd("second", "http://x")}}
+			}(),
+			wantErr: "",
+		},
+		{
+			name: "step ID 'end' is reserved",
+			def: ProcessDefinition{Name: "p", Steps: []*Step{
+				{ID: "end", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"}, Switch: SwitchMap{{Goto: GotoEnd}}},
+			}},
+			wantErr: `step ID "end" is reserved`,
+		},
+		{
+			name: "step ID 'next' is reserved",
+			def: ProcessDefinition{Name: "p", Steps: []*Step{
+				{ID: "next", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"}, Switch: SwitchMap{{Goto: GotoEnd}}},
+			}},
+			wantErr: `step ID "next" is reserved`,
 		},
 
 		// ── only_once: true static validation ───────────────────────────────
@@ -317,10 +364,9 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
-					OnError: []ErrorCase{
-						{Code: []string{"pre.%"}, Retries: 3},
-					},
+					OnError:  []ErrorCase{{Code: []string{"pre.%"}, Retries: 3}},
 				},
 			}},
 			wantErr: "",
@@ -330,10 +376,9 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
-					OnError: []ErrorCase{
-						{Code: []string{"pre.error", "pre.timeout"}, Retries: 3},
-					},
+					OnError:  []ErrorCase{{Code: []string{"pre.error", "pre.timeout"}, Retries: 3}},
 				},
 			}},
 			wantErr: "",
@@ -343,12 +388,11 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
-					OnError: []ErrorCase{
-						{Code: []string{"http.%"}, Next: "handler"},
-					},
+					OnError:  []ErrorCase{{Code: []string{"http.%"}, Next: "handler"}},
 				},
-				restStep("handler", "http://x"),
+				restStepEnd("handler", "http://x"),
 			}},
 			wantErr: "",
 		},
@@ -357,10 +401,9 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
-					OnError: []ErrorCase{
-						{Code: []string{"http.422"}, NotReached: boolPtr(true), Retries: 2},
-					},
+					OnError:  []ErrorCase{{Code: []string{"http.422"}, NotReached: boolPtr(true), Retries: 2}},
 				},
 			}},
 			wantErr: "",
@@ -370,10 +413,9 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
-					OnError: []ErrorCase{
-						{NotReached: boolPtr(true), Retries: 2},
-					},
+					OnError:  []ErrorCase{{NotReached: boolPtr(true), Retries: 2}},
 				},
 			}},
 			wantErr: "",
@@ -383,10 +425,9 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
-					OnError: []ErrorCase{
-						{Code: []string{"http.%"}, Retries: 3},
-					},
+					OnError:  []ErrorCase{{Code: []string{"http.%"}, Retries: 3}},
 				},
 			}},
 			wantErr: `pattern "http.%" can match errors where the call may have executed`,
@@ -396,10 +437,9 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
-					OnError: []ErrorCase{
-						{Code: []string{"http.500"}, Retries: 1},
-					},
+					OnError:  []ErrorCase{{Code: []string{"http.500"}, Retries: 1}},
 				},
 			}},
 			wantErr: `pattern "http.500" can match errors where the call may have executed`,
@@ -409,10 +449,9 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "run", Call: &Call{Type: CallTypeScript, Exec: "echo ok"},
+					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
-					OnError: []ErrorCase{
-						{Code: []string{"script.%"}, Retries: 1},
-					},
+					OnError:  []ErrorCase{{Code: []string{"script.%"}, Retries: 1}},
 				},
 			}},
 			wantErr: `pattern "script.%" can match errors where the call may have executed`,
@@ -422,10 +461,9 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
-					OnError: []ErrorCase{
-						{Retries: 2},
-					},
+					OnError:  []ErrorCase{{Retries: 2}},
 				},
 			}},
 			wantErr: "catch-all rule cannot have retries on an only_once step",
@@ -435,10 +473,9 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
-					OnError: []ErrorCase{
-						{Code: []string{"s%"}, Retries: 3},
-					},
+					OnError:  []ErrorCase{{Code: []string{"s%"}, Retries: 3}},
 				},
 			}},
 			wantErr: `pattern "s%" can match errors where the call may have executed`,
@@ -448,10 +485,9 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
-					OnError: []ErrorCase{
-						{Code: []string{"pre.%", "http.%"}, Retries: 1},
-					},
+					OnError:  []ErrorCase{{Code: []string{"pre.%", "http.%"}, Retries: 1}},
 				},
 			}},
 			wantErr: `pattern "http.%" can match errors where the call may have executed`,
@@ -461,10 +497,9 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(false),
-					OnError: []ErrorCase{
-						{Code: []string{"http.%"}, Retries: 3},
-					},
+					OnError:  []ErrorCase{{Code: []string{"http.%"}, Retries: 3}},
 				},
 			}},
 			wantErr: "",
@@ -473,10 +508,10 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once nil (default) — retries on http.% is valid",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
-					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
-					OnError: []ErrorCase{
-						{Code: []string{"http.%"}, Retries: 3},
-					},
+					ID:      "charge",
+					Call:    &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					Switch:  SwitchMap{{Goto: GotoEnd}},
+					OnError: []ErrorCase{{Code: []string{"http.%"}, Retries: 3}},
 				},
 			}},
 			wantErr: "",
@@ -629,34 +664,69 @@ func TestStep_ValidateOutput_Nullable(t *testing.T) {
 }
 
 func TestSwitchMap_MarshalUnmarshal(t *testing.T) {
-	original := SwitchMap{
-		{Case: "self.paid == true", Next: "ship"},
-		{Case: "self.paid == false", Next: "refund"},
-	}
-
-	data, err := original.MarshalJSON()
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	want := `[{"case":"self.paid == true","next":"$ship"},{"case":"self.paid == false","next":"$refund"}]`
-	if string(data) != want {
-		t.Errorf("marshal: got %s, want %s", data, want)
-	}
-
-	var decoded SwitchMap
-	if err := decoded.UnmarshalJSON(data); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	if len(decoded) != len(original) {
-		t.Fatalf("length mismatch: got %d, want %d", len(decoded), len(original))
-	}
-	for i := range original {
-		if decoded[i] != original[i] {
-			t.Errorf("case %d: got %+v, want %+v", i, decoded[i], original[i])
+	t.Run("array form round-trips", func(t *testing.T) {
+		original := SwitchMap{
+			{Case: "self.paid == true", Goto: "$ship"},
+			{Goto: GotoEnd},
 		}
-	}
+		data, err := original.MarshalJSON()
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		want := `[{"case":"self.paid == true","goto":"$ship"},{"goto":"end"}]`
+		if string(data) != want {
+			t.Errorf("marshal: got %s, want %s", data, want)
+		}
+		var decoded SwitchMap
+		if err := decoded.UnmarshalJSON(data); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(decoded) != len(original) {
+			t.Fatalf("length mismatch: got %d, want %d", len(decoded), len(original))
+		}
+		for i := range original {
+			if decoded[i] != original[i] {
+				t.Errorf("case %d: got %+v, want %+v", i, decoded[i], original[i])
+			}
+		}
+	})
+
+	t.Run("scalar 'end' desugars to catch-all with GotoEnd", func(t *testing.T) {
+		var s SwitchMap
+		if err := s.UnmarshalJSON([]byte(`"end"`)); err != nil {
+			t.Fatalf("unmarshal scalar: %v", err)
+		}
+		if len(s) != 1 || s[0].Case != "" || s[0].Goto != GotoEnd {
+			t.Errorf("expected [{Case:\"\", Goto:\"end\"}], got %+v", s)
+		}
+	})
+
+	t.Run("scalar 'next' desugars to catch-all with GotoNext", func(t *testing.T) {
+		var s SwitchMap
+		if err := s.UnmarshalJSON([]byte(`"next"`)); err != nil {
+			t.Fatalf("unmarshal scalar: %v", err)
+		}
+		if len(s) != 1 || s[0].Case != "" || s[0].Goto != GotoNext {
+			t.Errorf("expected [{Case:\"\", Goto:\"next\"}], got %+v", s)
+		}
+	})
+
+	t.Run("scalar '$step-id' desugars to step reference", func(t *testing.T) {
+		var s SwitchMap
+		if err := s.UnmarshalJSON([]byte(`"$my-step"`)); err != nil {
+			t.Fatalf("unmarshal scalar: %v", err)
+		}
+		if len(s) != 1 || s[0].Case != "" || s[0].Goto != "$my-step" {
+			t.Errorf("expected [{Case:\"\", Goto:\"$my-step\"}], got %+v", s)
+		}
+	})
+
+	t.Run("scalar without sigil is rejected", func(t *testing.T) {
+		var s SwitchMap
+		if err := s.UnmarshalJSON([]byte(`"unknown"`)); err == nil {
+			t.Fatal("expected error for unknown scalar, got nil")
+		}
+	})
 }
 
 func TestPatternOnlyMatchesPre(t *testing.T) {

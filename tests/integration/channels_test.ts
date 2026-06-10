@@ -25,14 +25,14 @@ async function applyBatch(
 function switchDef(name: string) {
   return {
     name,
-    steps: [{ id: "s1", switch: [{ next: "end" }] }],
+    steps: [{ id: "s1", switch: [{ goto: "end" }] }],
   };
 }
 
 function restDef(name: string, endpoint = "http://localhost/x") {
   return {
     name,
-    steps: [{ id: "s1", call: { type: "rest" as const, endpoint } }],
+    steps: [{ id: "s1", call: { type: "rest" as const, endpoint }, switch: [{ goto: "end" }] }],
   };
 }
 
@@ -45,6 +45,7 @@ function childDef(name: string, childName: string, childVersion = 0) {
       {
         id: "spawn",
         call: { type: "child_process" as const, processes: [child] },
+        switch: [{ goto: "end" }],
       },
     ],
   };
@@ -119,7 +120,7 @@ test("channels — auto-update-parents cascades to dependent process on same cha
     [
       {
         ...switchDef(childName),
-        steps: [{ id: "s2", switch: [{ next: "end" }] }],
+        steps: [{ id: "s2", switch: [{ goto: "end" }] }],
       },
     ],
     "stable",
@@ -153,7 +154,7 @@ test("channels — auto-update-parents does not touch other channels", async () 
     [
       {
         ...switchDef(childName),
-        steps: [{ id: "s2", switch: [{ next: "end" }] }],
+        steps: [{ id: "s2", switch: [{ goto: "end" }] }],
       },
     ],
     "latest",
@@ -187,7 +188,7 @@ test("channels — channel_status reports stale refs after child is advanced", a
     [
       {
         ...switchDef(childName),
-        steps: [{ id: "s2", switch: [{ next: "end" }] }],
+        steps: [{ id: "s2", switch: [{ goto: "end" }] }],
       },
     ],
     track,

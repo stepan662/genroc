@@ -43,7 +43,7 @@ func TestHandle_PutAndListDefinitions(t *testing.T) {
 	payload, _ := json.Marshal(map[string]interface{}{
 		"name": "pipeline",
 		"steps": []map[string]interface{}{
-			{"id": "s1", "call": map[string]interface{}{"type": "rest", "endpoint": "http://localhost/x"}},
+			{"id": "s1", "call": map[string]interface{}{"type": "rest", "endpoint": "http://localhost/x"}, "switch": []map[string]interface{}{{"goto": "end"}}},
 		},
 	})
 
@@ -74,7 +74,7 @@ func TestHandle_StartAndGetInstance(t *testing.T) {
 	defPayload, _ := json.Marshal(map[string]interface{}{
 		"name": "p",
 		"steps": []map[string]interface{}{
-			{"id": "s1", "call": map[string]interface{}{"type": "rest", "endpoint": "http://localhost/x"}},
+			{"id": "s1", "call": map[string]interface{}{"type": "rest", "endpoint": "http://localhost/x"}, "switch": []map[string]interface{}{{"goto": "end"}}},
 		},
 	})
 	h.Handle(Envelope{Action: "put_definition", Payload: defPayload})

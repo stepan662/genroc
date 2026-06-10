@@ -129,8 +129,8 @@ func TestIsRetryAllowed(t *testing.T) {
 
 func TestSwitchMap_JSON_RoundTrip(t *testing.T) {
 	original := model.SwitchMap{
-		{Case: "self.paid == true", Next: "ship"},
-		{Case: "self.paid == false", Next: "refund"},
+		{Case: "self.paid == true", Goto: "$ship"},
+		{Goto: model.GotoEnd},
 	}
 
 	data, err := json.Marshal(original)
@@ -138,7 +138,7 @@ func TestSwitchMap_JSON_RoundTrip(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	want := `[{"case":"self.paid == true","next":"$ship"},{"case":"self.paid == false","next":"$refund"}]`
+	want := `[{"case":"self.paid == true","goto":"$ship"},{"goto":"end"}]`
 	if string(data) != want {
 		t.Errorf("marshal: got %s, want %s", data, want)
 	}

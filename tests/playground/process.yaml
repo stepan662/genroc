@@ -10,8 +10,8 @@ steps:
   - id: switch
     switch:
       - case: "input.ttl > 0"
-        next: $recursion
-      - next: end
+        goto: $recursion
+      - goto: end
 
   - id: recursion
     call:
@@ -28,6 +28,8 @@ steps:
         properties:
           num:
             type: integer
+    switch:
+      - goto: end
 
 output:
   num: "{{ (outputs.recursion[0].output.num ?? 0) + (outputs.recursion[1].output.num ?? 0) + 1 }}"
