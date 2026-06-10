@@ -17,7 +17,7 @@ function uid(prefix: string) {
 function switchDef(name: string) {
   return {
     name,
-    steps: [{ id: "s1", switch: [{ when: "default", goto: "$end" }] }],
+    steps: [{ id: "s1", switch: [{ next: "end" }] }],
   };
 }
 
@@ -91,7 +91,7 @@ test("apply --auto-update-parents cascades to parent on same channel", () => {
   runCli(bin, ["apply", "-f", writeDefs([switchDef(childName), childDef(parentName, childName)]), "--channel", "stable"]);
 
   // Change child content and apply with --auto-update-parents.
-  const child2 = { ...switchDef(childName), steps: [{ id: "s2", switch: [{ when: "default", goto: "$end" }] }] };
+  const child2 = { ...switchDef(childName), steps: [{ id: "s2", switch: [{ next: "end" }] }] };
   const r = runCli(bin, ["apply", "-f", writeDefs([child2]), "--channel", "stable", "--auto-update-parents"]);
 
   expect(r.ok).toBe(true);
@@ -245,7 +245,7 @@ test("status -- reports stale ref after child is advanced without updating paren
   runCli(bin, ["apply", "-f", writeDefs([switchDef(childName), childDef(parentName, childName)]), "--channel", track]);
 
   // Advance child only.
-  const child2 = { ...switchDef(childName), steps: [{ id: "s2", switch: [{ when: "default", goto: "$end" }] }] };
+  const child2 = { ...switchDef(childName), steps: [{ id: "s2", switch: [{ next: "end" }] }] };
   runCli(bin, ["apply", "-f", writeDefs([child2]), "--channel", track]);
 
   const r = runCli(bin, ["status", "--channel", track]);

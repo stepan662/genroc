@@ -42,7 +42,7 @@ func TestGenerate_ContextSets_ExclusiveBranch_SkippedStepOutputNullable(t *testi
 		"steps": [
 			{
 				"id": "gate",
-				"switch": [{"when": "{{input.take_fast}}", "goto": "#fast"}, {"when": "default", "goto": "#slow"}]
+				"switch": [{"case": "input.take_fast", "next": "$fast"}, {"next": "$slow"}]
 			},
 			{
 				"id": "fast",
@@ -82,7 +82,7 @@ func TestGenerate_ContextSets_PreBranchStepRequiredAtAllMergePoints(t *testing.T
 			},
 			{
 				"id": "gate",
-				"switch": [{"when": "{{outputs.pre.id == 1}}", "goto": "#path_a"}, {"when": "default", "goto": "#path_b"}]
+				"switch": [{"case": "outputs.pre.id == 1", "next": "$path_a"}, {"next": "$path_b"}]
 			},
 			{ "id": "path_a", "call": {"type": "rest", "endpoint": "http://x"} },
 			{ "id": "path_b", "call": {"type": "rest", "endpoint": "http://x"} },
@@ -112,7 +112,7 @@ func TestGenerate_ContextSets_DefaultEndSwitch_SuccessorRequiredNotOptional(t *t
 					"properties": { "ok": { "type": "boolean" } },
 					"required": ["ok"]
 				}},
-				"switch": [{"when": "{{self.ok}}", "goto": "#work"}, {"when": "default", "goto": "$end"}]
+				"switch": [{"case": "self.ok", "next": "$work"}, {"next": "end"}]
 			},
 			{
 				"id": "work",
@@ -140,7 +140,7 @@ func TestGenerate_OnError_MixedPath_FailingStepOutputNullable(t *testing.T) {
 					"properties": {"ok": {"type": "boolean"}},
 					"required": ["ok"]
 				}},
-				"on_error": [{"goto": "#finale"}]
+				"on_error": [{"next": "$finale"}]
 			},
 			{
 				"id": "finale",
@@ -170,8 +170,8 @@ func TestGenerate_OnError_ExclusivePath_ErrorRequiredOutputAbsent(t *testing.T) 
 					"properties": {"result": {"type": "string"}},
 					"required": ["result"]
 				}},
-				"switch": [{"when": "default", "goto": "$end"}],
-				"on_error": [{"goto": "#handler"}]
+				"switch": [{"next": "end"}],
+				"on_error": [{"next": "$handler"}]
 			},
 			{
 				"id": "handler",
@@ -200,7 +200,7 @@ func TestGenerate_OnError_EndTerminal_RecognisedAsTerminal(t *testing.T) {
 					"properties": {"result": {"type": "string"}},
 					"required": ["result"]
 				}},
-				"on_error": [{"goto": "$end"}]
+				"on_error": [{"next": "end"}]
 			}
 		],
 		"output": {"result": "{{outputs.step.result}}"}

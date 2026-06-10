@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 
+	"gent/internal/expression"
 	tmpl "gent/internal/template"
 )
 
@@ -28,14 +29,14 @@ func evalAny(expression string, contextData map[string]any) (any, error) {
 	return result, nil
 }
 
-func evalBool(expression string, contextData map[string]any, self any) (bool, error) {
-	result, err := tmpl.EvalAny(expression, evalEnv(contextData, self))
+func evalBool(expr string, contextData map[string]any, self any) (bool, error) {
+	result, err := expression.Eval(expr, evalEnv(contextData, self))
 	if err != nil {
-		return false, fmt.Errorf("switch %q: %w", expression, err)
+		return false, fmt.Errorf("switch %q: %w", expr, err)
 	}
 	b, ok := result.(bool)
 	if !ok {
-		return false, fmt.Errorf("switch %q: expected bool, got %T", expression, result)
+		return false, fmt.Errorf("switch %q: expected bool, got %T", expr, result)
 	}
 	return b, nil
 }

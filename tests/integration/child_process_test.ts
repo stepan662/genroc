@@ -10,7 +10,7 @@ test("child_process — step without child_output_schema after a step with one d
   await client.PUT("/definitions", {
     body: {
       name: leafWithOutput,
-      steps: [{ id: "done", switch: [{ when: "default", goto: "$end" }] }],
+      steps: [{ id: "done", switch: [{ next: "end" }] }],
       output: { value: "{{1}}" },
     },
   });
@@ -18,7 +18,7 @@ test("child_process — step without child_output_schema after a step with one d
   await client.PUT("/definitions", {
     body: {
       name: leafNoOutput,
-      steps: [{ id: "done", switch: [{ when: "default", goto: "$end" }] }],
+      steps: [{ id: "done", switch: [{ next: "end" }] }],
     },
   });
 
@@ -70,7 +70,7 @@ test("child_process — output validation failure error includes process name", 
   await client.PUT("/definitions", {
     body: {
       name: childName,
-      steps: [{ id: "done", switch: [{ when: "default", goto: "$end" }] }],
+      steps: [{ id: "done", switch: [{ next: "end" }] }],
     },
   });
 
@@ -137,7 +137,7 @@ test("child_process — on_error routes to recovery when child fails", async () 
         {
           id: "spawn",
           call: { type: "child_process" as const, processes: [{ name: childName }] },
-          on_error: [{ code: ["child.%"], goto: "#recovery" }],
+          on_error: [{ code: ["child.%"], next: "$recovery" }],
         },
         {
           id: "recovery",
@@ -245,7 +245,7 @@ test("child_process — on_error bubbles to grandparent when parent has no handl
         {
           id: "spawn_middle",
           call: { type: "child_process" as const, processes: [{ name: middleName }] },
-          on_error: [{ code: ["child.%"], goto: "#recovery" }],
+          on_error: [{ code: ["child.%"], next: "$recovery" }],
         },
         {
           id: "recovery",
@@ -302,7 +302,7 @@ test("child_process — error context has correct code and step when child fails
         {
           id: "spawn",
           call: { type: "child_process" as const, processes: [{ name: childName }] },
-          on_error: [{ code: ["child.%"], goto: "#recovery" }],
+          on_error: [{ code: ["child.%"], next: "$recovery" }],
         },
         {
           id: "recovery",
@@ -348,8 +348,8 @@ test("child_process — recursive spawn completes with correct aggregated output
         {
           id: "recursion_condition",
           switch: [
-            { when: "{{input.ttl > 0}}", goto: "#recursion" },
-            { when: "default", goto: "$end" },
+            { case: "input.ttl > 0", next: "$recursion" },
+            { next: "end" },
           ],
         },
         {

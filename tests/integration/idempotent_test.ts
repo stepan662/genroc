@@ -86,7 +86,7 @@ test("only_once:true — accepts retries on pre.%", async () => {
           call: { type: "rest" as const, endpoint: "http://localhost:19990/x" },
           on_error: [
             { code: ["pre.%"], retries: 3 },
-            { goto: "$end" },
+            { next: "end" },
           ],
         },
       ],
@@ -123,7 +123,7 @@ test("only_once:true — accepts not_reached:true override for http.422", async 
           call: { type: "rest" as const, endpoint: "http://localhost:19990/x" },
           on_error: [
             { code: ["http.422"], not_reached: true, retries: 2 },
-            { code: ["http.%"], goto: "$end" },
+            { code: ["http.%"], next: "end" },
           ],
         },
       ],
@@ -149,7 +149,7 @@ test("only_once:true — accepts catch-all with not_reached:true", async () => {
   expect(error).toBeUndefined();
 });
 
-test("only_once:true — goto-only rule on http.% is accepted (no retries)", async () => {
+test("only_once:true — next-only rule on http.% is accepted (no retries)", async () => {
   const { error } = await client.PUT("/definitions", {
     body: {
       name: `ni_static_goto_only_${crypto.randomUUID()}`,
@@ -158,7 +158,7 @@ test("only_once:true — goto-only rule on http.% is accepted (no retries)", asy
           id: "charge",
           only_once: true,
           call: { type: "rest" as const, endpoint: "http://localhost:19990/x" },
-          on_error: [{ code: ["http.%"], goto: "#handler" }],
+          on_error: [{ code: ["http.%"], next: "$handler" }],
         },
         {
           id: "handler",
@@ -191,7 +191,7 @@ test("only_once:true — http.500 routes to handler and is called exactly once",
           on_error: [
             // pre.% rule present — would retry on connection errors but not on http.*
             { code: ["pre.%"], retries: 3 },
-            { code: ["http.%"], goto: "#handler" },
+            { code: ["http.%"], next: "$handler" },
           ],
           timeout_ms: 2000,
         },
@@ -242,8 +242,8 @@ test("only_once:true — connection refused triggers pre.% retries", async () =>
             endpoint: `http://localhost:${port}/action`,
           },
           on_error: [
-            // 1 retry on pre.% then complete via $end
-            { code: ["pre.%"], retries: 1, goto: "$end" },
+            // 1 retry on pre.% then complete via end
+            { code: ["pre.%"], retries: 1, next: "end" },
           ],
           timeout_ms: 2000,
         },
@@ -252,7 +252,7 @@ test("only_once:true — connection refused triggers pre.% retries", async () =>
   });
 
   const { data } = await client.POST("/instances", { body: { process: name } });
-  // Two attempts (original + 1 retry), both refused. Retries exhausted → goto $end → completed.
+  // Two attempts (original + 1 retry), both refused. Retries exhausted → next: end → completed.
   // The 2-second retry delay means this takes ~2s — well within the 30s test timeout.
   expect(await waitForInstance(data!.id, 15_000)).toBe("completed");
 });
@@ -315,7 +315,7 @@ test("default step (no only_once) — http.500 retries normally", async () => {
             type: "rest" as const,
             endpoint: `http://localhost:${failMock.port}/action`,
           },
-          on_error: [{ code: ["http.%"], retries: 1, goto: "$end" }],
+          on_error: [{ code: ["http.%"], retries: 1, next: "end" }],
           timeout_ms: 2000,
         },
       ],

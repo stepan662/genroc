@@ -84,8 +84,8 @@ var registry = func() []actionDef {
 						},
 						TimeoutMs: 5000, OnError: []model.ErrorCase{{Retries: 3}},
 						Switch: model.SwitchMap{
-							{When: "self.charged == true", Goto: "ship"},
-							{When: "self.charged == false", Goto: "refund"},
+							{Case: "self.charged == true", Next: "ship"},
+							{Case: "self.charged == false", Next: "refund"},
 						},
 					},
 					{

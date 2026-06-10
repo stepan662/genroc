@@ -196,8 +196,8 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "valid switch-only step",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{ID: "router", Switch: SwitchMap{
-					{When: "input.ok == true", Goto: "act"},
-					{When: "default", Goto: GotoEnd},
+					{Case: "input.ok == true", Next: "act"},
+					{Next: GotoEnd},
 				}},
 				restStep("act", "http://x"),
 			}},
@@ -209,8 +209,8 @@ func TestProcessDefinition_Validate(t *testing.T) {
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
-						{When: "self.ok == true", Goto: "ship"},
-						{When: "default", Goto: GotoEnd},
+						{Case: "self.ok == true", Next: "ship"},
+						{Next: GotoEnd},
 					},
 				},
 				restStep("ship", "http://x"),
@@ -256,38 +256,27 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			wantErr: "call.type must be one of: rest, script",
 		},
 		{
-			name: "switch missing default case",
-			def: ProcessDefinition{Name: "p", Steps: []*Step{
-				{
-					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
-					Switch: SwitchMap{{When: "self.ok == true", Goto: "ship"}},
-				},
-				restStep("ship", "http://x"),
-			}},
-			wantErr: `last case must be "default"`,
-		},
-		{
-			name: "switch default is not the last case",
+			name: "switch catch-all not last is rejected",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
-						{When: "default", Goto: GotoEnd},
-						{When: "self.ok == true", Goto: "ship"},
+						{Next: GotoEnd},
+						{Case: "self.ok == true", Next: "ship"},
 					},
 				},
 				restStep("ship", "http://x"),
 			}},
-			wantErr: `last case must be "default"`,
+			wantErr: `catch-all at index 0 must be the last case`,
 		},
 		{
-			name: "switch $end in non-default case is valid",
+			name: "switch end in non-catch-all case is valid",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
-						{When: "self.error == true", Goto: GotoEnd},
-						{When: "default", Goto: "ship"},
+						{Case: "self.error == true", Next: GotoEnd},
+						{Next: "ship"},
 					},
 				},
 				restStep("ship", "http://x"),
@@ -295,17 +284,17 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			wantErr: "",
 		},
 		{
-			name: "switch goto references unknown step",
+			name: "switch next references unknown step",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
-						{When: "self.ok == true", Goto: "nonexistent"},
-						{When: "default", Goto: GotoEnd},
+						{Case: "self.ok == true", Next: "nonexistent"},
+						{Next: GotoEnd},
 					},
 				},
 			}},
-			wantErr: `goto "nonexistent" is not a known step`,
+			wantErr: `next "nonexistent" is not a known step`,
 		},
 
 		// ── only_once: true static validation ───────────────────────────────
@@ -337,13 +326,13 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			wantErr: "",
 		},
 		{
-			name: "only_once:true — retries:0 with http.% goto is valid",
+			name: "only_once:true — retries:0 with http.% next is valid",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
 					OnlyOnce: boolPtr(true),
 					OnError: []ErrorCase{
-						{Code: []string{"http.%"}, Goto: "handler"},
+						{Code: []string{"http.%"}, Next: "handler"},
 					},
 				},
 				restStep("handler", "http://x"),
@@ -628,8 +617,8 @@ func TestStep_ValidateOutput_Nullable(t *testing.T) {
 
 func TestSwitchMap_MarshalUnmarshal(t *testing.T) {
 	original := SwitchMap{
-		{When: "self.paid == true", Goto: "ship"},
-		{When: "self.paid == false", Goto: "refund"},
+		{Case: "self.paid == true", Next: "ship"},
+		{Case: "self.paid == false", Next: "refund"},
 	}
 
 	data, err := original.MarshalJSON()
@@ -637,7 +626,7 @@ func TestSwitchMap_MarshalUnmarshal(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	want := `[{"when":"self.paid == true","goto":"#ship"},{"when":"self.paid == false","goto":"#refund"}]`
+	want := `[{"case":"self.paid == true","next":"$ship"},{"case":"self.paid == false","next":"$refund"}]`
 	if string(data) != want {
 		t.Errorf("marshal: got %s, want %s", data, want)
 	}

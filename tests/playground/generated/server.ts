@@ -3,7 +3,7 @@
 
 import { createServer } from 'node:http'
 import Ajv from 'ajv'
-import type { FailureInput, SuccessInput, SuccessOutput } from './types.ts'
+import type {  } from './types.ts'
 
 // Transport envelope — mirrors internal/transport/transport.go
 interface TaskRequest {
@@ -14,36 +14,32 @@ interface TaskRequest {
 
 // Implement this in server.ts and pass it to startServer().
 export interface Handlers {
-  failure: (ctx: FailureInput) => Promise<Record<string, unknown>>
-  success: (ctx: SuccessInput) => Promise<SuccessOutput>
 }
 
 // Output schemas baked in for runtime validation via AJV.
 const stepSchemas: Record<string, object> = {
-  "start": {
+  "recursion": {
     "type": "array",
     "items": {
       "type": "object",
       "properties": {
         "id": {
           "type": "string"
+        },
+        "output": {
+          "type": "object",
+          "properties": {
+            "num": {
+              "type": "integer"
+            }
+          }
         }
       },
       "required": [
-        "id"
+        "id",
+        "output"
       ]
     }
-  },
-  "success": {
-    "type": "object",
-    "properties": {
-      "ok": {
-        "type": "boolean"
-      }
-    },
-    "required": [
-      "ok"
-    ]
   }
 }
 

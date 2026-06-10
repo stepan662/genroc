@@ -1,35 +1,29 @@
 # yaml-language-server: $schema=http://localhost:8888/process-schema.json
 name: order-pipeline
+input_schema:
+  type: object
+  properties:
+    ttl:
+      type: integer
+  required: [ ttl ]
 steps:
-  - id: start
+  - id: switch
+    switch:
+      - case: "input.ttl > 0"
+        next: $recursion
+
+  - id: recursion
     call:
       type: child_process
       processes:
-        - name: child
-    on_error:
-      - code: ["child.failed"]
-        goto: "#failure"      
-
-  - id: success
-    call:
-      type: rest
-      endpoint: http://localhost:3001/success
-      output_schema:
+        - name: order-pipeline
+          input:
+            ttl: "{{ input.ttl - 1 }}"
+      child_output_schema:
         type: object
         properties:
-          ok:
-            type: boolean
-        required: [ok]
-    switch:
-      - when: default
-        goto: $end
+          num:
+            type: integer
 
-  - id: failure
-    call:
-      type: rest
-      endpoint: http://localhost:3001/failure
-    params:
-      error: "{{error.code}}: {{error.message}} ({{error.step}})"
-  
-
-    
+output:
+  num: "{{ (outputs.recursion[0].output.num ?? 0) + (outputs.recursion[1].output.num ?? 0) + 1 }}"

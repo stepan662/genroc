@@ -49,7 +49,7 @@ func childDef(t *testing.T, name string, rawSchema string) *model.ProcessDefinit
 	def := &model.ProcessDefinition{
 		Name: name,
 		Steps: []*model.Step{
-			{ID: "noop", Switch: model.SwitchMap{{When: "default", Goto: model.GotoEnd}}},
+			{ID: "noop", Switch: model.SwitchMap{{Next: model.GotoEnd}}},
 		},
 	}
 	if rawSchema != "" {

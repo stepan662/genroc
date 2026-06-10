@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"gent/internal/expression"
 	"gent/internal/model"
 	"gent/internal/schema"
 	"gent/internal/template"
@@ -52,15 +53,15 @@ func buildInputs(steps []*model.Step, tasks map[string]TaskSchemas, processInput
 				switchCtx = withDefs(switchCtx, defs)
 			}
 			for _, c := range s.Switch {
-				if c.When == "default" {
+				if c.Case == "" {
 					continue
 				}
-				inferred, err := template.InferType(c.When, schema.FromNode(switchCtx))
+				inferred, err := expression.InferType(c.Case, schema.FromNode(switchCtx))
 				if err != nil {
-					return fmt.Errorf("step %q switch when %q: %w", s.ID, c.When, err)
+					return fmt.Errorf("step %q switch case %q: %w", s.ID, c.Case, err)
 				}
 				if !isType(inferred.Node(), "boolean") {
-					return fmt.Errorf("step %q switch when %q: expression must evaluate to boolean, got %q", s.ID, c.When, schemaTypeName(inferred.Node()))
+					return fmt.Errorf("step %q switch case %q: expression must evaluate to boolean, got %q", s.ID, c.Case, schemaTypeName(inferred.Node()))
 				}
 			}
 		}

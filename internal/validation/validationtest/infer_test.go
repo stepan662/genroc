@@ -70,7 +70,7 @@ func TestGenerate_Input_SwitchOnlyStepSkippedInContext(t *testing.T) {
 			},
 			{
 				"id": "route",
-				"switch": [{"when": "{{outputs.charge.charged == true}}", "goto": "#ship"}]
+				"switch": [{"case": "outputs.charge.charged == true", "next": "$ship"}]
 			},
 			{
 				"id": "ship",
@@ -176,7 +176,7 @@ func TestGenerate_MixedTemplate_NullableExpressionRejected(t *testing.T) {
 			{
 				"id": "start",
 				"call": {"type": "rest", "endpoint": "http://x"},
-				"on_error": [{"goto": "#finale"}]
+				"on_error": [{"next": "$finale"}]
 			},
 			{
 				"id": "finale",
@@ -201,8 +201,8 @@ func TestGenerate_MixedTemplate_NonNullableExpressionAccepted(t *testing.T) {
 			{
 				"id": "worker",
 				"call": {"type": "rest", "endpoint": "http://x"},
-				"switch": [{"when": "default", "goto": "$end"}],
-				"on_error": [{"goto": "#handler"}]
+				"switch": [{"next": "end"}],
+				"on_error": [{"next": "$handler"}]
 			},
 			{
 				"id": "handler",
@@ -241,8 +241,8 @@ func TestGenerate_Switch_SelfExpressionTypeChecked(t *testing.T) {
 					"required": ["charged"]
 				}},
 				"switch": [
-					{"when": "{{self.charged == true}}", "goto": "#ship"},
-					{"when": "{{self.charged == false}}", "goto": "#refund"}
+					{"case": "self.charged == true", "next": "$ship"},
+					{"case": "self.charged == false", "next": "$refund"}
 				]
 			},
 			{ "id": "ship",   "call": {"type": "rest", "endpoint": "http://x"} },
@@ -263,7 +263,7 @@ func TestGenerate_Switch_OutputsExpressionTypeChecked(t *testing.T) {
 					"properties": { "charged": { "type": "boolean" } },
 					"required": ["charged"]
 				}},
-				"switch": [{"when": "{{outputs.charge.charged == true}}", "goto": "#notify"}]
+				"switch": [{"case": "outputs.charge.charged == true", "next": "$notify"}]
 			},
 			{ "id": "notify", "call": {"type": "rest", "endpoint": "http://x"} }
 		]
@@ -292,7 +292,7 @@ func TestGenerate_RecursiveStep_OwnOutputOptionalInParams(t *testing.T) {
 				"tasks": "{{input.tasks}}",
 				"task_index": "{{outputs.loop.finished_index ? outputs.loop.finished_index : 0}}"
 			},
-			"switch": [{"when": "{{!self.done}}", "goto": "#loop"}, {"when": "default", "goto": "$end"}]
+			"switch": [{"case": "!self.done", "next": "$loop"}, {"next": "end"}]
 		}]
 	}`)
 	assertJSON(t, out.Tasks["loop"].Input, `{"$ref": "#/$defs/loop_input"}`)
@@ -315,7 +315,7 @@ func TestGenerate_SwitchStep_NextStepNotReachableViaFallthrough(t *testing.T) {
 			{
 				"id": "decide",
 				"call": {"type": "rest", "endpoint": "http://x", "output_schema": { "type": "object", "properties": { "ok": { "type": "boolean" } }, "required": ["ok"] }},
-				"switch": [{"when": "{{self.ok}}", "goto": "#work"}, {"when": "default", "goto": "$end"}]
+				"switch": [{"case": "self.ok", "next": "$work"}, {"next": "end"}]
 			},
 			{
 				"id": "work",
@@ -344,7 +344,7 @@ func TestGenerate_Switch_OneOfAllBooleanAccepted(t *testing.T) {
 				},
 				"required": ["ok"]
 			}},
-			"switch": [{"when": "{{self.ok}}", "goto": "#next"}, {"when": "default", "goto": "$end"}]
+			"switch": [{"case": "self.ok", "next": "$next"}, {"next": "end"}]
 		},
 		{ "id": "next", "call": {"type": "rest", "endpoint": "http://x"} }]
 	}`)
@@ -360,7 +360,7 @@ func TestGenerate_Switch_OneOfBooleanOptionalFieldRejected(t *testing.T) {
 		"steps": [
 			{
 				"id": "route",
-				"switch": [{"when": "{{input.go_then}}", "goto": "#next"}, {"when": "default", "goto": "$end"}]
+				"switch": [{"case": "input.go_then", "next": "$next"}, {"next": "end"}]
 			},
 			{ "id": "next", "call": {"type": "rest", "endpoint": "http://x"} }
 		]
@@ -380,7 +380,7 @@ func TestGenerate_Switch_NullableBooleanRejected(t *testing.T) {
 		"steps": [
 			{
 				"id": "route",
-				"switch": [{"when": "{{input.go_then}}", "goto": "#work"}, {"when": "default", "goto": "$end"}]
+				"switch": [{"case": "input.go_then", "next": "$work"}, {"next": "end"}]
 			},
 			{ "id": "work", "call": {"type": "rest", "endpoint": "http://x"} }
 		]
@@ -393,7 +393,7 @@ func TestGenerate_Switch_NullableBooleanRejected(t *testing.T) {
 	}
 }
 
-func TestGenerate_Switch_MixedTemplateRejectsStringResult(t *testing.T) {
+func TestGenerate_Switch_StringExpressionRejectsNonBoolean(t *testing.T) {
 	err := runGenerateErr(t, `{
 		"name": "p",
 		"steps": [
@@ -401,10 +401,10 @@ func TestGenerate_Switch_MixedTemplateRejectsStringResult(t *testing.T) {
 				"id": "check",
 				"call": {"type": "rest", "endpoint": "http://x", "output_schema": {
 					"type": "object",
-					"properties": { "ok": { "type": "boolean" } },
-					"required": ["ok"]
+					"properties": { "label": { "type": "string" } },
+					"required": ["label"]
 				}},
-				"switch": [{"when": "{{self.ok}}_", "goto": "#next"}, {"when": "default", "goto": "$end"}]
+				"switch": [{"case": "self.label", "next": "$next"}, {"next": "end"}]
 			},
 			{ "id": "next", "call": {"type": "rest", "endpoint": "http://x"} }
 		]

@@ -43,7 +43,7 @@ async function startInstance() {
   // ─── 2. start an instance ──────────────────────────────────────────────────
 
   const { data: startData, error: startErr } = await client.POST("/instances", {
-    body: { process: PROCESS_NAME },
+    body: { process: PROCESS_NAME, input: { ttl: 10 } },
   });
   if (startErr) throw new Error(`start failed: ${JSON.stringify(startErr)}`);
 
@@ -56,10 +56,10 @@ async function startInstance() {
   const { data } = await client.GET("/instances/{id}", {
     params: { path: { id } },
   });
-  console.log(JSON.stringify(data, null, 2));
   if (data?.status == "failed") {
     console.log(status, data?.error);
   } else {
-    console.log(status, (data?.context as any).output?.processes);
+    console.log(status);
   }
+  console.log(JSON.stringify(data, null, 2));
 }

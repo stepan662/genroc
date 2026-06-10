@@ -91,7 +91,7 @@ test("lifecycle — conditional routes to correct branch", async () => {
         {
           id: "start",
           call: { type: "rest" as const, endpoint: `http://localhost:${thenMock.port}/action` },
-          switch: [{ when: "{{input.go_then}}", goto: "#then_step" }, { when: "default", goto: "#else_step" }],
+          switch: [{ case: "input.go_then", next: "$then_step" }, { next: "$else_step" }],
         },
         {
           id: "then_step",
@@ -101,7 +101,7 @@ test("lifecycle — conditional routes to correct branch", async () => {
             output_schema: { type: "object", properties: { branch: { type: "string" } } },
           },
           timeout_ms: 1000,
-          switch: [{ when: "default", goto: "$end" }],
+          switch: [{ next: "end" }],
         },
         {
           id: "else_step",
@@ -111,7 +111,7 @@ test("lifecycle — conditional routes to correct branch", async () => {
             output_schema: { type: "object", properties: { branch: { type: "string" } } },
           },
           timeout_ms: 1000,
-          switch: [{ when: "default", goto: "$end" }],
+          switch: [{ next: "end" }],
         },
       ],
     },

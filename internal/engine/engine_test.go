@@ -14,12 +14,12 @@ func TestEvaluator(t *testing.T) {
 		want    bool
 		wantErr bool
 	}{
-		{"{{outputs.step.ok == true}}", map[string]interface{}{"outputs": map[string]any{"step": map[string]any{"ok": true}}}, true, false},
-		{"{{outputs.step.ok == true}}", map[string]interface{}{"outputs": map[string]any{"step": map[string]any{"ok": false}}}, false, false},
-		{"{{outputs.step.amount > 100}}", map[string]interface{}{"outputs": map[string]any{"step": map[string]any{"amount": 200}}}, true, false},
-		{"{{outputs.step.amount > 100}}", map[string]interface{}{"outputs": map[string]any{"step": map[string]any{"amount": 50}}}, false, false},
-		{"{{input.a == true && input.b == true}}", map[string]interface{}{"input": map[string]any{"a": true, "b": true}}, true, false},
-		{"{{input.a == true && input.b == true}}", map[string]interface{}{"input": map[string]any{"a": true, "b": false}}, false, false},
+		{"outputs.step.ok == true", map[string]interface{}{"outputs": map[string]any{"step": map[string]any{"ok": true}}}, true, false},
+		{"outputs.step.ok == true", map[string]interface{}{"outputs": map[string]any{"step": map[string]any{"ok": false}}}, false, false},
+		{"outputs.step.amount > 100", map[string]interface{}{"outputs": map[string]any{"step": map[string]any{"amount": 200}}}, true, false},
+		{"outputs.step.amount > 100", map[string]interface{}{"outputs": map[string]any{"step": map[string]any{"amount": 50}}}, false, false},
+		{"input.a == true && input.b == true", map[string]interface{}{"input": map[string]any{"a": true, "b": true}}, true, false},
+		{"input.a == true && input.b == true", map[string]interface{}{"input": map[string]any{"a": true, "b": false}}, false, false},
 		{"invalid %%% expr", nil, false, true},
 	}
 
@@ -52,10 +52,10 @@ func TestEvaluator_EvalBool_WithSelf(t *testing.T) {
 		self any
 		want bool
 	}{
-		{"self field true", "{{self.paid == true}}", map[string]any{"paid": true}, true},
-		{"self field false", "{{self.paid == true}}", map[string]any{"paid": false}, false},
-		{"self nested field", "{{self.result.ok == true}}", map[string]any{"result": map[string]any{"ok": true}}, true},
-		{"self nil when no action", "{{self == null}}", nil, true},
+		{"self field true", "self.paid == true", map[string]any{"paid": true}, true},
+		{"self field false", "self.paid == true", map[string]any{"paid": false}, false},
+		{"self nested field", "self.result.ok == true", map[string]any{"result": map[string]any{"ok": true}}, true},
+		{"self nil when no action", "self == null", nil, true},
 	}
 
 	for _, tt := range tests {
@@ -129,8 +129,8 @@ func TestIsRetryAllowed(t *testing.T) {
 
 func TestSwitchMap_JSON_RoundTrip(t *testing.T) {
 	original := model.SwitchMap{
-		{When: "self.paid == true", Goto: "ship"},
-		{When: "self.paid == false", Goto: "refund"},
+		{Case: "self.paid == true", Next: "ship"},
+		{Case: "self.paid == false", Next: "refund"},
 	}
 
 	data, err := json.Marshal(original)
@@ -138,7 +138,7 @@ func TestSwitchMap_JSON_RoundTrip(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	want := `[{"when":"self.paid == true","goto":"#ship"},{"when":"self.paid == false","goto":"#refund"}]`
+	want := `[{"case":"self.paid == true","next":"$ship"},{"case":"self.paid == false","next":"$refund"}]`
 	if string(data) != want {
 		t.Errorf("marshal: got %s, want %s", data, want)
 	}

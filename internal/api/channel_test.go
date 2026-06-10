@@ -30,7 +30,7 @@ func switchDef(name string) map[string]any {
 		"name": name,
 		"steps": []any{
 			map[string]any{"id": "s1", "switch": []any{
-				map[string]any{"when": "default", "goto": "$end"},
+				map[string]any{"next": "end"},
 			}},
 		},
 	}
@@ -261,7 +261,7 @@ func TestApplyBatch_ContentDedup_ReuseOlderVersion(t *testing.T) {
 	// Step 2: update child → child@v2, cascade → parent@v2 (deps: child@v2).
 	child2 := switchDef("child")
 	child2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
-		map[string]any{"when": "default", "goto": "$end"},
+		map[string]any{"next": "end"},
 	}}}
 	batchApply(h, "latest", true, child2)
 
@@ -298,7 +298,7 @@ func TestApplyBatch_ContentDedup_ChildVersionPerChannel(t *testing.T) {
 
 	child2 := switchDef("child")
 	child2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
-		map[string]any{"when": "default", "goto": "$end"},
+		map[string]any{"next": "end"},
 	}}}
 
 	// ch-a: child@v1, parent@v1 (deps: child@v1).
@@ -441,7 +441,7 @@ func TestApplyBatch_AutoUpdateParents_CascadeOnUnchangedChild(t *testing.T) {
 
 	child2 := switchDef("child")
 	child2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
-		map[string]any{"when": "default", "goto": "$end"},
+		map[string]any{"next": "end"},
 	}}}
 
 	// child@v1 + parent@v1 on "latest".
@@ -489,7 +489,7 @@ func TestApplyBatch_AutoUpdateParents_Basic(t *testing.T) {
 	// Apply child v2 with auto-update-parents.
 	child2 := switchDef("child")
 	child2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
-		map[string]any{"when": "default", "goto": "$end"},
+		map[string]any{"next": "end"},
 	}}}
 	r := batchApply(h, "stable", true, child2)
 	if !r.OK {
@@ -526,7 +526,7 @@ func TestApplyBatch_AutoUpdateParents_CascadeDedup(t *testing.T) {
 	// Update child on "latest" with auto-update — creates child@v2, parent@v2.
 	child2 := switchDef("child")
 	child2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
-		map[string]any{"when": "default", "goto": "$end"},
+		map[string]any{"next": "end"},
 	}}}
 	batchApply(h, "latest", true, child2)
 	// Now: child@v2, parent@v2 on "latest".
@@ -564,7 +564,7 @@ func TestApplyBatch_AutoUpdateParents_Cascade(t *testing.T) {
 	// Update leaf: grandparent should also cascade.
 	leaf2 := switchDef("leaf")
 	leaf2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
-		map[string]any{"when": "default", "goto": "$end"},
+		map[string]any{"next": "end"},
 	}}}
 	r := batchApply(h, "latest", true, leaf2)
 	if !r.OK {
@@ -593,7 +593,7 @@ func TestApplyBatch_AutoUpdateParents_OtherChannelUntouched(t *testing.T) {
 	// Update child on "latest" only.
 	child2 := switchDef("child")
 	child2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
-		map[string]any{"when": "default", "goto": "$end"},
+		map[string]any{"next": "end"},
 	}}}
 	batchApply(h, "latest", true, child2)
 
@@ -739,7 +739,7 @@ func TestChannelStatus_StaleRef(t *testing.T) {
 	// Advance child to v2 on stable WITHOUT updating parent.
 	child2 := switchDef("child")
 	child2["steps"] = []any{map[string]any{"id": "s2", "switch": []any{
-		map[string]any{"when": "default", "goto": "$end"},
+		map[string]any{"next": "end"},
 	}}}
 	batchApply(h, "stable", false, child2)
 

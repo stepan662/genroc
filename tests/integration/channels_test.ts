@@ -25,7 +25,7 @@ async function applyBatch(
 function switchDef(name: string) {
   return {
     name,
-    steps: [{ id: "s1", switch: [{ when: "default", goto: "$end" }] }],
+    steps: [{ id: "s1", switch: [{ next: "end" }] }],
   };
 }
 
@@ -119,7 +119,7 @@ test("channels — auto-update-parents cascades to dependent process on same cha
     [
       {
         ...switchDef(childName),
-        steps: [{ id: "s2", switch: [{ when: "default", goto: "$end" }] }],
+        steps: [{ id: "s2", switch: [{ next: "end" }] }],
       },
     ],
     "stable",
@@ -153,7 +153,7 @@ test("channels — auto-update-parents does not touch other channels", async () 
     [
       {
         ...switchDef(childName),
-        steps: [{ id: "s2", switch: [{ when: "default", goto: "$end" }] }],
+        steps: [{ id: "s2", switch: [{ next: "end" }] }],
       },
     ],
     "latest",
@@ -187,7 +187,7 @@ test("channels — channel_status reports stale refs after child is advanced", a
     [
       {
         ...switchDef(childName),
-        steps: [{ id: "s2", switch: [{ when: "default", goto: "$end" }] }],
+        steps: [{ id: "s2", switch: [{ next: "end" }] }],
       },
     ],
     track,

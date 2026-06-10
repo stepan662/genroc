@@ -61,7 +61,7 @@ func outputContextSets(def *model.ProcessDefinition) (required, optional []strin
 		isNormal := (len(s.Switch) == 0 && i == n-1) ||
 			func() bool {
 				for _, c := range s.Switch {
-					if c.Goto == model.GotoEnd {
+					if c.Next == model.GotoEnd {
 						return true
 					}
 				}
@@ -69,7 +69,7 @@ func outputContextSets(def *model.ProcessDefinition) (required, optional []strin
 			}()
 		isErrEnd := func() bool {
 			for _, ec := range s.OnError {
-				if ec.Goto == model.GotoEnd {
+				if ec.Next == model.GotoEnd {
 					return true
 				}
 			}
@@ -159,8 +159,8 @@ func computeContextSets(steps []*model.Step) (required, optional map[string][]st
 	preds[0] = append(preds[0], predEdge{idx: -1})
 	for i, s := range steps {
 		for _, c := range s.Switch {
-			if c.Goto != model.GotoEnd {
-				if j, ok := idx[c.Goto]; ok {
+			if c.Next != model.GotoEnd {
+				if j, ok := idx[c.Next]; ok {
 					preds[j] = append(preds[j], predEdge{idx: i})
 				}
 			}
@@ -169,8 +169,8 @@ func computeContextSets(steps []*model.Step) (required, optional map[string][]st
 			preds[i+1] = append(preds[i+1], predEdge{idx: i})
 		}
 		for _, ec := range s.OnError {
-			if ec.Goto != "" && ec.Goto != model.GotoEnd {
-				if j, ok := idx[ec.Goto]; ok {
+			if ec.Next != "" && ec.Next != model.GotoEnd {
+				if j, ok := idx[ec.Next]; ok {
 					preds[j] = append(preds[j], predEdge{idx: i, isErr: true})
 				}
 			}

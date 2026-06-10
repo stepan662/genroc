@@ -265,21 +265,21 @@ func (e *Engine) executeAction(ctx context.Context, inst *model.ProcessInstance,
 	return resp.Body, false, nil
 }
 
-// evalSwitch walks the step's switch cases in order and returns the Goto target
-// of the first case whose When expression evaluates to true. The "default" case
-// always matches and must be the last entry when present. Returns "" when the
-// switch list is empty or no case matches (fall-through to next step).
+// evalSwitch walks the step's switch cases in order and returns the Next target
+// of the first case whose Case expression evaluates to true. An empty Case is a
+// catch-all that always matches and must be the last entry when present. Returns ""
+// when the switch list is empty or no case matches (fall-through to next step).
 func (e *Engine) evalSwitch(inst *model.ProcessInstance, step *model.Step, selfOutput any) (string, error) {
 	for _, c := range step.Switch {
-		if c.When == "default" {
-			return c.Goto, nil
+		if c.Case == "" {
+			return c.Next, nil
 		}
-		ok, err := evalBool(c.When, inst.ContextData, selfOutput)
+		ok, err := evalBool(c.Case, inst.ContextData, selfOutput)
 		if err != nil {
-			return "", fmt.Errorf("when %q: %w", c.When, err)
+			return "", fmt.Errorf("case %q: %w", c.Case, err)
 		}
 		if ok {
-			return c.Goto, nil
+			return c.Next, nil
 		}
 	}
 	return "", nil
@@ -356,8 +356,8 @@ func (e *Engine) handleCallError(inst *model.ProcessInstance, step *model.Step, 
 		"code":    errCode,
 	}
 
-	if matched != nil && matched.Goto != "" {
-		if matched.Goto == model.GotoEnd {
+	if matched != nil && matched.Next != "" {
+		if matched.Next == model.GotoEnd {
 			inst.Status = model.StatusCompleted
 			inst.NextRetryAt = nil
 			e.log.Info("instance completed via error route", "id", inst.ID, "step", step.ID, "code", errCode)
@@ -366,7 +366,7 @@ func (e *Engine) handleCallError(inst *model.ProcessInstance, step *model.Step, 
 			}
 			return e.notifyParent(inst)
 		}
-		newQueue, err := e.queueFromStep(inst, matched.Goto)
+		newQueue, err := e.queueFromStep(inst, matched.Next)
 		if err != nil {
 			return e.failInstance(inst, err.Error())
 		}
@@ -374,7 +374,7 @@ func (e *Engine) handleCallError(inst *model.ProcessInstance, step *model.Step, 
 		inst.RetryCount = 0
 		inst.NextRetryAt = nil
 		e.log.Info("routing to error handler",
-			"id", inst.ID, "step", step.ID, "goto", matched.Goto, "code", errCode)
+			"id", inst.ID, "step", step.ID, "next", matched.Next, "code", errCode)
 		return e.db.UpdateInstance(inst)
 	}
 
