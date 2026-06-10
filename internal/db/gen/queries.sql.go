@@ -13,11 +13,24 @@ import (
 const countActiveSiblings = `-- name: CountActiveSiblings :one
 SELECT COUNT(*) FROM process_instances
 WHERE parent_id = ?1
-  AND status NOT IN ('completed', 'failed')
+  AND status NOT IN ('completed', 'failed', 'cancelled')
 `
 
 func (q *Queries) CountActiveSiblings(ctx context.Context, parentID string) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countActiveSiblings, parentID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countFailingChildren = `-- name: CountFailingChildren :one
+SELECT COUNT(*) FROM process_instances
+WHERE parent_id = ?1
+  AND status = 'failed'
+`
+
+func (q *Queries) CountFailingChildren(ctx context.Context, parentID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countFailingChildren, parentID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -244,6 +257,25 @@ func (q *Queries) GetDependencyVersion(ctx context.Context, arg GetDependencyVer
 	var child_version int64
 	err := row.Scan(&child_version)
 	return child_version, err
+}
+
+const getFirstFailingChild = `-- name: GetFirstFailingChild :one
+SELECT id, error FROM process_instances
+WHERE parent_id = ?1
+  AND status = 'failed'
+LIMIT 1
+`
+
+type GetFirstFailingChildRow struct {
+	ID    string
+	Error string
+}
+
+func (q *Queries) GetFirstFailingChild(ctx context.Context, parentID string) (GetFirstFailingChildRow, error) {
+	row := q.db.QueryRowContext(ctx, getFirstFailingChild, parentID)
+	var i GetFirstFailingChildRow
+	err := row.Scan(&i.ID, &i.Error)
+	return i, err
 }
 
 const getInstance = `-- name: GetInstance :one

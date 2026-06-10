@@ -120,6 +120,10 @@ func (e *Engine) tick(ctx context.Context) {
 // available as "self". A matching switch case jumps to the named step; no match
 // advances to the next step in the queue.
 func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) error {
+	if inst.Status == model.StatusCancelling {
+		return e.cancelInstance(inst)
+	}
+
 	if len(inst.StepQueue) == 0 {
 		inst.Status = model.StatusCompleted
 		inst.NextRetryAt = nil
@@ -336,6 +340,20 @@ func matchOnError(step *model.Step, errCode string) *model.ErrorCase {
 // handleCallError evaluates on_error rules, retries if allowed, injects $error
 // context, and routes to the matching goto or fails the instance.
 func (e *Engine) handleCallError(inst *model.ProcessInstance, step *model.Step, errMsg, errCode string) error {
+	// If the process is being cancelled, suppress retries and honour the cancellation
+	// unless retries are exhausted / not configured — in that case error takes precedence.
+	if inst.Status == model.StatusCancelling {
+		matched := matchOnError(step, errCode)
+		if matched != nil && inst.RetryCount < matched.Retries && isRetryAllowed(step, errCode, matched) {
+			// Retries remain but we're cancelling — skip the retry and cancel cleanly.
+			e.log.Info("step failed during cancellation, skipping retry",
+				"id", inst.ID, "step", step.ID, "code", errCode)
+			return e.cancelInstance(inst)
+		}
+		// No retries available — error takes precedence over cancellation.
+		return e.failInstance(inst, fmt.Sprintf("step %q: %s: %s", step.ID, errCode, errMsg))
+	}
+
 	matched := matchOnError(step, errCode)
 
 	if matched != nil && inst.RetryCount < matched.Retries && isRetryAllowed(step, errCode, matched) {
@@ -408,23 +426,20 @@ func (e *Engine) failInstance(inst *model.ProcessInstance, reason string) error 
 	return e.notifyParent(inst)
 }
 
-// runChildProcesses starts child instance(s) for a child or child_parallel call,
-// then suspends the parent. The parent resumes (via db.TryWakeParent) once all
-// children complete.
-func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInstance, step *model.Step) (any, bool, error) {
-	// Woken after a child failure — route through the normal error handler so on_error
-	// rules on this step are evaluated. If no rule matches, failInstance propagates the
-	// failure upward via notifyParent → TryWakeParent, one level at a time.
-	if childErr, ok := inst.ContextData["_child_error"].(map[string]any); ok {
-		errMsg, _ := childErr["message"].(string)
-		errCode, _ := childErr["code"].(string)
-		if errCode == "" {
-			errCode = "child.failed"
-		}
-		delete(inst.ContextData, "_child_error")
-		return nil, true, e.handleCallError(inst, step, errMsg, errCode)
+func (e *Engine) cancelInstance(inst *model.ProcessInstance) error {
+	inst.Status = model.StatusCancelled
+	inst.NextRetryAt = nil
+	e.log.Info("instance cancelled", "id", inst.ID)
+	if err := e.db.UpdateInstance(inst); err != nil {
+		return err
 	}
+	return e.notifyParent(inst)
+}
 
+// runChildProcesses starts child instance(s) for a child or child_parallel call,
+// then suspends the parent atomically. The parent resumes (via db.TryWakeParent)
+// once all children complete or are cancelled.
+func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInstance, step *model.Step) (any, bool, error) {
 	// If TryWakeParent already wrote the final output, return it so the engine
 	// advances the queue normally.
 	if outputs, ok := inst.ContextData["outputs"].(map[string]any); ok {
@@ -459,27 +474,27 @@ func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInsta
 		inst.ContextData["outputs"] = map[string]any{}
 	}
 
-	var spawnCount int
+	var children []*model.ProcessInstance
 	switch step.Call.Type {
 	case model.CallTypeChild:
-		id, err := e.spawnSingleChild(ctx, inst, step, childCallStack)
+		child, err := e.buildSingleChild(ctx, inst, step, childCallStack)
 		if err != nil {
 			return nil, true, err
 		}
-		inst.ContextData["outputs"].(map[string]any)[step.ID] = id
-		spawnCount = 1
+		inst.ContextData["outputs"].(map[string]any)[step.ID] = child.ID
+		children = []*model.ProcessInstance{child}
 	case model.CallTypeChildParallel:
-		idMap, err := e.spawnParallelChildren(ctx, inst, step, childCallStack)
+		parallel, err := e.buildParallelChildren(ctx, inst, step, childCallStack)
 		if err != nil {
 			return nil, true, err
 		}
-		// Store map[key]→id as placeholder; TryWakeParent replaces values with outputs.
-		placeholder := make(map[string]any, len(idMap))
-		for k, v := range idMap {
-			placeholder[k] = v
+		placeholder := make(map[string]any, len(parallel))
+		for _, c := range parallel {
+			key, _ := c.ContextData["_spawn_child_key"].(string)
+			placeholder[key] = c.ID
 		}
 		inst.ContextData["outputs"].(map[string]any)[step.ID] = placeholder
-		spawnCount = len(idMap)
+		children = parallel
 	}
 
 	var order []string
@@ -495,17 +510,27 @@ func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInsta
 	}
 	inst.ContextData["output_order"] = append(order, step.ID)
 
-	inst.Status = model.StatusWaiting
 	inst.RetryCount = 0
 	inst.NextRetryAt = nil
-	if err := e.db.UpdateInstance(inst); err != nil {
-		return nil, true, err
+
+	// Atomically insert children and transition parent to waiting, guarded by a
+	// parent status check. If the parent was concurrently set to 'cancelling', roll
+	// back and let advance() cancel it on the next tick.
+	if err := e.db.SpawnChildrenAndWait(ctx, inst, children); err != nil {
+		if err == db.ErrParentNotRunning {
+			e.log.Info("spawn aborted: parent no longer running", "id", inst.ID, "step", step.ID)
+			return nil, true, nil
+		}
+		return nil, true, e.failInstance(inst, fmt.Sprintf("step %q spawn: %v", step.ID, err))
 	}
-	e.log.Info("parent waiting for children", "id", inst.ID, "step", step.ID, "children", spawnCount)
+
+	e.log.Info("parent waiting for children", "id", inst.ID, "step", step.ID, "children", len(children))
 	return nil, true, nil
 }
 
-func (e *Engine) spawnSingleChild(ctx context.Context, inst *model.ProcessInstance, step *model.Step, callStack []string) (string, error) {
+// buildSingleChild resolves the child definition, evaluates input, and constructs
+// a ProcessInstance ready to be saved. It does not persist anything.
+func (e *Engine) buildSingleChild(ctx context.Context, inst *model.ProcessInstance, step *model.Step, callStack []string) (*model.ProcessInstance, error) {
 	name := step.Call.Name
 	version := step.Call.Version
 	if version == 0 {
@@ -517,21 +542,21 @@ func (e *Engine) spawnSingleChild(ctx context.Context, inst *model.ProcessInstan
 			if err != nil {
 				version, err = e.db.LatestVersion(name)
 				if err != nil {
-					return "", e.failInstance(inst, fmt.Sprintf("step %q child: %v", step.ID, err))
+					return nil, e.failInstance(inst, fmt.Sprintf("step %q child: %v", step.ID, err))
 				}
 			}
 		}
 	}
 	def, err := e.db.GetDefinition(name, version)
 	if err != nil {
-		return "", e.failInstance(inst, fmt.Sprintf("step %q child: %v", step.ID, err))
+		return nil, e.failInstance(inst, fmt.Sprintf("step %q child: %v", step.ID, err))
 	}
 	input, err := e.evalChildInput(inst, step.ID, "child", step.Call.Input)
 	if err != nil {
-		return "", e.failInstance(inst, err.Error())
+		return nil, e.failInstance(inst, err.Error())
 	}
 	if err := def.ValidateInput(input); err != nil {
-		return "", e.failInstance(inst, fmt.Sprintf("step %q child input validation: %v", step.ID, err))
+		return nil, e.failInstance(inst, fmt.Sprintf("step %q child input validation: %v", step.ID, err))
 	}
 	childCtx := map[string]any{
 		"input":            input,
@@ -546,7 +571,7 @@ func (e *Engine) spawnSingleChild(ctx context.Context, inst *model.ProcessInstan
 			childCtx["_spawn_output_schema"] = string(b)
 		}
 	}
-	child := &model.ProcessInstance{
+	return &model.ProcessInstance{
 		ID:             uuid.NewString(),
 		ProcessName:    def.Name,
 		ProcessVersion: version,
@@ -555,16 +580,13 @@ func (e *Engine) spawnSingleChild(ctx context.Context, inst *model.ProcessInstan
 		Status:         model.StatusRunning,
 		ParentID:       inst.ID,
 		CallStack:      callStack,
-	}
-	if err := e.db.SaveInstance(child); err != nil {
-		return "", e.failInstance(inst, fmt.Sprintf("step %q child save: %v", step.ID, err))
-	}
-	e.log.Info("started child process", "parent", inst.ID, "child", child.ID, "process", child.ProcessName)
-	return child.ID, nil
+	}, nil
 }
 
-func (e *Engine) spawnParallelChildren(ctx context.Context, inst *model.ProcessInstance, step *model.Step, callStack []string) (map[string]string, error) {
-	idMap := make(map[string]string, len(step.Call.Children))
+// buildParallelChildren resolves definitions, evaluates inputs, and constructs
+// ProcessInstances for all parallel children. Does not persist anything.
+func (e *Engine) buildParallelChildren(ctx context.Context, inst *model.ProcessInstance, step *model.Step, callStack []string) ([]*model.ProcessInstance, error) {
+	children := make([]*model.ProcessInstance, 0, len(step.Call.Children))
 	for key, entry := range step.Call.Children {
 		version := entry.Version
 		if version == 0 {
@@ -606,7 +628,7 @@ func (e *Engine) spawnParallelChildren(ctx context.Context, inst *model.ProcessI
 				childCtx["_spawn_output_schema"] = string(b)
 			}
 		}
-		child := &model.ProcessInstance{
+		children = append(children, &model.ProcessInstance{
 			ID:             uuid.NewString(),
 			ProcessName:    def.Name,
 			ProcessVersion: version,
@@ -615,14 +637,9 @@ func (e *Engine) spawnParallelChildren(ctx context.Context, inst *model.ProcessI
 			Status:         model.StatusRunning,
 			ParentID:       inst.ID,
 			CallStack:      callStack,
-		}
-		if err := e.db.SaveInstance(child); err != nil {
-			return nil, e.failInstance(inst, fmt.Sprintf("step %q child_parallel[%q] save: %v", step.ID, key, err))
-		}
-		e.log.Info("started child process", "parent", inst.ID, "child", child.ID, "process", child.ProcessName, "key", key)
-		idMap[key] = child.ID
+		})
 	}
-	return idMap, nil
+	return children, nil
 }
 
 func (e *Engine) evalChildInput(inst *model.ProcessInstance, stepID, label string, inputExprs map[string]string) (map[string]any, error) {
@@ -660,11 +677,17 @@ func (e *Engine) computeOutput(inst *model.ProcessInstance) error {
 	return nil
 }
 
-// notifyParent tells the DB to check whether all siblings of inst are done and,
-// if so, wake or fail the parent. A no-op for root instances (ParentID == "").
+// notifyParent tells the DB to handle parent state after a child terminates.
+// A no-op for root instances (ParentID == "").
+//   - failed child  → FailAncestors: bulk-marks the entire ancestor chain as failed immediately.
+//   - completed/cancelled child → TryWakeParent: checks whether all siblings are terminal
+//     and, if so, wakes the parent (success) or transitions a cancelling parent to cancelled.
 func (e *Engine) notifyParent(inst *model.ProcessInstance) error {
 	if inst.ParentID == "" {
 		return nil
+	}
+	if inst.Status == model.StatusFailed {
+		return e.db.FailAncestors(inst)
 	}
 	return e.db.TryWakeParent(inst)
 }

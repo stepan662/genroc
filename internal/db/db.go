@@ -491,7 +491,7 @@ func (db *DB) ClaimInstances(workerID string, leaseDur time.Duration, limit int)
 			SET worker_id = $1, lease_expires_at = $2
 			WHERE id IN (
 				SELECT pi.id FROM process_instances pi
-				WHERE pi.status = 'running'
+				WHERE pi.status IN ('running', 'cancelling')
 				  AND (pi.next_retry_at IS NULL OR pi.next_retry_at <= $3)
 				  AND (pi.worker_id IS NULL OR pi.lease_expires_at <= $4)
 				LIMIT $5
@@ -506,7 +506,7 @@ func (db *DB) ClaimInstances(workerID string, leaseDur time.Duration, limit int)
 			SET worker_id = ?, lease_expires_at = ?
 			WHERE id IN (
 				SELECT pi.id FROM process_instances pi
-				WHERE pi.status = 'running'
+				WHERE pi.status IN ('running', 'cancelling')
 				  AND (pi.next_retry_at IS NULL OR pi.next_retry_at <= ?)
 				  AND (pi.worker_id IS NULL OR pi.lease_expires_at <= ?)
 				LIMIT ?
@@ -577,9 +577,11 @@ func (db *DB) ListInstances(status string) ([]*model.ProcessInstance, error) {
 	return out, nil
 }
 
-// TryWakeParent is called when a child instance finishes (completed or failed).
-// It checks whether all siblings are done and, if so, either cascades failure to
-// the direct parent or wakes the parent with merged outputs.
+// TryWakeParent is called when a child instance completes or is cancelled.
+// For failed children, use FailAncestors instead.
+// It checks whether all siblings are in a terminal state and, if so, either wakes
+// the parent with merged outputs (success path) or transitions a cancelling parent
+// to cancelled (cancellation path).
 func (db *DB) TryWakeParent(child *model.ProcessInstance) error {
 	ctx := context.Background()
 
@@ -596,51 +598,49 @@ func (db *DB) TryWakeParent(child *model.ProcessInstance) error {
 		return nil
 	}
 
+	parentRow, err := db.q.GetInstance(ctx, child.ParentID)
+	if err != nil {
+		return fmt.Errorf("fetch parent: %w", err)
+	}
+	parentStatus := model.Status(parentRow.Status)
+
+	// Parent already failed (FailAncestors ran when a sibling failed). Nothing to do.
+	if parentStatus == model.StatusFailed {
+		return nil
+	}
+
 	siblingRows, err := db.q.GetSiblings(ctx, child.ParentID)
 	if err != nil {
 		return fmt.Errorf("read siblings: %w", err)
 	}
 
-	var failedID, failedErr string
+	// Safety check: if any sibling failed, FailAncestors will handle (or already handled)
+	// the parent. This guards against a race where TryWakeParent observes a failed sibling
+	// before FailAncestors has committed.
 	for _, s := range siblingRows {
 		if s.Status == string(model.StatusFailed) {
-			failedID, failedErr = s.ID, s.Error
-			break
-		}
-	}
-
-	if failedID != "" {
-		if child.ParentID == "" {
 			return nil
 		}
-		parentRow, err := db.q.GetInstance(ctx, child.ParentID)
-		if err != nil {
-			return fmt.Errorf("fetch parent: %w", err)
-		}
-		var parentCtx map[string]any
-		if err := json.Unmarshal([]byte(parentRow.ContextData), &parentCtx); err != nil {
-			return fmt.Errorf("unmarshal parent context: %w", err)
-		}
-		parentCtx["_child_error"] = map[string]any{
-			"step":    spawnStepID,
-			"message": failedErr,
-			"code":    "child.failed",
-		}
-		patchedCtx, err := json.Marshal(parentCtx)
-		if err != nil {
-			return fmt.Errorf("marshal parent context: %w", err)
-		}
-		return db.q.WakeParent(ctx, dbgen.WakeParentParams{
-			ID:          child.ParentID,
-			ContextData: string(patchedCtx),
-			UpdatedAt:   nowUnix(),
-		})
 	}
 
-	parentRow, err := db.q.GetInstance(ctx, child.ParentID)
-	if err != nil {
-		return fmt.Errorf("fetch parent: %w", err)
+	// Cancelling parent: all siblings are completed or cancelled, none failed.
+	// Transition parent to cancelled and propagate up the tree.
+	if parentStatus == model.StatusCancelling {
+		parentInst, err := toInstance(parentRow)
+		if err != nil {
+			return fmt.Errorf("parse parent: %w", err)
+		}
+		parentInst.Status = model.StatusCancelled
+		if err := db.UpdateInstance(parentInst); err != nil {
+			return err
+		}
+		if parentInst.ParentID != "" {
+			return db.TryWakeParent(parentInst)
+		}
+		return nil
 	}
+
+	// Success path: parent is waiting, all siblings completed. Merge outputs and wake.
 	var parentCtx map[string]any
 	if err := json.Unmarshal([]byte(parentRow.ContextData), &parentCtx); err != nil {
 		return fmt.Errorf("unmarshal parent context: %w", err)
@@ -656,16 +656,25 @@ func (db *DB) TryWakeParent(child *model.ProcessInstance) error {
 	switch callType {
 	case string(model.CallTypeChild):
 		wakeErr = db.buildSingleChildOutput(parentCtx, spawnStepID, siblingRows)
-	default: // child_parallel (and any unknown type falls through safely)
+	default:
 		wakeErr = db.buildParallelChildOutput(parentCtx, spawnStepID, siblingRows)
 	}
 
 	if wakeErr != "" {
-		parentCtx["_child_error"] = map[string]any{
-			"step":    spawnStepID,
-			"message": wakeErr,
-			"code":    "output.invalid",
+		// Output validation failed — fail the parent directly.
+		parentInst, err := toInstance(parentRow)
+		if err != nil {
+			return fmt.Errorf("parse parent: %w", err)
 		}
+		parentInst.Status = model.StatusFailed
+		parentInst.Error = wakeErr
+		if err := db.UpdateInstance(parentInst); err != nil {
+			return err
+		}
+		if parentInst.CallStack != nil {
+			return db.FailAncestors(parentInst)
+		}
+		return nil
 	}
 
 	patchedCtx, err := json.Marshal(parentCtx)
@@ -678,6 +687,322 @@ func (db *DB) TryWakeParent(child *model.ProcessInstance) error {
 		UpdatedAt:   nowUnix(),
 	})
 }
+
+// FailAncestors marks all ancestor processes in the child's call stack as failed.
+// This is a single bulk UPDATE — O(1) queries regardless of tree depth.
+// It targets ancestors in 'running', 'waiting', or 'cancelling' state so that
+// errors always take precedence over cancellation.
+// Hand-written because it requires a dynamic-length IN clause.
+func (db *DB) FailAncestors(child *model.ProcessInstance) error {
+	if len(child.CallStack) == 0 {
+		return nil
+	}
+	args := make([]any, 0, len(child.CallStack)+2)
+	args = append(args, child.Error, nowUnix())
+	placeholders := make([]string, len(child.CallStack))
+	for i, id := range child.CallStack {
+		args = append(args, id)
+		placeholders[i] = db.ph(len(args))
+	}
+	query := fmt.Sprintf(
+		`UPDATE process_instances SET status = 'failed', error = %s, updated_at = %s
+		 WHERE id IN (%s) AND status IN ('running', 'waiting', 'cancelling')`,
+		db.ph(1), db.ph(2), strings.Join(placeholders, ", "),
+	)
+	_, err := db.sqldb.ExecContext(context.Background(), query, args...)
+	return err
+}
+
+// CancelProcess atomically marks an entire process tree as cancelling.
+// Downward: all running/waiting descendants of id are marked cancelling via recursive CTE.
+// Upward: all ancestor processes (from the target's call_stack) are marked cancelling.
+// Both operations run in a single transaction.
+// Hand-written because it uses a recursive CTE and a dynamic IN clause.
+func (db *DB) CancelProcess(ctx context.Context, id string) error {
+	// Read the target's call_stack before the transaction so we can build the ancestor list.
+	row, err := db.q.GetInstance(ctx, id)
+	if err != nil {
+		return fmt.Errorf("get instance: %w", err)
+	}
+
+	var callStack []string
+	if err := json.Unmarshal([]byte(row.CallStack), &callStack); err != nil {
+		return fmt.Errorf("unmarshal call_stack: %w", err)
+	}
+
+	tx, err := db.sqldb.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	now := nowUnix()
+
+	// Descendants: recursive CTE from the target downward.
+	var descQuery string
+	if db.dialect == "postgres" {
+		descQuery = `
+			WITH RECURSIVE descendants AS (
+				SELECT id FROM process_instances WHERE id = $1
+				UNION ALL
+				SELECT p.id FROM process_instances p
+				JOIN descendants d ON p.parent_id = d.id
+			)
+			UPDATE process_instances SET status = 'cancelling', updated_at = $2
+			WHERE id IN (SELECT id FROM descendants)
+			  AND status IN ('running', 'waiting')`
+	} else {
+		descQuery = `
+			WITH RECURSIVE descendants AS (
+				SELECT id FROM process_instances WHERE id = ?
+				UNION ALL
+				SELECT p.id FROM process_instances p
+				JOIN descendants d ON p.parent_id = d.id
+			)
+			UPDATE process_instances SET status = 'cancelling', updated_at = ?
+			WHERE id IN (SELECT id FROM descendants)
+			  AND status IN ('running', 'waiting')`
+	}
+	if _, err := tx.ExecContext(ctx, descQuery, id, now); err != nil {
+		return fmt.Errorf("cancel descendants: %w", err)
+	}
+
+	// Ancestors: mark the parent chain as cancelling (only the target's own parents,
+	// not siblings of those parents).
+	if len(callStack) > 0 {
+		args := []any{now}
+		placeholders := make([]string, len(callStack))
+		for i, ancestorID := range callStack {
+			args = append(args, ancestorID)
+			placeholders[i] = db.ph(len(args))
+		}
+		ancQuery := fmt.Sprintf(
+			`UPDATE process_instances SET status = 'cancelling', updated_at = %s
+			 WHERE id IN (%s) AND status = 'running'`,
+			db.ph(1), strings.Join(placeholders, ", "),
+		)
+		if _, err := tx.ExecContext(ctx, ancQuery, args...); err != nil {
+			return fmt.Errorf("cancel ancestors: %w", err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// RetryProcess resumes a failed or cancelled process from its current step.
+// It transitions the process to 'running' and walks the call_stack to unblock
+// ancestor processes that were waiting only on this process.
+// Returns an error if the current step is marked only_once (force-retry not supported yet).
+func (db *DB) RetryProcess(ctx context.Context, id string) error {
+	instRow, err := db.q.GetInstance(ctx, id)
+	if err != nil {
+		return fmt.Errorf("get instance: %w", err)
+	}
+
+	status := model.Status(instRow.Status)
+	if status != model.StatusFailed && status != model.StatusCancelled {
+		return fmt.Errorf("process is not retryable (status: %s)", status)
+	}
+
+	inst, err := toInstance(instRow)
+	if err != nil {
+		return err
+	}
+
+	// Reject retry if the pending step is only_once.
+	if len(inst.StepQueue) > 0 {
+		step := inst.StepQueue[0]
+		if step.OnlyOnce != nil && *step.OnlyOnce {
+			return fmt.Errorf("step %q is marked only_once and has already been attempted; use force-retry to override", step.ID)
+		}
+	}
+
+	tx, qtx, err := db.beginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Transition the process back to running.
+	inst.Status = model.StatusRunning
+	inst.Error = ""
+	inst.RetryCount = 0
+	inst.NextRetryAt = nil
+	if err := qtx.UpdateInstance(ctx, dbgen.UpdateInstanceParams{
+		ID:          inst.ID,
+		StepQueue:   instRow.StepQueue,
+		ContextData: instRow.ContextData,
+		RetryCount:  0,
+		NextRetryAt: sql.NullInt64{},
+		Status:      string(model.StatusRunning),
+		Error:       "",
+		UpdatedAt:   nowUnix(),
+	}); err != nil {
+		return fmt.Errorf("update instance: %w", err)
+	}
+
+	// Walk the call_stack nearest-first, unblocking ancestors that were only
+	// blocked by this process.
+	for i := len(inst.CallStack) - 1; i >= 0; i-- {
+		ancestorID := inst.CallStack[i]
+		ancestorRow, err := qtx.GetInstance(ctx, ancestorID)
+		if err != nil {
+			return fmt.Errorf("get ancestor %q: %w", ancestorID, err)
+		}
+		if model.Status(ancestorRow.Status) != model.StatusFailed {
+			break
+		}
+
+		failingCount, err := qtx.CountFailingChildren(ctx, ancestorID)
+		if err != nil {
+			return fmt.Errorf("count failing children of %q: %w", ancestorID, err)
+		}
+
+		if failingCount == 0 {
+			// This ancestor's only failing child was the one we just retried —
+			// transition it back to waiting (it's still suspended for its children).
+			if err := qtx.UpdateInstance(ctx, dbgen.UpdateInstanceParams{
+				ID:          ancestorID,
+				StepQueue:   ancestorRow.StepQueue,
+				ContextData: ancestorRow.ContextData,
+				RetryCount:  ancestorRow.RetryCount,
+				NextRetryAt: ancestorRow.NextRetryAt,
+				Status:      string(model.StatusWaiting),
+				Error:       "",
+				UpdatedAt:   nowUnix(),
+			}); err != nil {
+				return fmt.Errorf("unblock ancestor %q: %w", ancestorID, err)
+			}
+		} else {
+			// Other children are still failing — update the error message to
+			// reflect the next blocker, and stop walking up.
+			nextChild, err := qtx.GetFirstFailingChild(ctx, ancestorID)
+			if err != nil {
+				return fmt.Errorf("get next failing child of %q: %w", ancestorID, err)
+			}
+			if err := qtx.UpdateInstance(ctx, dbgen.UpdateInstanceParams{
+				ID:          ancestorID,
+				StepQueue:   ancestorRow.StepQueue,
+				ContextData: ancestorRow.ContextData,
+				RetryCount:  ancestorRow.RetryCount,
+				NextRetryAt: ancestorRow.NextRetryAt,
+				Status:      string(model.StatusFailed),
+				Error:       nextChild.Error,
+				UpdatedAt:   nowUnix(),
+			}); err != nil {
+				return fmt.Errorf("update ancestor error %q: %w", ancestorID, err)
+			}
+			break
+		}
+	}
+
+	return tx.Commit()
+}
+
+// SpawnChildrenAndWait atomically inserts child instances and transitions the parent
+// to waiting. It first checks (under a transaction lock) that the parent is still
+// 'running' — if not, it rolls back and returns ErrParentNotRunning so the caller
+// can handle the race gracefully.
+// Hand-written because it requires coordinating multiple INSERT statements with a
+// conditional parent status check in a single transaction.
+func (db *DB) SpawnChildrenAndWait(ctx context.Context, parent *model.ProcessInstance, children []*model.ProcessInstance) error {
+	tx, err := db.sqldb.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Lock and verify parent status.
+	var lockQuery string
+	if db.dialect == "postgres" {
+		lockQuery = `SELECT status FROM process_instances WHERE id = $1 FOR UPDATE`
+	} else {
+		lockQuery = `SELECT status FROM process_instances WHERE id = ?`
+	}
+	var currentStatus string
+	if err := tx.QueryRowContext(ctx, lockQuery, parent.ID).Scan(&currentStatus); err != nil {
+		return fmt.Errorf("lock parent: %w", err)
+	}
+	if currentStatus != string(model.StatusRunning) {
+		return ErrParentNotRunning
+	}
+
+	// Insert all children.
+	for _, child := range children {
+		queue, err := json.Marshal(child.StepQueue)
+		if err != nil {
+			return err
+		}
+		ctxData, err := json.Marshal(child.ContextData)
+		if err != nil {
+			return err
+		}
+		callStack, err := json.Marshal(child.CallStack)
+		if err != nil {
+			return err
+		}
+		now := nowUnix()
+
+		var insertQuery string
+		var args []any
+		if db.dialect == "postgres" {
+			insertQuery = `INSERT INTO process_instances
+				(id, process_name, process_version, step_queue, context_data, parent_id,
+				 call_stack, retry_count, next_retry_at, status, error, created_at, updated_at)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`
+		} else {
+			insertQuery = `INSERT INTO process_instances
+				(id, process_name, process_version, step_queue, context_data, parent_id,
+				 call_stack, retry_count, next_retry_at, status, error, created_at, updated_at)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+		}
+		args = []any{
+			child.ID, child.ProcessName, int64(child.ProcessVersion),
+			string(queue), string(ctxData), child.ParentID,
+			string(callStack), int64(child.RetryCount), sql.NullInt64{},
+			string(child.Status), child.Error, now, now,
+		}
+		if _, err := tx.ExecContext(ctx, insertQuery, args...); err != nil {
+			return fmt.Errorf("insert child: %w", err)
+		}
+	}
+
+	// Update parent to waiting.
+	parentQueue, err := json.Marshal(parent.StepQueue)
+	if err != nil {
+		return err
+	}
+	parentCtx, err := json.Marshal(parent.ContextData)
+	if err != nil {
+		return err
+	}
+	var updateQuery string
+	var updateArgs []any
+	if db.dialect == "postgres" {
+		updateQuery = `UPDATE process_instances
+			SET step_queue=$1, context_data=$2, retry_count=$3, next_retry_at=$4,
+			    status=$5, error=$6, updated_at=$7, worker_id=NULL, lease_expires_at=NULL
+			WHERE id=$8`
+	} else {
+		updateQuery = `UPDATE process_instances
+			SET step_queue=?, context_data=?, retry_count=?, next_retry_at=?,
+			    status=?, error=?, updated_at=?, worker_id=NULL, lease_expires_at=NULL
+			WHERE id=?`
+	}
+	updateArgs = []any{
+		string(parentQueue), string(parentCtx), int64(parent.RetryCount), sql.NullInt64{},
+		string(model.StatusWaiting), parent.Error, nowUnix(), parent.ID,
+	}
+	if _, err := tx.ExecContext(ctx, updateQuery, updateArgs...); err != nil {
+		return fmt.Errorf("update parent: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// ErrParentNotRunning is returned by SpawnChildrenAndWait when the parent process
+// is no longer in 'running' state at spawn time (e.g. it was concurrently cancelled).
+var ErrParentNotRunning = fmt.Errorf("parent is no longer running")
 
 // buildSingleChildOutput writes the single child's output directly to
 // parentCtx["outputs"][stepID]. Returns a non-empty error message on validation failure.

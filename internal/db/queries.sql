@@ -119,7 +119,7 @@ WHERE worker_id = sqlc.arg(worker_id);
 -- name: CountActiveSiblings :one
 SELECT COUNT(*) FROM process_instances
 WHERE parent_id = sqlc.arg(parent_id)
-  AND status NOT IN ('completed', 'failed');
+  AND status NOT IN ('completed', 'failed', 'cancelled');
 
 -- name: GetSiblings :many
 SELECT id, process_name, process_version, step_queue, context_data, parent_id,
@@ -127,6 +127,17 @@ SELECT id, process_name, process_version, step_queue, context_data, parent_id,
        created_at, updated_at, worker_id, lease_expires_at
 FROM process_instances
 WHERE parent_id = sqlc.arg(parent_id);
+
+-- name: CountFailingChildren :one
+SELECT COUNT(*) FROM process_instances
+WHERE parent_id = sqlc.arg(parent_id)
+  AND status = 'failed';
+
+-- name: GetFirstFailingChild :one
+SELECT id, error FROM process_instances
+WHERE parent_id = sqlc.arg(parent_id)
+  AND status = 'failed'
+LIMIT 1;
 
 -- name: WakeParent :exec
 UPDATE process_instances

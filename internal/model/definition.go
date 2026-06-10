@@ -234,7 +234,7 @@ func (SwitchMap) JSONSchemaBytes() ([]byte, error) {
 // Rules are evaluated in order; the first match applies.
 // An empty Code list is a catch-all matching any error.
 type ErrorCase struct {
-	Code        []string `json:"code,omitempty"        description:"SQL LIKE patterns matched against the error code. '%' = any chars, '_' = one char. Empty = catch-all. Known codes — REST: http.NNN (e.g. http.500), http.timeout, pre.error, pre.timeout, output.parse, output.invalid; Script: script.N (exit code, e.g. script.1), script.timeout, pre.exec, output.parse; Child process: child.failed, output.invalid. pre.* codes mean the call never reached the remote."`
+	Code        []string `json:"code,omitempty"        description:"SQL LIKE patterns matched against the error code. '%' = any chars, '_' = one char. Empty = catch-all. Known codes — REST: http.NNN (e.g. http.500), http.timeout, pre.error, pre.timeout, output.parse, output.invalid; Script: script.N (exit code, e.g. script.1), script.timeout, pre.exec, output.parse; Child process: output.invalid. pre.* codes mean the call never reached the remote. Note: child.failed cannot be caught here — handle errors inside the child process and communicate them via return data."`
 	Retries     int      `json:"retries,omitempty"     description:"Number of retries before following goto or failing. 0 = no retries. On only_once:true steps only pre.* codes (or rules with not_reached:true) may have retries > 0."`
 	Goto        string   `json:"goto,omitempty"        description:"Step to route to when retries are exhausted. '$step-id' or 'end'. Omit to fail the instance."`
 	NotReached  *bool    `json:"not_reached,omitempty" description:"Assert that this error code means the remote call was never reached. When true, retries are allowed even on only_once:true steps. Omit to use the engine's default classification (pre.* = not reached, everything else = potentially reached)."`
@@ -443,6 +443,9 @@ func validateStep(s *Step, stepIDs map[string]struct{}, stepIdx, lastIdx int) er
 			if !validLikePattern(pat) {
 				return fmt.Errorf("step %q on_error[%d]: code pattern must not be empty", s.ID, i)
 			}
+			if sqlLikeMatch(pat, "child.failed") {
+				return fmt.Errorf("step %q on_error[%d]: catching child.failed is not supported; handle errors inside the child process and communicate them via return data", s.ID, i)
+			}
 		}
 		isLast := i == len(s.OnError)-1
 		if len(ec.Code) == 0 && !isLast {
@@ -506,6 +509,35 @@ func patternOnlyMatchesPre(p string) bool {
 		}
 	}
 	return strings.HasPrefix(p, "pre.")
+}
+
+func sqlLikeMatch(p, s string) bool {
+	for len(p) > 0 {
+		switch p[0] {
+		case '%':
+			p = p[1:]
+			if len(p) == 0 {
+				return true
+			}
+			for i := 0; i <= len(s); i++ {
+				if sqlLikeMatch(p, s[i:]) {
+					return true
+				}
+			}
+			return false
+		case '_':
+			if len(s) == 0 {
+				return false
+			}
+			p, s = p[1:], s[1:]
+		default:
+			if len(s) == 0 || p[0] != s[0] {
+				return false
+			}
+			p, s = p[1:], s[1:]
+		}
+	}
+	return len(s) == 0
 }
 
 func validAcceptedStatusPattern(p string) bool {
@@ -607,3 +639,4 @@ func describeFieldErr(fe validator.FieldError) string {
 		return fe.Error()
 	}
 }
+

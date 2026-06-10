@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,8 +12,8 @@ import (
 	"time"
 
 	"gent/internal/db"
-	"gent/internal/validation"
 	"gent/internal/model"
+	"gent/internal/validation"
 
 	"github.com/google/uuid"
 )
@@ -273,6 +274,26 @@ func (h *Handlers) getInstance(id string) Reply {
 		return errReply(err)
 	}
 	return okReply(instanceToResp(inst))
+}
+
+func (h *Handlers) cancelInstance(id string) Reply {
+	if id == "" {
+		return errReply(fmt.Errorf("id is required"))
+	}
+	if err := h.db.CancelProcess(context.Background(), id); err != nil {
+		return errReply(err)
+	}
+	return okReply(map[string]any{"cancelled": true})
+}
+
+func (h *Handlers) retryInstance(id string) Reply {
+	if id == "" {
+		return errReply(fmt.Errorf("id is required"))
+	}
+	if err := h.db.RetryProcess(context.Background(), id); err != nil {
+		return errReply(err)
+	}
+	return okReply(map[string]any{"retried": true})
 }
 
 func instanceToResp(inst *model.ProcessInstance) InstanceStatusResp {

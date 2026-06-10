@@ -282,5 +282,39 @@ var registry = func() []actionDef {
 				return h.getInstance(env.ID)
 			},
 		},
+		{
+			Name:    "cancel_instance",
+			Method:  http.MethodPost,
+			Path:    "/instances/{id}/cancel",
+			Summary: "Cancel a running process instance and its entire descendant tree",
+			Tags:    []string{"Instances"},
+			PathQuery: struct {
+				ID string `path:"id" format:"uuid"`
+			}{},
+			Resp: map[string]any{"cancelled": true},
+			fromHTTP: func(r *http.Request) (Envelope, error) {
+				return Envelope{Action: "cancel_instance", ID: r.PathValue("id")}, nil
+			},
+			handle: func(h *Handlers, env Envelope) Reply {
+				return h.cancelInstance(env.ID)
+			},
+		},
+		{
+			Name:    "retry_instance",
+			Method:  http.MethodPost,
+			Path:    "/instances/{id}/retry",
+			Summary: "Retry a failed or cancelled process instance from its current step",
+			Tags:    []string{"Instances"},
+			PathQuery: struct {
+				ID string `path:"id" format:"uuid"`
+			}{},
+			Resp: map[string]any{"retried": true},
+			fromHTTP: func(r *http.Request) (Envelope, error) {
+				return Envelope{Action: "retry_instance", ID: r.PathValue("id")}, nil
+			},
+			handle: func(h *Handlers, env Envelope) Reply {
+				return h.retryInstance(env.ID)
+			},
+		},
 	}
 }()

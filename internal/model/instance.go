@@ -6,10 +6,12 @@ import "time"
 type Status string
 
 const (
-	StatusRunning   Status = "running"
-	StatusCompleted Status = "completed"
-	StatusFailed    Status = "failed"
-	StatusWaiting   Status = "waiting"
+	StatusRunning    Status = "running"
+	StatusCompleted  Status = "completed"
+	StatusFailed     Status = "failed"
+	StatusWaiting    Status = "waiting"
+	StatusCancelling Status = "cancelling"
+	StatusCancelled  Status = "cancelled"
 )
 
 // ProcessInstance is a single running execution of a ProcessDefinition.
