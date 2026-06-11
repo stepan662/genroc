@@ -1,7 +1,11 @@
 import { beforeAll, afterAll } from "vitest";
 import { join } from "path";
 import { tmpdir } from "os";
-import { buildGentBinary, startGent, type GentProcess } from "../helpers/server.ts";
+import {
+  buildGentBinary,
+  startGent,
+  type GentProcess,
+} from "../helpers/server.ts";
 
 // Cached binary — built once per Vitest worker process.
 let _bin: string | null = null;
@@ -27,7 +31,7 @@ export class TickEnv {
   // Tick until no instances are processed in a cycle (fully settled).
   async tickUntilIdle(maxTicks = 20): Promise<void> {
     for (let i = 0; i < maxTicks; i++) {
-      if (await this.tick() === 0) return;
+      if ((await this.tick()) === 0) return;
     }
     throw new Error(`still active after ${maxTicks} ticks`);
   }
@@ -36,23 +40,29 @@ export class TickEnv {
     const { data, error } = await this.gent.client.GET("/instances/{id}", {
       params: { path: { id } },
     });
-    if (error) throw new Error(`status(${id}) failed: ${JSON.stringify(error)}`);
-    return data!.status as string;
+    if (error)
+      throw new Error(`status(${id}) failed: ${JSON.stringify(error)}`);
+    return `${data!.status} ${data!.wait_state ?? ""}`.trim() as string;
   }
 
   async waitState(id: string): Promise<string> {
     const { data, error } = await this.gent.client.GET("/instances/{id}", {
       params: { path: { id } },
     });
-    if (error) throw new Error(`waitState(${id}) failed: ${JSON.stringify(error)}`);
+    if (error)
+      throw new Error(`waitState(${id}) failed: ${JSON.stringify(error)}`);
     return (data!.wait_state as string) ?? "";
   }
 
   // Check statuses for a labelled map of instance IDs.
   // Usage: env.statuses({ gp: gpId, parent: parentId, a: aId, b: bId })
-  async statuses(tree: Record<string, string>): Promise<Record<string, string>> {
+  async statuses(
+    tree: Record<string, string>,
+  ): Promise<Record<string, string>> {
     const entries = await Promise.all(
-      Object.entries(tree).map(async ([label, id]) => [label, await this.status(id)] as const),
+      Object.entries(tree).map(
+        async ([label, id]) => [label, await this.status(id)] as const,
+      ),
     );
     return Object.fromEntries(entries);
   }
@@ -62,14 +72,16 @@ export class TickEnv {
     const { error } = await this.gent.client.PUT("/definitions", {
       body: { name, steps } as any,
     });
-    if (error) throw new Error(`define(${name}) failed: ${JSON.stringify(error)}`);
+    if (error)
+      throw new Error(`define(${name}) failed: ${JSON.stringify(error)}`);
   }
 
   async start(process: string): Promise<string> {
     const { data, error } = await this.gent.client.POST("/instances", {
       body: { process },
     });
-    if (error) throw new Error(`start(${process}) failed: ${JSON.stringify(error)}`);
+    if (error)
+      throw new Error(`start(${process}) failed: ${JSON.stringify(error)}`);
     return data!.id;
   }
 
@@ -77,7 +89,8 @@ export class TickEnv {
     const { error } = await this.gent.client.POST("/instances/{id}/cancel", {
       params: { path: { id } },
     });
-    if (error) throw new Error(`cancel(${id}) failed: ${JSON.stringify(error)}`);
+    if (error)
+      throw new Error(`cancel(${id}) failed: ${JSON.stringify(error)}`);
   }
 
   // Returns the child instance ID stored as placeholder in the parent's context
@@ -86,24 +99,33 @@ export class TickEnv {
     const { data } = await this.gent.client.GET("/instances/{id}", {
       params: { path: { id: parentId } },
     });
-    const placeholder = (data!.context as Record<string, unknown> | null)?.outputs as Record<string, unknown> | null;
+    const placeholder = (data!.context as Record<string, unknown> | null)
+      ?.outputs as Record<string, unknown> | null;
     const val = placeholder?.[stepId];
     if (typeof val !== "string") {
-      throw new Error(`childOf(${parentId}, ${stepId}): expected string placeholder, got ${JSON.stringify(val)}`);
+      throw new Error(
+        `childOf(${parentId}, ${stepId}): expected string placeholder, got ${JSON.stringify(val)}`,
+      );
     }
     return val;
   }
 
   // Returns the parallel child IDs keyed by child key, stored as placeholder
   // in the parent's context after SpawnChildrenAndWait.
-  async childrenOf(parentId: string, stepId: string): Promise<Record<string, string>> {
+  async childrenOf(
+    parentId: string,
+    stepId: string,
+  ): Promise<Record<string, string>> {
     const { data } = await this.gent.client.GET("/instances/{id}", {
       params: { path: { id: parentId } },
     });
-    const outputs = (data!.context as Record<string, unknown> | null)?.outputs as Record<string, unknown> | null;
+    const outputs = (data!.context as Record<string, unknown> | null)
+      ?.outputs as Record<string, unknown> | null;
     const val = outputs?.[stepId];
     if (typeof val !== "object" || val === null) {
-      throw new Error(`childrenOf(${parentId}, ${stepId}): expected object placeholder, got ${JSON.stringify(val)}`);
+      throw new Error(
+        `childrenOf(${parentId}, ${stepId}): expected object placeholder, got ${JSON.stringify(val)}`,
+      );
     }
     return val as Record<string, string>;
   }

@@ -89,8 +89,8 @@ async function buildTree() {
   const { a, b } = await ctx.env.childrenOf(parent, "run_children");
 
   expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
-    gp: "running",
-    parent: "running",
+    gp: "running waiting",
+    parent: "running waiting",
     a: "running",
     b: "running",
   });
@@ -123,8 +123,8 @@ test("cancel grandparent — entire tree becomes cancelling instantly, cancelled
     // CancelProcess is atomic: the recursive CTE marks all descendants,
     // ancestors (none here) in one transaction.
     expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
-      gp: "cancelling",
-      parent: "cancelling",
+      gp: "cancelling waiting",
+      parent: "cancelling waiting",
       a: "cancelling",
       b: "cancelling",
     });
@@ -150,8 +150,8 @@ test("cancel parent — subtree + grandparent become cancelling, all settled to 
     // Descendants: parent, a, b.
     // Ancestors: gp (running+wait_state=waiting → cancelling+wait_state=waiting).
     expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
-      gp: "cancelling",
-      parent: "cancelling",
+      gp: "cancelling waiting",
+      parent: "cancelling waiting",
       a: "cancelling",
       b: "cancelling",
     });
@@ -179,8 +179,8 @@ test("cancel one child — sibling is unaffected, ancestors cascade to cancelled
     // gp and parent stay running with wait_state=waiting (the cancel only changes status,
     // not wait_state — they still have live children).
     expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
-      gp: "cancelling",
-      parent: "cancelling",
+      gp: "cancelling waiting",
+      parent: "cancelling waiting",
       a: "cancelling",
       b: "running",
     });
@@ -191,8 +191,8 @@ test("cancel one child — sibling is unaffected, ancestors cascade to cancelled
     await ctx.env.tick();
 
     expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
-      gp: "cancelling",
-      parent: "cancelling",  // still cancelling, now with wait_state='collecting'
+      gp: "cancelling waiting",
+      parent: "cancelling collecting", // still cancelling, now with wait_state='collecting'
       a: "cancelled",
       b: "completed",
     });
@@ -202,7 +202,7 @@ test("cancel one child — sibling is unaffected, ancestors cascade to cancelled
     await ctx.env.tick();
 
     expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
-      gp: "cancelling",
+      gp: "cancelling collecting",
       parent: "cancelled",
       a: "cancelled",
       b: "completed",
