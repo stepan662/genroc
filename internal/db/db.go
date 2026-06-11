@@ -13,7 +13,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/xeipuuv/gojsonschema"
 
-	"gent/internal/db/gen"
+	dbgen "gent/internal/db/gen"
 	"gent/internal/model"
 )
 
@@ -518,7 +518,7 @@ func (db *DB) RenewWorkerLeases(workerID string, leaseDur time.Duration) error {
 // concurrent workers, while SQLite's single-writer model makes this unnecessary.
 //
 // wait_state <> 'waiting' excludes parents suspended for children.
-// Both '' (none) and 'collecting' are claimable.
+// Both ” (none) and 'collecting' are claimable.
 func (db *DB) ClaimInstances(workerID string, leaseDur time.Duration, limit int) ([]*model.ProcessInstance, error) {
 	now := nowUnix()
 	leaseExpiry := now + int64(leaseDur.Seconds())
@@ -642,15 +642,24 @@ func (db *DB) FinishChild(child *model.ProcessInstance) error {
 	}
 	defer tx.Rollback()
 
-	// Lock parent first to serialise concurrent FinishChild calls for the same parent.
-	var lockQuery string
-	if db.dialect == "postgres" {
-		lockQuery = `SELECT wait_state FROM process_instances WHERE id = $1 FOR UPDATE`
-	} else {
-		lockQuery = `SELECT wait_state FROM process_instances WHERE id = ?`
-	}
+	// Acquire row locks (oldest-first) and read the parent's wait_state in one shot.
+	// The locking CTE (PostgreSQL) ensures the same lock order as CancelProcess and
+	// FailInstanceAndAncestors, preventing deadlocks. SQLite needs no explicit locking.
 	var parentWaitState string
-	err = tx.QueryRowContext(ctx, lockQuery, child.ParentID).Scan(&parentWaitState)
+	if db.dialect == "postgres" {
+		err = tx.QueryRowContext(ctx, `
+			WITH locked AS (
+				SELECT id, wait_state FROM process_instances
+				WHERE id IN ($1, $2)
+				ORDER BY created_at, id FOR UPDATE
+			)
+			SELECT wait_state FROM locked WHERE id = $2`,
+			child.ID, child.ParentID).Scan(&parentWaitState)
+	} else {
+		err = tx.QueryRowContext(ctx,
+			"SELECT wait_state FROM process_instances WHERE id = ?",
+			child.ParentID).Scan(&parentWaitState)
+	}
 	if err != nil && err != sql.ErrNoRows {
 		return fmt.Errorf("lock parent: %w", err)
 	}
@@ -758,6 +767,23 @@ func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 	}
 	defer tx.Rollback()
 
+	// Lock child and all ancestors oldest-first (PostgreSQL) — consistent with
+	// FinishChild and CancelProcess. Ancestors are read from the child's call_stack
+	// in the DB; no Go-side ID list needed. SQLite needs no explicit locking.
+	if db.dialect == "postgres" {
+		lockRows, lockErr := tx.QueryContext(ctx, `
+			SELECT id FROM process_instances
+			WHERE id = $1
+			   OR id IN (SELECT jsonb_array_elements_text(
+			                 (SELECT call_stack::jsonb FROM process_instances WHERE id = $1)
+			             ))
+			ORDER BY created_at, id FOR UPDATE`, child.ID)
+		if lockErr != nil {
+			return fmt.Errorf("lock rows: %w", lockErr)
+		}
+		lockRows.Close()
+	}
+
 	queue, err := json.Marshal(child.StepQueue)
 	if err != nil {
 		return err
@@ -780,8 +806,8 @@ func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 		return err
 	}
 
-	// Update ancestors nearest-first so lock order matches RetryProcess and avoids
-	// deadlocks on PostgreSQL when both run concurrently on sibling processes.
+	// Update ancestors nearest-first so error messages propagate correctly.
+	// Lock order is already established by the pre-lock above.
 	now := nowUnix()
 	for i := len(child.CallStack) - 1; i >= 0; i-- {
 		query := fmt.Sprintf(
@@ -798,20 +824,17 @@ func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 }
 
 // CancelProcess atomically marks an entire process tree as cancelling.
-// Downward: all running/waiting descendants of id are marked cancelling via recursive CTE.
-// Upward: all ancestor processes (from the target's call_stack) are marked cancelling.
-// Both operations run in a single transaction.
-// Hand-written because it uses a recursive CTE and a dynamic IN clause.
+// Downward: all running descendants of id are marked cancelling.
+// CancelProcess marks the target, all its descendants (rows whose call_stack contains
+// the target), and all its ancestors (the target's own call_stack entries) as 'cancelling'.
+//
+// On PostgreSQL a single locking CTE acquires every row lock in created_at, id order
+// before the UPDATE runs — the same order used by FinishChild and FailInstanceAndAncestors,
+// eliminating deadlocks. Descendants are found via the JSONB ? operator; ancestors via
+// jsonb_array_elements_text on the target's own call_stack. No Go-side ID manipulation.
 func (db *DB) CancelProcess(ctx context.Context, id string) error {
-	// Read the target's call_stack before the transaction so we can build the ancestor list.
-	row, err := db.q.GetInstance(ctx, id)
-	if err != nil {
+	if _, err := db.q.GetInstance(ctx, id); err != nil {
 		return fmt.Errorf("get instance: %w", err)
-	}
-
-	var callStack []string
-	if err := json.Unmarshal([]byte(row.CallStack), &callStack); err != nil {
-		return fmt.Errorf("unmarshal call_stack: %w", err)
 	}
 
 	tx, err := db.sqldb.BeginTx(ctx, nil)
@@ -822,42 +845,34 @@ func (db *DB) CancelProcess(ctx context.Context, id string) error {
 
 	now := nowUnix()
 
-	// Descendants: recursive CTE from the target downward.
-	// wait_state is preserved: a descendant waiting for its own children keeps that state;
-	// FinishChild will transition it to 'collecting' once the children complete.
-	descQuery := fmt.Sprintf(`
-		WITH RECURSIVE descendants AS (
-			SELECT id FROM process_instances WHERE id = %s
-			UNION ALL
-			SELECT p.id FROM process_instances p
-			JOIN descendants d ON p.parent_id = d.id
-		)
-		UPDATE process_instances SET status = 'cancelling', updated_at = %s
-		WHERE id IN (SELECT id FROM descendants)
-		  AND status = 'running'`,
-		db.ph(1), db.ph(2),
-	)
-	if _, err := tx.ExecContext(ctx, descQuery, id, now); err != nil {
-		return fmt.Errorf("cancel descendants: %w", err)
+	var qErr error
+	if db.dialect == "postgres" {
+		_, qErr = tx.ExecContext(ctx, `
+			WITH locked AS (
+				SELECT id FROM process_instances
+				WHERE id = $1
+				   OR call_stack::jsonb ? $1
+				   OR id IN (SELECT jsonb_array_elements_text(
+				                 (SELECT call_stack::jsonb FROM process_instances WHERE id = $1)
+				             ))
+				ORDER BY created_at, id FOR UPDATE
+			)
+			UPDATE process_instances SET status = 'cancelling', updated_at = $2
+			WHERE id IN (SELECT id FROM locked) AND status = 'running'`,
+			id, now)
+	} else {
+		_, qErr = tx.ExecContext(ctx, `
+			UPDATE process_instances SET status = 'cancelling', updated_at = ?
+			WHERE status = 'running'
+			  AND (id = ?
+			       OR EXISTS (SELECT 1 FROM json_each(call_stack) WHERE value = ?)
+			       OR id IN (SELECT value FROM json_each(
+			                     (SELECT call_stack FROM process_instances WHERE id = ?)
+			                 )))`,
+			now, id, id, id)
 	}
-
-	// Ancestors: mark the parent chain as cancelling, preserving wait_state.
-	// A waiting ancestor must remain suspended until its children settle via FinishChild.
-	if len(callStack) > 0 {
-		args := []any{now}
-		placeholders := make([]string, len(callStack))
-		for i, ancestorID := range callStack {
-			args = append(args, ancestorID)
-			placeholders[i] = db.ph(len(args))
-		}
-		ancQuery := fmt.Sprintf(
-			`UPDATE process_instances SET status = 'cancelling', updated_at = %s
-			 WHERE id IN (%s) AND status = 'running'`,
-			db.ph(1), strings.Join(placeholders, ", "),
-		)
-		if _, err := tx.ExecContext(ctx, ancQuery, args...); err != nil {
-			return fmt.Errorf("cancel ancestors: %w", err)
-		}
+	if qErr != nil {
+		return fmt.Errorf("cancel process: %w", qErr)
 	}
 
 	return tx.Commit()
