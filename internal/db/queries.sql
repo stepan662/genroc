@@ -155,7 +155,7 @@ WHERE pd.parent_version = pc.version
 
 -- name: FailAncestors :exec
 UPDATE process_instances
-SET status = 'failed', wait_state = '', error = sqlc.arg(error), updated_at = sqlc.arg(updated_at)
+SET status = 'failing', error = sqlc.arg(error), updated_at = sqlc.arg(updated_at)
 WHERE id IN (SELECT value FROM json_each(sqlc.arg(ids)))
   AND status IN ('running', 'cancelling');
 

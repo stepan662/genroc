@@ -147,7 +147,7 @@ var registry = func() []actionDef {
 			Summary: "List process instances",
 			Tags:    []string{"Instances"},
 			PathQuery: struct {
-				Status string `query:"status" enum:"running,completed,failed,cancelling,cancelled" description:"Filter by status"`
+				Status string `query:"status" enum:"running,completed,failing,failed,cancelling,cancelled" description:"Filter by status"`
 			}{},
 			Resp: []InstanceStatusResp{},
 			fromHTTP: func(r *http.Request) (Envelope, error) {

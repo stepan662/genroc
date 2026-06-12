@@ -104,7 +104,7 @@ type StartInstanceResp struct {
 }
 
 type ListInstancesReq struct {
-	Status string `json:"status"` // optional filter: running, completed, failed, cancelling, cancelled
+	Status string `json:"status"` // optional filter: running, completed, failing, failed, cancelling, cancelled
 }
 
 type RetryInstanceReq struct {

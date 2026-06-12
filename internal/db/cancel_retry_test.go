@@ -170,13 +170,14 @@ func TestCancelProcess_NonRootRejected(t *testing.T) {
 	}
 }
 
-// TestFailAncestors_OverridesCancelling verifies that a child failure overrides
-// the 'cancelling' status of ancestor processes (error wins over cancellation).
+// TestFailAncestors_OverridesCancelling verifies that a child failure marks
+// 'cancelling' ancestors as 'failing' (error wins over cancellation) while
+// preserving their wait_state so they keep draining until children settle.
 func TestFailAncestors_OverridesCancelling(t *testing.T) {
 	for _, b := range testBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
-			insertInst(t, b.db, "grand", model.StatusCancelling, "", nil, "")
-			insertInst(t, b.db, "parent", model.StatusCancelling, "grand", []string{"grand"}, "")
+			insertInstW(t, b.db, "grand", model.StatusCancelling, model.WaitStateWaiting, "", nil, "")
+			insertInstW(t, b.db, "parent", model.StatusCancelling, model.WaitStateWaiting, "grand", []string{"grand"}, "")
 			// leaf is already failed and triggers FailAncestors
 			leaf := &model.ProcessInstance{
 				ID:        "leaf",
@@ -189,11 +190,14 @@ func TestFailAncestors_OverridesCancelling(t *testing.T) {
 			}
 
 			for _, id := range []string{"grand", "parent"} {
-				if got := mustStatus(t, b.db, id); got != model.StatusFailed {
-					t.Errorf("%q: expected failed, got %q", id, got)
+				if got := mustStatus(t, b.db, id); got != model.StatusFailing {
+					t.Errorf("%q: expected failing, got %q", id, got)
 				}
 				if msg := mustError(t, b.db, id); msg != "boom" {
 					t.Errorf("%q: expected error \"boom\", got %q", id, msg)
+				}
+				if got := mustWaitState(t, b.db, id); got != model.WaitStateWaiting {
+					t.Errorf("%q: wait_state should be preserved, got %q", id, got)
 				}
 			}
 		})
@@ -321,13 +325,14 @@ func insertChild(t *testing.T, db *DB, id string, status model.Status, parentID,
 }
 
 // TestRetryProcess_NonRetryableStatuses verifies that only failed and cancelled
-// instances can be retried. In particular a still-draining 'cancelling' tree must
-// settle to 'cancelled' before a retry is accepted.
+// instances can be retried. In particular a still-draining ('failing' or
+// 'cancelling') tree must settle before a retry is accepted.
 func TestRetryProcess_NonRetryableStatuses(t *testing.T) {
 	for _, b := range testBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
 			for _, status := range []model.Status{
 				model.StatusRunning,
+				model.StatusFailing,
 				model.StatusCancelling,
 				model.StatusCompleted,
 			} {
@@ -580,61 +585,72 @@ func TestRetryProcess_EmptyQueue(t *testing.T) {
 	}
 }
 
-// TestRetryProcess_FailedTree_RunningSibling verifies that retrying a failed
-// root while a sibling is still running revives only the failed child; the
-// running sibling is left to the engine and keeps the root waiting.
-func TestRetryProcess_FailedTree_RunningSibling(t *testing.T) {
+// TestFailInstanceAndAncestors_LastActiveChild_WakesParent verifies that when
+// the failing child is the last active member of its spawn batch, the parent
+// is marked failing AND woken to collecting so the engine can settle it.
+func TestFailInstanceAndAncestors_LastActiveChild_WakesParent(t *testing.T) {
 	for _, b := range testBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
-			insertInst(t, b.db, "root", model.StatusFailed, "", nil, "child failed")
-			insertChild(t, b.db, "c-failed", model.StatusFailed, "root", "step1", []string{"root"}, "boom")
-			insertChild(t, b.db, "c-running", model.StatusRunning, "root", "step1", []string{"root"}, "")
+			insertInstW(t, b.db, "root", model.StatusRunning, model.WaitStateWaiting, "", nil, "")
+			insertChild(t, b.db, "c-done", model.StatusCompleted, "root", "step1", []string{"root"}, "")
+			insertChild(t, b.db, "c-bad", model.StatusRunning, "root", "step1", []string{"root"}, "")
 
-			if err := b.db.RetryProcess(context.Background(), "root", false); err != nil {
-				t.Fatalf("RetryProcess: %v", err)
+			child, err := b.db.GetInstance("c-bad")
+			if err != nil {
+				t.Fatalf("GetInstance: %v", err)
+			}
+			child.Status = model.StatusFailed
+			child.Error = "boom"
+			if err := b.db.FailInstanceAndAncestors(child); err != nil {
+				t.Fatalf("FailInstanceAndAncestors: %v", err)
 			}
 
-			if got := mustStatus(t, b.db, "c-failed"); got != model.StatusRunning {
-				t.Errorf("c-failed: expected running, got %q", got)
+			if got := mustStatus(t, b.db, "c-bad"); got != model.StatusFailed {
+				t.Errorf("c-bad: expected failed, got %q", got)
 			}
-			if got := mustStatus(t, b.db, "c-running"); got != model.StatusRunning {
-				t.Errorf("c-running: expected running (untouched), got %q", got)
+			if got := mustStatus(t, b.db, "root"); got != model.StatusFailing {
+				t.Errorf("root: expected failing, got %q", got)
 			}
-			if got := mustStatus(t, b.db, "root"); got != model.StatusRunning {
-				t.Errorf("root: expected running, got %q", got)
+			// All batch children terminal → parent woken to collecting,
+			// so the engine can claim it and settle failing → failed.
+			if got := mustWaitState(t, b.db, "root"); got != model.WaitStateCollecting {
+				t.Errorf("root: expected wait_state=collecting, got %q", got)
 			}
-			if got := mustWaitState(t, b.db, "root"); got != model.WaitStateWaiting {
-				t.Errorf("root: expected wait_state=waiting, got %q", got)
+			if msg := mustError(t, b.db, "root"); msg != "boom" {
+				t.Errorf("root: expected error \"boom\", got %q", msg)
 			}
 		})
 	}
 }
 
-// TestRetryProcess_RejectedWhileSiblingCancelling verifies that a retry is
-// rejected while any descendant is still draining ('cancelling') — reviving
-// around it would leave it permanently cancelled inside a resumed tree.
-func TestRetryProcess_RejectedWhileSiblingCancelling(t *testing.T) {
+// TestFailInstanceAndAncestors_SiblingStillRunning verifies that a failure with
+// a still-active sibling leaves the parent failing+waiting — it drains until
+// the sibling settles.
+func TestFailInstanceAndAncestors_SiblingStillRunning(t *testing.T) {
 	for _, b := range testBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
-			insertInst(t, b.db, "root", model.StatusFailed, "", nil, "child failed")
-			insertChild(t, b.db, "c-failed", model.StatusFailed, "root", "step1", []string{"root"}, "boom")
-			insertChild(t, b.db, "c-cancelling", model.StatusCancelling, "root", "step1", []string{"root"}, "")
+			insertInstW(t, b.db, "root", model.StatusRunning, model.WaitStateWaiting, "", nil, "")
+			insertChild(t, b.db, "c-running", model.StatusRunning, "root", "step1", []string{"root"}, "")
+			insertChild(t, b.db, "c-bad", model.StatusRunning, "root", "step1", []string{"root"}, "")
 
-			err := b.db.RetryProcess(context.Background(), "root", false)
-			if err == nil {
-				t.Fatal("expected error while sibling is cancelling, got nil")
+			child, err := b.db.GetInstance("c-bad")
+			if err != nil {
+				t.Fatalf("GetInstance: %v", err)
 			}
-			if !strings.Contains(err.Error(), "settling") {
-				t.Errorf("expected 'settling' error, got %q", err)
+			child.Status = model.StatusFailed
+			child.Error = "boom"
+			if err := b.db.FailInstanceAndAncestors(child); err != nil {
+				t.Fatalf("FailInstanceAndAncestors: %v", err)
 			}
-			for id, want := range map[string]model.Status{
-				"root":         model.StatusFailed,
-				"c-failed":     model.StatusFailed,
-				"c-cancelling": model.StatusCancelling,
-			} {
-				if got := mustStatus(t, b.db, id); got != want {
-					t.Errorf("%q: expected %q (untouched), got %q", id, want, got)
-				}
+
+			if got := mustStatus(t, b.db, "root"); got != model.StatusFailing {
+				t.Errorf("root: expected failing, got %q", got)
+			}
+			if got := mustWaitState(t, b.db, "root"); got != model.WaitStateWaiting {
+				t.Errorf("root: expected wait_state=waiting (sibling active), got %q", got)
+			}
+			if got := mustStatus(t, b.db, "c-running"); got != model.StatusRunning {
+				t.Errorf("c-running: expected running (untouched), got %q", got)
 			}
 		})
 	}

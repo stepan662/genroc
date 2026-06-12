@@ -3,13 +3,19 @@ package model
 import "time"
 
 // Status represents the lifecycle state of a process instance.
+//
+// failing and cancelling are draining states: the outcome is decided but
+// descendants are still settling. A node only becomes failed/cancelled once
+// all its direct children are terminal, so a terminal root implies the whole
+// tree has settled — which is what makes failed/cancelled roots retryable.
 type Status string
 
 const (
 	StatusRunning    Status = "running"
 	StatusCompleted  Status = "completed"
+	StatusFailing    Status = "failing" // doomed by an error, draining descendants
 	StatusFailed     Status = "failed"
-	StatusCancelling Status = "cancelling"
+	StatusCancelling Status = "cancelling" // cancel requested, draining descendants
 	StatusCancelled  Status = "cancelled"
 )
 

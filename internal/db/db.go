@@ -534,7 +534,7 @@ func (db *DB) ClaimInstances(workerID string, leaseDur time.Duration, limit int)
 			SET worker_id = $1, lease_expires_at = $2
 			WHERE id IN (
 				SELECT id FROM process_instances
-				WHERE status IN ('running', 'cancelling')
+				WHERE status IN ('running', 'failing', 'cancelling')
 				  AND wait_state <> 'waiting'
 				  AND (next_retry_at IS NULL OR next_retry_at <= $3)
 				  AND (worker_id IS NULL OR lease_expires_at <= $4)
@@ -551,7 +551,7 @@ func (db *DB) ClaimInstances(workerID string, leaseDur time.Duration, limit int)
 			SET worker_id = ?, lease_expires_at = ?
 			WHERE id IN (
 				SELECT id FROM process_instances
-				WHERE status IN ('running', 'cancelling')
+				WHERE status IN ('running', 'failing', 'cancelling')
 				  AND wait_state <> 'waiting'
 				  AND (next_retry_at IS NULL OR next_retry_at <= ?)
 				  AND (worker_id IS NULL OR lease_expires_at <= ?)
@@ -740,10 +740,13 @@ func (db *DB) CollectChildOutputs(ctx context.Context, inst *model.ProcessInstan
 	return nil
 }
 
-// FailAncestors marks all ancestor processes in the child's call stack as failed.
+// FailAncestors marks all ancestor processes in the child's call stack as
+// 'failing' — doomed but still draining. Ancestors keep their wait_state
+// ('waiting'), so they stay unclaimable until their children settle; the engine
+// then transitions them to 'failed' one level per tick, mirroring cancellation.
 // This is a single bulk UPDATE — O(1) queries regardless of tree depth.
-// It targets ancestors in 'running' or 'cancelling' state so that errors always
-// take precedence over cancellation.
+// It targets ancestors in 'running' or 'cancelling' state, so errors always
+// take precedence over cancellation and the first error wins.
 func (db *DB) FailAncestors(child *model.ProcessInstance) error {
 	if len(child.CallStack) == 0 {
 		return nil
@@ -759,9 +762,12 @@ func (db *DB) FailAncestors(child *model.ProcessInstance) error {
 	})
 }
 
-// FailInstanceAndAncestors atomically marks a child instance as failed and propagates
-// the failure to all ancestors in its call stack in a single transaction.
-// This is the safe replacement for calling UpdateInstance + FailAncestors separately.
+// FailInstanceAndAncestors atomically marks a child instance as failed,
+// propagates 'failing' to all ancestors in its call stack, and — when the
+// failed child was the last active member of its spawn batch — wakes the
+// parent to 'collecting' so the engine can settle it on the next tick.
+// All in a single transaction; the safe replacement for calling
+// UpdateInstance + FailAncestors separately.
 func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 	ctx := context.Background()
 	tx, qtx, err := db.beginTx(ctx, nil)
@@ -809,7 +815,7 @@ func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 		return err
 	}
 
-	// Bulk-fail all ancestors in a single UPDATE via json_each.
+	// Bulk-mark all ancestors as failing in a single UPDATE via json_each.
 	if len(child.CallStack) > 0 {
 		idsJSON, err := json.Marshal(child.CallStack)
 		if err != nil {
@@ -821,6 +827,36 @@ func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 			Ids:       string(idsJSON),
 		}); err != nil {
 			return err
+		}
+	}
+
+	// If this failure settled the last active child of the batch, wake the
+	// waiting parent to 'collecting' (mirrors FinishChild) so the engine can
+	// claim it and transition failing → failed.
+	if child.ParentID != "" {
+		var parentWaitState string
+		err := tx.QueryRowContext(ctx,
+			"SELECT wait_state FROM process_instances WHERE id = "+db.ph(1),
+			child.ParentID).Scan(&parentWaitState)
+		if err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("read parent wait_state: %w", err)
+		}
+		if err == nil && model.WaitState(parentWaitState) == model.WaitStateWaiting {
+			active, err := qtx.CountActiveSiblings(ctx, dbgen.CountActiveSiblingsParams{
+				ParentID:    child.ParentID,
+				SpawnStepID: child.SpawnStepID,
+			})
+			if err != nil {
+				return fmt.Errorf("count siblings: %w", err)
+			}
+			if active == 0 {
+				if err := qtx.SetParentCollecting(ctx, dbgen.SetParentCollectingParams{
+					ID:        child.ParentID,
+					UpdatedAt: nowUnix(),
+				}); err != nil {
+					return fmt.Errorf("wake parent: %w", err)
+				}
+			}
 		}
 	}
 
@@ -899,9 +935,10 @@ func requireRoot(row dbgen.ProcessInstance, op string) error {
 // is never redone. force overrides the only_once protection on pending steps.
 //
 // Only root instances are accepted — like cancellation, retry is a decision
-// about the whole tree. The tree must also have settled: a retry is rejected
-// while any descendant is still 'cancelling'. Running descendants are allowed —
-// they keep running and report into the revived parent normally.
+// about the whole tree. A root that is failed/cancelled implies the tree has
+// fully settled (nodes only reach a terminal status once all their children
+// are terminal); draining roots are rejected as failing/cancelling by the
+// status check.
 func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 	rootRow, err := db.q.GetInstance(ctx, id)
 	if err != nil {
@@ -983,16 +1020,6 @@ func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 		return fmt.Errorf("instance not found")
 	}
 
-	// A cancelling descendant is mid-drain: the revival is one-shot, so it would
-	// settle to 'cancelled' after the walk and stay dead in a resumed tree,
-	// producing a nil output at collect time. Make the user wait one tick instead.
-	// (Running descendants are fine — they finish into the revived parent normally.)
-	for _, n := range nodes {
-		if n.Status == model.StatusCancelling {
-			return fmt.Errorf("process tree is still settling: instance %q is cancelling; retry after it settles", n.ID)
-		}
-	}
-
 	// Walk the tree top-down, reviving the interrupted path. Only the root and
 	// the front-step children of revived nodes are visited, so completed steps
 	// and finished side branches are never touched.
@@ -1002,8 +1029,10 @@ func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 		switch node.Status {
 		case model.StatusCompleted:
 			return nil // finished work is kept
-		case model.StatusRunning, model.StatusCancelling:
-			return nil // still live; the engine owns it
+		case model.StatusRunning, model.StatusFailing, model.StatusCancelling:
+			// Unreachable under a terminal root (the tree has settled);
+			// kept as defense — a live node belongs to the engine.
+			return nil
 		}
 		// node is failed or cancelled
 		newWaitState := model.WaitStateNone

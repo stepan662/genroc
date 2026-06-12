@@ -141,6 +141,9 @@ func (e *Engine) Tick(ctx context.Context) (int, error) {
 // available as "self". A matching switch case jumps to the named step; no match
 // advances to the next step in the queue.
 func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) error {
+	if inst.Status == model.StatusFailing {
+		return e.settleFailing(inst)
+	}
 	if inst.Status == model.StatusCancelling {
 		return e.cancelInstance(inst)
 	}
@@ -441,6 +444,17 @@ func (e *Engine) cancelInstance(inst *model.ProcessInstance) error {
 	inst.WaitState = model.WaitStateNone
 	inst.NextRetryAt = nil
 	e.log.Info("instance cancelled", "id", inst.ID)
+	return e.saveAndNotify(inst)
+}
+
+// settleFailing finalises a draining 'failing' instance once its children have
+// settled (it only becomes claimable then). The error was already recorded when
+// the failure propagated up; saveAndNotify cascades the settlement one level up.
+func (e *Engine) settleFailing(inst *model.ProcessInstance) error {
+	inst.Status = model.StatusFailed
+	inst.WaitState = model.WaitStateNone
+	inst.NextRetryAt = nil
+	e.log.Info("instance settled as failed", "id", inst.ID, "reason", inst.Error)
 	return e.saveAndNotify(inst)
 }
 

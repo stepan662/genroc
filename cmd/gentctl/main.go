@@ -278,7 +278,7 @@ func runStatusCmd(server string, args []string) {
 func runInstancesCmd(server string, args []string) {
 	fs := flag.NewFlagSet("instances", flag.ExitOnError)
 	serverFlag := fs.String("server", server, "gent server base URL ($GENT_SERVER)")
-	statusFlag := fs.String("status", "", "filter by status (running, completed, failed, cancelling, cancelled)")
+	statusFlag := fs.String("status", "", "filter by status (running, completed, failing, failed, cancelling, cancelled)")
 	fs.Parse(args)
 
 	u := *serverFlag + "/instances"

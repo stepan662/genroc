@@ -60,7 +60,7 @@ func (q *Queries) DeleteDependencies(ctx context.Context, arg DeleteDependencies
 
 const failAncestors = `-- name: FailAncestors :exec
 UPDATE process_instances
-SET status = 'failed', wait_state = '', error = ?1, updated_at = ?2
+SET status = 'failing', error = ?1, updated_at = ?2
 WHERE id IN (SELECT value FROM json_each(?3))
   AND status IN ('running', 'cancelling')
 `

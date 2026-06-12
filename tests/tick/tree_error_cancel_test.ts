@@ -6,11 +6,12 @@
  *          ├─ a  (child_parallel)  ← always calls failWorker → HTTP 500 → fails
  *          └─ b  (child_parallel)  ← calls successWorker → HTTP 200 → completes
  *
- * Key invariant: errors take precedence over cancellation.
- *   - FailAncestors marks ancestors as 'failed' even if they were 'cancelling waiting'.
- *   - FinishChild for a cancelled/completed sibling does NOT overwrite the parent's
- *     'failed' status (parent.wait_state is '' after FailAncestors, so SetParentCollecting
- *     never fires).
+ * Key invariants:
+ *   - Errors take precedence over cancellation: FailAncestors marks ancestors
+ *     as 'failing' even if they were 'cancelling waiting'.
+ *   - Ancestors drain through 'failing' (keeping wait_state) and settle to
+ *     'failed' one level per tick, bottom-up — a root is 'failed' only once
+ *     its whole tree is inactive, which is what makes it retryable.
  *
  * Same server/tick/ordering conventions as tree_cancel_test.ts; see that file for details.
  *
@@ -120,21 +121,42 @@ async function buildTree() {
   return { gp, parent, a, b };
 }
 
-test("a fails — FailAncestors cascades to parent and gp; completed sibling leaves them failed", async () => {
+test("a fails — ancestors drain through 'failing' and settle to 'failed' one level per tick", async () => {
   const { gp, parent, a, b } = await buildTree();
   try {
     // tick: a (smaller created_at) is claimed and executed; its REST call returns 500.
-    // failInstance(a) → FailAncestors: parent and gp set to 'failed', wait_state=''.
+    // failInstance(a) → FailInstanceAndAncestors: a is failed (terminal), parent
+    // and gp become 'failing' but keep wait_state='waiting' — b is still active.
     await ctx.env.tick();
     expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
-      gp: "failed",
-      parent: "failed",
+      gp: "failing waiting",
+      parent: "failing waiting",
       a: "failed",
       b: "running",
     });
 
-    // tick: b runs and completes normally.
-    // FinishChild(b) reads parent.wait_state='' → no wakeup; parent stays failed.
+    // tick: b runs and completes normally. FinishChild(b): all batch children
+    // terminal → parent woken to 'collecting' (now claimable).
+    await ctx.env.tick();
+    expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
+      gp: "failing waiting",
+      parent: "failing collecting",
+      a: "failed",
+      b: "completed",
+    });
+
+    // tick: parent (failing, claimable) settles to 'failed'; its terminal save
+    // wakes gp to 'collecting'.
+    await ctx.env.tick();
+    expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
+      gp: "failing collecting",
+      parent: "failed",
+      a: "failed",
+      b: "completed",
+    });
+
+    // tick: gp settles to 'failed' — the root is terminal only now that the
+    // whole tree is inactive, so 'failed' means retryable.
     await ctx.env.tick();
     expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
       gp: "failed",
@@ -209,30 +231,47 @@ test("a fails while ancestors are cancelling — FailAncestors overrides 'cancel
     // Release the held 500. The engine still holds a as in-memory 'running',
     // so the failure path runs: failInstance(a) → FailAncestors:
     // WHERE status IN ('running', 'cancelling') — the cancelling ancestors are
-    // overridden to 'failed', clearing their wait_state.
+    // overridden to 'failing' (error wins), keeping wait_state='waiting'.
     holdMock.release();
     await tickPromise;
 
     expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
-      gp: "failed",
-      parent: "failed",
+      gp: "failing waiting",
+      parent: "failing waiting",
       a: "failed",
       b: "cancelling",
     });
 
-    // The root is failed but b is still draining — a retry must be rejected
-    // until the tree settles (b would otherwise stay cancelled inside a
-    // resumed tree).
+    // The root is draining ('failing') while b settles — a retry is rejected
+    // by the status check alone.
     const { error: earlyRetryErr } = await ctx.env.client.POST(
       "/instances/{id}/retry",
       { params: { path: { id: gp } } },
     );
     expect(earlyRetryErr).toBeDefined();
-    expect(JSON.stringify(earlyRetryErr)).toContain("settling");
+    expect(JSON.stringify(earlyRetryErr)).toContain("not retryable");
 
     // tick: b (cancelling) is processed → cancelInstance → cancelled.
-    // FinishChild(b): parent.wait_state='' (cleared by FailAncestors) → no wakeup.
-    // Parent and grandparent remain failed.
+    // FinishChild(b): all batch children terminal → parent woken to collecting.
+    await ctx.env.tick();
+    expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
+      gp: "failing waiting",
+      parent: "failing collecting",
+      a: "failed",
+      b: "cancelled",
+    });
+
+    // tick: parent settles failing → failed (error wins over the cancel);
+    // its terminal save wakes gp.
+    await ctx.env.tick();
+    expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
+      gp: "failing collecting",
+      parent: "failed",
+      a: "failed",
+      b: "cancelled",
+    });
+
+    // tick: gp settles failing → failed — only now is the root retryable.
     await ctx.env.tick();
     expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
       gp: "failed",
