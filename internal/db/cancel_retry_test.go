@@ -587,7 +587,8 @@ func TestRetryProcess_EmptyQueue(t *testing.T) {
 
 // TestFailInstanceAndAncestors_LastActiveChild_WakesParent verifies that when
 // the failing child is the last active member of its spawn batch, the parent
-// is marked failing AND woken to collecting so the engine can settle it.
+// is marked failing AND woken (wait_state '') so the engine can settle it —
+// never 'collecting': that state is reserved for all-completed batches.
 func TestFailInstanceAndAncestors_LastActiveChild_WakesParent(t *testing.T) {
 	for _, b := range testBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
@@ -611,10 +612,11 @@ func TestFailInstanceAndAncestors_LastActiveChild_WakesParent(t *testing.T) {
 			if got := mustStatus(t, b.db, "root"); got != model.StatusFailing {
 				t.Errorf("root: expected failing, got %q", got)
 			}
-			// All batch children terminal → parent woken to collecting,
-			// so the engine can claim it and settle failing → failed.
-			if got := mustWaitState(t, b.db, "root"); got != model.WaitStateCollecting {
-				t.Errorf("root: expected wait_state=collecting, got %q", got)
+			// All batch children terminal → parent woken so the engine can
+			// claim it and settle failing → failed. The wake is to '' (not
+			// 'collecting') because a failing parent never merges outputs.
+			if got := mustWaitState(t, b.db, "root"); got != model.WaitStateNone {
+				t.Errorf("root: expected wait_state none, got %q", got)
 			}
 			if msg := mustError(t, b.db, "root"); msg != "boom" {
 				t.Errorf("root: expected error \"boom\", got %q", msg)

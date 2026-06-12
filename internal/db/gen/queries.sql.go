@@ -735,21 +735,6 @@ func (q *Queries) RenewWorkerLeases(ctx context.Context, arg RenewWorkerLeasesPa
 	return err
 }
 
-const setParentCollecting = `-- name: SetParentCollecting :exec
-UPDATE process_instances SET wait_state = 'collecting', updated_at = ?1
-WHERE id = ?2
-`
-
-type SetParentCollectingParams struct {
-	UpdatedAt int64
-	ID        string
-}
-
-func (q *Queries) SetParentCollecting(ctx context.Context, arg SetParentCollectingParams) error {
-	_, err := q.db.ExecContext(ctx, setParentCollecting, arg.UpdatedAt, arg.ID)
-	return err
-}
-
 const updateInstance = `-- name: UpdateInstance :exec
 UPDATE process_instances
 SET step_queue       = ?1,
@@ -848,5 +833,22 @@ func (q *Queries) UpsertChannel(ctx context.Context, arg UpsertChannelParams) er
 		arg.Version,
 		arg.UpdatedAt,
 	)
+	return err
+}
+
+const wakeParent = `-- name: WakeParent :exec
+UPDATE process_instances
+SET wait_state = CASE WHEN status = 'running' THEN 'collecting' ELSE '' END,
+    updated_at = ?1
+WHERE id = ?2
+`
+
+type WakeParentParams struct {
+	UpdatedAt int64
+	ID        string
+}
+
+func (q *Queries) WakeParent(ctx context.Context, arg WakeParentParams) error {
+	_, err := q.db.ExecContext(ctx, wakeParent, arg.UpdatedAt, arg.ID)
 	return err
 }

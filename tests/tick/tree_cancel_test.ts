@@ -9,7 +9,7 @@
  * The server runs in manual-tick mode (--poll 0, --max-concurrent 1) so every
  * DB state transition is inspectable between ticks.
  *
- * status() returns "status wait_state".trim(), e.g. "running waiting", "cancelling collecting".
+ * status() returns "status wait_state".trim(), e.g. "running waiting", "running collecting".
  * Instances with no wait_state show just their status, e.g. "running", "cancelled".
  *
  * ClaimInstances uses ORDER BY created_at ASC, and SpawnChildrenAndWait assigns
@@ -166,26 +166,27 @@ test("cancel grandparent — entire tree becomes cancelling instantly, cancelled
       b: "cancelling",
     });
 
-    // tick: b cancelled; count = 0 → parent.wait_state = 'collecting'
+    // tick: b cancelled; count = 0 → parent woken (wait_state '', claimable;
+    // never 'collecting' — a cancelling parent must not merge outputs)
     await ctx.env.tick();
     expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
       gp: "cancelling waiting",
-      parent: "cancelling collecting",
+      parent: "cancelling",
       a: "cancelled",
       b: "cancelled",
     });
 
-    // tick: parent (cancelling+collecting) → cancelInstance → cancelled
-    //       FinishChild(parent): gp.wait_state = 'collecting'
+    // tick: parent (cancelling, claimable) → cancelInstance → cancelled
+    //       FinishChild(parent): gp woken (wait_state '')
     await ctx.env.tick();
     expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
-      gp: "cancelling collecting",
+      gp: "cancelling",
       parent: "cancelled",
       a: "cancelled",
       b: "cancelled",
     });
 
-    // tick: gp (cancelling+collecting) → cancelInstance → cancelled
+    // tick: gp (cancelling, claimable) → cancelInstance → cancelled
     await ctx.env.tick();
     expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
       gp: "cancelled",

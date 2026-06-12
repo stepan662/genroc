@@ -136,20 +136,21 @@ test("a fails — ancestors drain through 'failing' and settle to 'failed' one l
     });
 
     // tick: b runs and completes normally. FinishChild(b): all batch children
-    // terminal → parent woken to 'collecting' (now claimable).
+    // terminal → parent woken (wait_state '', now claimable). Never
+    // 'collecting' — a failing parent must not merge outputs.
     await ctx.env.tick();
     expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
       gp: "failing waiting",
-      parent: "failing collecting",
+      parent: "failing",
       a: "failed",
       b: "completed",
     });
 
     // tick: parent (failing, claimable) settles to 'failed'; its terminal save
-    // wakes gp to 'collecting'.
+    // wakes gp (wait_state '').
     await ctx.env.tick();
     expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
-      gp: "failing collecting",
+      gp: "failing",
       parent: "failed",
       a: "failed",
       b: "completed",
@@ -252,11 +253,11 @@ test("a fails while ancestors are cancelling — FailAncestors overrides 'cancel
     expect(JSON.stringify(earlyRetryErr)).toContain("not retryable");
 
     // tick: b (cancelling) is processed → cancelInstance → cancelled.
-    // FinishChild(b): all batch children terminal → parent woken to collecting.
+    // FinishChild(b): all batch children terminal → parent woken (wait_state '').
     await ctx.env.tick();
     expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
       gp: "failing waiting",
-      parent: "failing collecting",
+      parent: "failing",
       a: "failed",
       b: "cancelled",
     });
@@ -265,7 +266,7 @@ test("a fails while ancestors are cancelling — FailAncestors overrides 'cancel
     // its terminal save wakes gp.
     await ctx.env.tick();
     expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
-      gp: "failing collecting",
+      gp: "failing",
       parent: "failed",
       a: "failed",
       b: "cancelled",

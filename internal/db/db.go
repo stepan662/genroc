@@ -630,8 +630,11 @@ func (db *DB) ListInstances(status string) ([]*model.ProcessInstance, error) {
 	return out, nil
 }
 
-// FinishChild atomically saves the child as terminal and, if all siblings are now
-// done, transitions the parent from 'waiting' to 'collecting'.
+// FinishChild atomically saves the child as terminal and, if all siblings are
+// now done, wakes the waiting parent. A healthy (running) parent wakes to
+// 'collecting' — it will actually merge child outputs; a draining
+// (failing/cancelling) parent wakes to '' and just settles. 'collecting'
+// therefore strictly means "all children completed, outputs will be merged".
 //
 // The parent row is locked first (FOR UPDATE on PostgreSQL) to prevent race conditions
 // between concurrent sibling completions. SQLite serialises naturally via single-writer.
@@ -707,7 +710,7 @@ func (db *DB) FinishChild(child *model.ProcessInstance) error {
 			return fmt.Errorf("count siblings: %w", err)
 		}
 		if active == 0 {
-			if err := qtx.SetParentCollecting(ctx, dbgen.SetParentCollectingParams{
+			if err := qtx.WakeParent(ctx, dbgen.WakeParentParams{
 				ID:        child.ParentID,
 				UpdatedAt: nowUnix(),
 			}); err != nil {
@@ -722,6 +725,11 @@ func (db *DB) FinishChild(child *model.ProcessInstance) error {
 // CollectChildOutputs is called when a parent instance is in WaitStateCollecting.
 // It reads all child instances and merges their outputs into inst.ContextData.
 // On success, inst.ContextData["outputs"][step.ID] holds the merged result.
+//
+// Collecting is only valid when every child of the batch completed — a failed
+// or cancelled child makes the parent failing/cancelling, which exits advance()
+// before the collect phase. The guard below enforces this rather than silently
+// merging nil outputs if that invariant is ever broken.
 func (db *DB) CollectChildOutputs(ctx context.Context, inst *model.ProcessInstance, step *model.Step) error {
 	siblings, err := db.q.GetChildrenForStep(ctx, dbgen.GetChildrenForStepParams{
 		ParentID:    inst.ID,
@@ -729,6 +737,11 @@ func (db *DB) CollectChildOutputs(ctx context.Context, inst *model.ProcessInstan
 	})
 	if err != nil {
 		return fmt.Errorf("get children for step: %w", err)
+	}
+	for _, row := range siblings {
+		if model.Status(row.Status) != model.StatusCompleted {
+			return fmt.Errorf("child %q is %s; outputs can only be collected when all children completed", row.ID, row.Status)
+		}
 	}
 	if inst.ContextData["outputs"] == nil {
 		inst.ContextData["outputs"] = map[string]any{}
@@ -771,9 +784,9 @@ func (db *DB) FailAncestors(child *model.ProcessInstance) error {
 // FailInstanceAndAncestors atomically marks a child instance as failed,
 // propagates 'failing' to all ancestors in its call stack, and — when the
 // failed child was the last active member of its spawn batch — wakes the
-// parent to 'collecting' so the engine can settle it on the next tick.
-// All in a single transaction; the safe replacement for calling
-// UpdateInstance + FailAncestors separately.
+// parent (to '', the parent is failing by then) so the engine can settle it
+// on the next tick. All in a single transaction; the safe replacement for
+// calling UpdateInstance + FailAncestors separately.
 func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 	ctx := context.Background()
 	tx, qtx, err := db.beginTx(ctx, nil)
@@ -837,8 +850,9 @@ func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 	}
 
 	// If this failure settled the last active child of the batch, wake the
-	// waiting parent to 'collecting' (mirrors FinishChild) so the engine can
-	// claim it and transition failing → failed.
+	// waiting parent (mirrors FinishChild) so the engine can claim it and
+	// transition failing → failed. WakeParent picks '' here — the parent is
+	// failing, so it must never enter the collect phase.
 	if child.ParentID != "" {
 		var parentWaitState string
 		err := tx.QueryRowContext(ctx,
@@ -856,7 +870,7 @@ func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 				return fmt.Errorf("count siblings: %w", err)
 			}
 			if active == 0 {
-				if err := qtx.SetParentCollecting(ctx, dbgen.SetParentCollectingParams{
+				if err := qtx.WakeParent(ctx, dbgen.WakeParentParams{
 					ID:        child.ParentID,
 					UpdatedAt: nowUnix(),
 				}); err != nil {
