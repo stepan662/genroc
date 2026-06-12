@@ -156,6 +156,19 @@ WHERE parent_id = sqlc.arg(parent_id)
 LIMIT 1;
 
 
+-- name: FindParentsOf :many
+SELECT pd.parent_name, pc.version AS parent_version, pd.child_name, pd.child_version AS baked_version
+FROM process_dependencies pd
+JOIN process_channels pc ON pc.name = pd.parent_name AND pc.channel = sqlc.arg(channel)
+WHERE pd.parent_version = pc.version
+  AND pd.child_name IN (SELECT value FROM json_each(sqlc.arg(names)));
+
+-- name: FailAncestors :exec
+UPDATE process_instances
+SET status = 'failed', wait_state = '', error = sqlc.arg(error), updated_at = sqlc.arg(updated_at)
+WHERE id IN (SELECT value FROM json_each(sqlc.arg(ids)))
+  AND status IN ('running', 'cancelling');
+
 -- name: FindStaleRefs :many
 SELECT pd.parent_name, pc.version AS parent_version,
        pd.step_id, pd.child_name,

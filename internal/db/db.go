@@ -20,6 +20,9 @@ import (
 //go:embed migrations/*.sql
 var sqlMigrations embed.FS
 
+//go:embed pg_functions.sql
+var pgFunctionsSQL string
+
 // DB wraps a *sql.DB and implements all persistence for both SQLite and PostgreSQL.
 type DB struct {
 	sqldb   *sql.DB
@@ -61,6 +64,10 @@ func open(sqldb *sql.DB, dialect string) (*DB, error) {
 			     ON process_instances USING GIN ((call_stack::jsonb))`); err != nil {
 			sqldb.Close()
 			return nil, fmt.Errorf("create call_stack GIN index: %w", err)
+		}
+		if _, err := sqldb.ExecContext(context.Background(), pgFunctionsSQL); err != nil {
+			sqldb.Close()
+			return nil, fmt.Errorf("create json_each function: %w", err)
 		}
 	}
 	var dbtx dbgen.DBTX = sqldb
@@ -302,53 +309,40 @@ func (db *DB) GetDependencyVersion(parentName string, parentVersion int, stepID 
 // FindParentsOf returns all processes on channel that have deps referencing any
 // of the given children. stale = dep version doesn't match the target; current = matches.
 // A parent is stale if ANY of its relevant deps are mismatched.
-// This query is hand-written because it requires a dynamic-length IN clause.
 func (db *DB) FindParentsOf(channel string, childVersions map[string]int) (stale, current []VersionedDef, err error) {
 	if len(childVersions) == 0 {
 		return nil, nil, nil
 	}
-	args := []any{channel}
-	placeholders := make([]string, 0, len(childVersions))
+	names := make([]string, 0, len(childVersions))
 	for name := range childVersions {
-		args = append(args, name)
-		placeholders = append(placeholders, db.ph(len(args)))
+		names = append(names, name)
 	}
-	query := fmt.Sprintf(`
-		SELECT pd.parent_name, pc.version AS parent_version, pd.child_name, pd.child_version AS baked_version
-		FROM process_dependencies pd
-		JOIN process_channels pc ON pc.name = pd.parent_name AND pc.channel = %s
-		WHERE pd.parent_version = pc.version
-		  AND pd.child_name IN (%s)
-	`, db.ph(1), strings.Join(placeholders, ", "))
-
-	rows, err := db.sqldb.QueryContext(context.Background(), query, args...)
+	namesJSON, err := json.Marshal(names)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
+	rows, err := db.q.FindParentsOf(context.Background(), dbgen.FindParentsOfParams{
+		Channel: channel,
+		Names:   string(namesJSON),
+	})
+	if err != nil {
+		return nil, nil, err
+	}
 
 	type entry struct {
 		version int
 		isStale bool
 	}
 	byName := make(map[string]*entry)
-	for rows.Next() {
-		var parentName, childName string
-		var parentVersion, bakedVersion int
-		if err := rows.Scan(&parentName, &parentVersion, &childName, &bakedVersion); err != nil {
-			return nil, nil, err
-		}
-		e := byName[parentName]
+	for _, r := range rows {
+		e := byName[r.ParentName]
 		if e == nil {
-			e = &entry{version: parentVersion}
-			byName[parentName] = e
+			e = &entry{version: int(r.ParentVersion)}
+			byName[r.ParentName] = e
 		}
-		if bakedVersion != childVersions[childName] {
+		if int(r.BakedVersion) != childVersions[r.ChildName] {
 			e.isStale = true
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, nil, err
 	}
 
 	for name, e := range byName {
@@ -743,25 +737,19 @@ func (db *DB) CollectChildOutputs(ctx context.Context, inst *model.ProcessInstan
 // This is a single bulk UPDATE — O(1) queries regardless of tree depth.
 // It targets ancestors in 'running' or 'cancelling' state so that errors always
 // take precedence over cancellation.
-// Hand-written because it requires a dynamic-length IN clause.
 func (db *DB) FailAncestors(child *model.ProcessInstance) error {
 	if len(child.CallStack) == 0 {
 		return nil
 	}
-	args := make([]any, 0, len(child.CallStack)+2)
-	args = append(args, child.Error, nowUnix())
-	placeholders := make([]string, len(child.CallStack))
-	for i, id := range child.CallStack {
-		args = append(args, id)
-		placeholders[i] = db.ph(len(args))
+	idsJSON, err := json.Marshal(child.CallStack)
+	if err != nil {
+		return err
 	}
-	query := fmt.Sprintf(
-		`UPDATE process_instances SET status = 'failed', wait_state = '', error = %s, updated_at = %s
-		 WHERE id IN (%s) AND status IN ('running', 'cancelling')`,
-		db.ph(1), db.ph(2), strings.Join(placeholders, ", "),
-	)
-	_, err := db.sqldb.ExecContext(context.Background(), query, args...)
-	return err
+	return db.q.FailAncestors(context.Background(), dbgen.FailAncestorsParams{
+		Error:     child.Error,
+		UpdatedAt: nowUnix(),
+		Ids:       string(idsJSON),
+	})
 }
 
 // FailInstanceAndAncestors atomically marks a child instance as failed and propagates
@@ -814,16 +802,17 @@ func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 		return err
 	}
 
-	// Update ancestors nearest-first so error messages propagate correctly.
-	// Lock order is already established by the pre-lock above.
-	now := nowUnix()
-	for i := len(child.CallStack) - 1; i >= 0; i-- {
-		query := fmt.Sprintf(
-			`UPDATE process_instances SET status = 'failed', wait_state = '', error = %s, updated_at = %s
-			 WHERE id = %s AND status IN ('running', 'cancelling')`,
-			db.ph(1), db.ph(2), db.ph(3),
-		)
-		if _, err := tx.ExecContext(ctx, query, child.Error, now, child.CallStack[i]); err != nil {
+	// Bulk-fail all ancestors in a single UPDATE via json_each.
+	if len(child.CallStack) > 0 {
+		idsJSON, err := json.Marshal(child.CallStack)
+		if err != nil {
+			return err
+		}
+		if err := qtx.FailAncestors(ctx, dbgen.FailAncestorsParams{
+			Error:     child.Error,
+			UpdatedAt: nowUnix(),
+			Ids:       string(idsJSON),
+		}); err != nil {
 			return err
 		}
 	}

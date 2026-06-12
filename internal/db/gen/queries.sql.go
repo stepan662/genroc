@@ -65,6 +65,72 @@ func (q *Queries) DeleteDependencies(ctx context.Context, arg DeleteDependencies
 	return err
 }
 
+const failAncestors = `-- name: FailAncestors :exec
+UPDATE process_instances
+SET status = 'failed', wait_state = '', error = ?1, updated_at = ?2
+WHERE id IN (SELECT value FROM json_each(?3))
+  AND status IN ('running', 'cancelling')
+`
+
+type FailAncestorsParams struct {
+	Error     string
+	UpdatedAt int64
+	Ids       interface{}
+}
+
+func (q *Queries) FailAncestors(ctx context.Context, arg FailAncestorsParams) error {
+	_, err := q.db.ExecContext(ctx, failAncestors, arg.Error, arg.UpdatedAt, arg.Ids)
+	return err
+}
+
+const findParentsOf = `-- name: FindParentsOf :many
+SELECT pd.parent_name, pc.version AS parent_version, pd.child_name, pd.child_version AS baked_version
+FROM process_dependencies pd
+JOIN process_channels pc ON pc.name = pd.parent_name AND pc.channel = ?1
+WHERE pd.parent_version = pc.version
+  AND pd.child_name IN (SELECT value FROM json_each(?2))
+`
+
+type FindParentsOfParams struct {
+	Channel string
+	Names   interface{}
+}
+
+type FindParentsOfRow struct {
+	ParentName    string
+	ParentVersion int64
+	ChildName     string
+	BakedVersion  int64
+}
+
+func (q *Queries) FindParentsOf(ctx context.Context, arg FindParentsOfParams) ([]FindParentsOfRow, error) {
+	rows, err := q.db.QueryContext(ctx, findParentsOf, arg.Channel, arg.Names)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FindParentsOfRow
+	for rows.Next() {
+		var i FindParentsOfRow
+		if err := rows.Scan(
+			&i.ParentName,
+			&i.ParentVersion,
+			&i.ChildName,
+			&i.BakedVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const findStaleRefs = `-- name: FindStaleRefs :many
 SELECT pd.parent_name, pc.version AS parent_version,
        pd.step_id, pd.child_name,

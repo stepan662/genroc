@@ -13,7 +13,9 @@ sql:
   # (go build ./... compiles it). The directory is gitignored and never imported at runtime.
   - name: postgresql
     engine: "postgresql"
-    schema: "internal/db/migrations"
+    schema:
+      - "internal/db/migrations"
+      - "internal/db/pg_functions.sql"
     queries: "internal/db/queries.sql"
     gen:
       go:
