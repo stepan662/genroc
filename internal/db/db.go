@@ -899,7 +899,9 @@ func requireRoot(row dbgen.ProcessInstance, op string) error {
 // is never redone. force overrides the only_once protection on pending steps.
 //
 // Only root instances are accepted — like cancellation, retry is a decision
-// about the whole tree.
+// about the whole tree. The tree must also have settled: a retry is rejected
+// while any descendant is still 'cancelling'. Running descendants are allowed —
+// they keep running and report into the revived parent normally.
 func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 	rootRow, err := db.q.GetInstance(ctx, id)
 	if err != nil {
@@ -979,6 +981,16 @@ func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 	root, ok := nodes[id]
 	if !ok {
 		return fmt.Errorf("instance not found")
+	}
+
+	// A cancelling descendant is mid-drain: the revival is one-shot, so it would
+	// settle to 'cancelled' after the walk and stay dead in a resumed tree,
+	// producing a nil output at collect time. Make the user wait one tick instead.
+	// (Running descendants are fine — they finish into the revived parent normally.)
+	for _, n := range nodes {
+		if n.Status == model.StatusCancelling {
+			return fmt.Errorf("process tree is still settling: instance %q is cancelling; retry after it settles", n.ID)
+		}
 	}
 
 	// Walk the tree top-down, reviving the interrupted path. Only the root and

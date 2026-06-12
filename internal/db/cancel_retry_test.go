@@ -145,9 +145,9 @@ func TestCancelProcess_SkipsTerminalDescendants(t *testing.T) {
 	}
 }
 
-// TestCancelProcess_NonRoot verifies that cancelling a descendant directly is
-// rejected with an error naming the tree root, leaving the tree untouched.
-func TestCancelProcess_NonRoot(t *testing.T) {
+// TestCancelProcess_NonRootRejected verifies that cancelling a descendant directly
+// is rejected with an error naming the tree root, leaving the tree untouched.
+func TestCancelProcess_NonRootRejected(t *testing.T) {
 	for _, b := range testBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
 			insertInst(t, b.db, "root", model.StatusRunning, "", nil, "")
@@ -320,9 +320,38 @@ func insertChild(t *testing.T, db *DB, id string, status model.Status, parentID,
 	}
 }
 
-// TestRetryProcess_NonRoot verifies that retrying a descendant directly is
+// TestRetryProcess_NonRetryableStatuses verifies that only failed and cancelled
+// instances can be retried. In particular a still-draining 'cancelling' tree must
+// settle to 'cancelled' before a retry is accepted.
+func TestRetryProcess_NonRetryableStatuses(t *testing.T) {
+	for _, b := range testBackends(t) {
+		t.Run(b.name, func(t *testing.T) {
+			for _, status := range []model.Status{
+				model.StatusRunning,
+				model.StatusCancelling,
+				model.StatusCompleted,
+			} {
+				id := "inst-" + string(status)
+				insertInst(t, b.db, id, status, "", nil, "")
+
+				err := b.db.RetryProcess(context.Background(), id, false)
+				if err == nil {
+					t.Fatalf("%s: expected error, got nil", status)
+				}
+				if !strings.Contains(err.Error(), "not retryable") {
+					t.Errorf("%s: expected 'not retryable' error, got %q", status, err)
+				}
+				if got := mustStatus(t, b.db, id); got != status {
+					t.Errorf("%s: status should be unchanged, got %q", status, got)
+				}
+			}
+		})
+	}
+}
+
+// TestRetryProcess_NonRootRejected verifies that retrying a descendant directly is
 // rejected with an error naming the tree root, leaving the tree untouched.
-func TestRetryProcess_NonRoot(t *testing.T) {
+func TestRetryProcess_NonRootRejected(t *testing.T) {
 	for _, b := range testBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
 			insertInst(t, b.db, "root", model.StatusFailed, "", nil, "child failed")
@@ -345,10 +374,10 @@ func TestRetryProcess_NonRoot(t *testing.T) {
 	}
 }
 
-// TestRetryProcess_FailedLeaf verifies that retrying the root of a failed tree
-// revives only the failed leaf and reconstructs the root as running+waiting,
-// leaving completed siblings untouched.
-func TestRetryProcess_FailedLeaf(t *testing.T) {
+// TestRetryProcess_FailedTree_RevivesOnlyFailedLeaf verifies that retrying the
+// root of a failed tree revives only the failed leaf and reconstructs the root
+// as running+waiting, leaving completed siblings untouched.
+func TestRetryProcess_FailedTree_RevivesOnlyFailedLeaf(t *testing.T) {
 	for _, b := range testBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
 			insertInst(t, b.db, "parent", model.StatusFailed, "", nil, "child failed")
@@ -378,9 +407,9 @@ func TestRetryProcess_FailedLeaf(t *testing.T) {
 	}
 }
 
-// TestRetryProcess_MultipleFailedChildren verifies that a root retry revives
-// every failed child of the pending spawn step in one pass.
-func TestRetryProcess_MultipleFailedChildren(t *testing.T) {
+// TestRetryProcess_FailedTree_RevivesAllFailedChildren verifies that a root
+// retry revives every failed child of the pending spawn step in one pass.
+func TestRetryProcess_FailedTree_RevivesAllFailedChildren(t *testing.T) {
 	for _, b := range testBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
 			insertInst(t, b.db, "parent", model.StatusFailed, "", nil, "first child error")
@@ -406,9 +435,10 @@ func TestRetryProcess_MultipleFailedChildren(t *testing.T) {
 	}
 }
 
-// TestRetryProcess_DeepFailedTree verifies revival of a multi-level failed tree:
-// the origin leaf re-runs, every intermediate ancestor returns to running+waiting.
-func TestRetryProcess_DeepFailedTree(t *testing.T) {
+// TestRetryProcess_FailedTree_DeepChain verifies revival of a multi-level failed
+// tree: the origin leaf re-runs, every intermediate ancestor returns to
+// running+waiting.
+func TestRetryProcess_FailedTree_DeepChain(t *testing.T) {
 	for _, b := range testBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
 			insertInst(t, b.db, "root", model.StatusFailed, "", nil, "boom")
@@ -440,10 +470,10 @@ func TestRetryProcess_DeepFailedTree(t *testing.T) {
 	}
 }
 
-// TestRetryProcess_CancelledTree_Waiting verifies that retrying a cancelled root
-// whose spawn step has an unfinished child revives the child and reconstructs
-// the root as waiting.
-func TestRetryProcess_CancelledTree_Waiting(t *testing.T) {
+// TestRetryProcess_CancelledTree_ReconstructsWaiting verifies that retrying a
+// cancelled root whose spawn step has an unfinished child revives the child and
+// reconstructs the root as waiting.
+func TestRetryProcess_CancelledTree_ReconstructsWaiting(t *testing.T) {
 	for _, b := range testBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
 			insertInst(t, b.db, "root", model.StatusCancelled, "", nil, "")
@@ -470,10 +500,10 @@ func TestRetryProcess_CancelledTree_Waiting(t *testing.T) {
 	}
 }
 
-// TestRetryProcess_CancelledTree_Collecting verifies that retrying a cancelled
-// root whose spawn-step children all completed revives it straight to
+// TestRetryProcess_CancelledTree_ReconstructsCollecting verifies that retrying a
+// cancelled root whose spawn-step children all completed revives it straight to
 // collecting, so the engine re-runs the lost collect.
-func TestRetryProcess_CancelledTree_Collecting(t *testing.T) {
+func TestRetryProcess_CancelledTree_ReconstructsCollecting(t *testing.T) {
 	for _, b := range testBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
 			insertInst(t, b.db, "root", model.StatusCancelled, "", nil, "")
@@ -499,9 +529,9 @@ func TestRetryProcess_CancelledTree_Collecting(t *testing.T) {
 	}
 }
 
-// TestRetryProcess_CancelledActionStep verifies that a cancelled instance whose
-// pending step spawned nothing simply re-runs it (wait_state none).
-func TestRetryProcess_CancelledActionStep(t *testing.T) {
+// TestRetryProcess_Cancelled_RerunsPendingStep verifies that a cancelled
+// instance whose pending step spawned nothing simply re-runs it (wait_state none).
+func TestRetryProcess_Cancelled_RerunsPendingStep(t *testing.T) {
 	for _, b := range testBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
 			insertInst(t, b.db, "root", model.StatusCancelled, "", nil, "")
@@ -550,6 +580,66 @@ func TestRetryProcess_EmptyQueue(t *testing.T) {
 	}
 }
 
+// TestRetryProcess_FailedTree_RunningSibling verifies that retrying a failed
+// root while a sibling is still running revives only the failed child; the
+// running sibling is left to the engine and keeps the root waiting.
+func TestRetryProcess_FailedTree_RunningSibling(t *testing.T) {
+	for _, b := range testBackends(t) {
+		t.Run(b.name, func(t *testing.T) {
+			insertInst(t, b.db, "root", model.StatusFailed, "", nil, "child failed")
+			insertChild(t, b.db, "c-failed", model.StatusFailed, "root", "step1", []string{"root"}, "boom")
+			insertChild(t, b.db, "c-running", model.StatusRunning, "root", "step1", []string{"root"}, "")
+
+			if err := b.db.RetryProcess(context.Background(), "root", false); err != nil {
+				t.Fatalf("RetryProcess: %v", err)
+			}
+
+			if got := mustStatus(t, b.db, "c-failed"); got != model.StatusRunning {
+				t.Errorf("c-failed: expected running, got %q", got)
+			}
+			if got := mustStatus(t, b.db, "c-running"); got != model.StatusRunning {
+				t.Errorf("c-running: expected running (untouched), got %q", got)
+			}
+			if got := mustStatus(t, b.db, "root"); got != model.StatusRunning {
+				t.Errorf("root: expected running, got %q", got)
+			}
+			if got := mustWaitState(t, b.db, "root"); got != model.WaitStateWaiting {
+				t.Errorf("root: expected wait_state=waiting, got %q", got)
+			}
+		})
+	}
+}
+
+// TestRetryProcess_RejectedWhileSiblingCancelling verifies that a retry is
+// rejected while any descendant is still draining ('cancelling') — reviving
+// around it would leave it permanently cancelled inside a resumed tree.
+func TestRetryProcess_RejectedWhileSiblingCancelling(t *testing.T) {
+	for _, b := range testBackends(t) {
+		t.Run(b.name, func(t *testing.T) {
+			insertInst(t, b.db, "root", model.StatusFailed, "", nil, "child failed")
+			insertChild(t, b.db, "c-failed", model.StatusFailed, "root", "step1", []string{"root"}, "boom")
+			insertChild(t, b.db, "c-cancelling", model.StatusCancelling, "root", "step1", []string{"root"}, "")
+
+			err := b.db.RetryProcess(context.Background(), "root", false)
+			if err == nil {
+				t.Fatal("expected error while sibling is cancelling, got nil")
+			}
+			if !strings.Contains(err.Error(), "settling") {
+				t.Errorf("expected 'settling' error, got %q", err)
+			}
+			for id, want := range map[string]model.Status{
+				"root":         model.StatusFailed,
+				"c-failed":     model.StatusFailed,
+				"c-cancelling": model.StatusCancelling,
+			} {
+				if got := mustStatus(t, b.db, id); got != want {
+					t.Errorf("%q: expected %q (untouched), got %q", id, want, got)
+				}
+			}
+		})
+	}
+}
+
 // TestRetryProcess_MixedFailUnderCancel verifies a tree where a child failure
 // overrode the root's cancellation: both the failed and the cancelled child of
 // the pending spawn step are revived.
@@ -576,9 +666,10 @@ func TestRetryProcess_MixedFailUnderCancel(t *testing.T) {
 	}
 }
 
-// TestRetryProcess_OnlyOnce verifies that retrying a process whose pending step
-// is marked only_once is rejected, and that force overrides the protection.
-func TestRetryProcess_OnlyOnce(t *testing.T) {
+// TestRetryProcess_OnlyOnce_RejectedUnlessForced verifies that retrying a
+// process whose pending step is marked only_once is rejected, and that force
+// overrides the protection.
+func TestRetryProcess_OnlyOnce_RejectedUnlessForced(t *testing.T) {
 	for _, b := range testBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
 			trueVal := true

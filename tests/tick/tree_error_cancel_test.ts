@@ -220,6 +220,16 @@ test("a fails while ancestors are cancelling — FailAncestors overrides 'cancel
       b: "cancelling",
     });
 
+    // The root is failed but b is still draining — a retry must be rejected
+    // until the tree settles (b would otherwise stay cancelled inside a
+    // resumed tree).
+    const { error: earlyRetryErr } = await ctx.env.client.POST(
+      "/instances/{id}/retry",
+      { params: { path: { id: gp } } },
+    );
+    expect(earlyRetryErr).toBeDefined();
+    expect(JSON.stringify(earlyRetryErr)).toContain("settling");
+
     // tick: b (cancelling) is processed → cancelInstance → cancelled.
     // FinishChild(b): parent.wait_state='' (cleared by FailAncestors) → no wakeup.
     // Parent and grandparent remain failed.

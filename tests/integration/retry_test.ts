@@ -132,6 +132,73 @@ test("retry cancelled instance — resumes where the cancel interrupted", async 
   }
 }, 30_000);
 
+// retry while the tree is still draining ('cancelling') → rejected;
+// once it settles to 'cancelled' the same retry succeeds.
+test("retry during cancelling — rejected until the tree settles", async () => {
+  const name = `retry_cancelling_${crypto.randomUUID()}`;
+  const db = join(tmpdir(), `gent_retry_cancelling_${Date.now()}.db`);
+  const gent = await startGent(gentBin, TICK_PORT + 1, db, undefined, 0);
+
+  const step1Mock = await startMockService(0, { response: { ok: true } });
+  const step2Mock = await startMockService(0, { response: { done: true } });
+
+  try {
+    await gent.client.PUT("/definitions", {
+      body: {
+        name,
+        steps: [
+          {
+            id: "step1",
+            call: { type: "rest" as const, endpoint: `http://localhost:${step1Mock.port}/action` },
+            timeout_ms: 2000,
+            switch: [{ goto: "next" }],
+          },
+          {
+            id: "step2",
+            call: { type: "rest" as const, endpoint: `http://localhost:${step2Mock.port}/action` },
+            timeout_ms: 2000,
+            switch: [{ goto: "end" }],
+          },
+        ],
+      },
+    });
+
+    const { data: startData } = await gent.client.POST("/instances", { body: { process: name } });
+    const id = startData!.id;
+
+    // Tick 1 — step1 executes; cancel lands between steps → 'cancelling'.
+    await tick(gent.client);
+    await gent.client.POST("/instances/{id}/cancel", { params: { path: { id } } });
+    expect((await getStatus(gent, id)).status).toBe("cancelling");
+
+    // Retry while still draining is rejected; status is untouched.
+    const { error: earlyErr } = await gent.client.POST("/instances/{id}/retry", {
+      params: { path: { id } },
+    });
+    expect(earlyErr).toBeDefined();
+    expect(JSON.stringify(earlyErr)).toContain("not retryable");
+    expect((await getStatus(gent, id)).status).toBe("cancelling");
+
+    // Tick 2 — the engine settles the instance to 'cancelled'; now retry works.
+    await tick(gent.client);
+    expect((await getStatus(gent, id)).status).toBe("cancelled");
+
+    const { error: retryErr } = await gent.client.POST("/instances/{id}/retry", {
+      params: { path: { id } },
+    });
+    expect(retryErr).toBeUndefined();
+
+    // Tick 3 — step2 executes and the process completes.
+    await tick(gent.client);
+    expect((await getStatus(gent, id)).status).toBe("completed");
+    expect(step1Mock.requestCount()).toBe(1);
+  } finally {
+    gent.stop();
+    await step1Mock.stop();
+    await step2Mock.stop();
+  }
+}, 30_000);
+
 // only_once → plain retry rejected, force retry succeeds.
 test("retry only_once step — rejected without force, allowed with force", async () => {
   const name = `retry_only_once_${crypto.randomUUID()}`;
