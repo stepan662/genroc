@@ -487,9 +487,14 @@ func (db *DB) UpdateInstance(inst *model.ProcessInstance) error {
 	})
 }
 
-// UpdateInstanceProgress writes the mutable step state (queue, context, retry counters)
-// without touching status or error. Used after a step completes mid-process so that a
-// concurrent CancelProcess or FailAncestors result is preserved in the DB for the next tick.
+// UpdateInstanceProgress writes the mutable step state (queue, context, retry
+// counters, wait_state) without touching status or error. Used after a step
+// completes mid-process so that a concurrent CancelProcess or FailAncestors
+// result is preserved in the DB for the next tick. wait_state IS written: it is
+// owned exclusively by the lease-holding worker (SetParentCollecting only fires
+// while the DB row says 'waiting', which is never the case mid-claim), and the
+// post-collect reset to '' must be persisted or the stale 'collecting' would
+// make the next spawn step skip phase 1 entirely.
 func (db *DB) UpdateInstanceProgress(inst *model.ProcessInstance) error {
 	queue, err := json.Marshal(inst.StepQueue)
 	if err != nil {
@@ -505,6 +510,7 @@ func (db *DB) UpdateInstanceProgress(inst *model.ProcessInstance) error {
 		ContextData: string(ctx),
 		RetryCount:  int64(inst.RetryCount),
 		NextRetryAt: fromTimePtr(inst.NextRetryAt),
+		WaitState:   string(inst.WaitState),
 		UpdatedAt:   nowUnix(),
 	})
 }

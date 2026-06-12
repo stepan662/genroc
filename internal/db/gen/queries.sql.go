@@ -798,10 +798,11 @@ SET step_queue       = ?1,
     context_data     = ?2,
     retry_count      = ?3,
     next_retry_at    = ?4,
-    updated_at       = ?5,
+    wait_state       = ?5,
+    updated_at       = ?6,
     worker_id        = NULL,
     lease_expires_at = NULL
-WHERE id = ?6
+WHERE id = ?7
 `
 
 type UpdateInstanceProgressParams struct {
@@ -809,6 +810,7 @@ type UpdateInstanceProgressParams struct {
 	ContextData string
 	RetryCount  int64
 	NextRetryAt sql.NullInt64
+	WaitState   string
 	UpdatedAt   int64
 	ID          string
 }
@@ -819,6 +821,7 @@ func (q *Queries) UpdateInstanceProgress(ctx context.Context, arg UpdateInstance
 		arg.ContextData,
 		arg.RetryCount,
 		arg.NextRetryAt,
+		arg.WaitState,
 		arg.UpdatedAt,
 		arg.ID,
 	)

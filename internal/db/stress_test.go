@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -318,6 +320,126 @@ func TestStress_CancelProcess_vs_FinishChild(t *testing.T) {
 			if inst.Status == model.StatusRunning {
 				t.Errorf("iteration %d: %s still 'running' after cancel+finish — inconsistent state", i, id)
 			}
+		}
+	}
+}
+
+// TestStress_RetryProcess_vs_CancelProcess fires RetryProcess and CancelProcess
+// concurrently against the same settled failed tree. Both lock tree rows in
+// (created_at, id) order, so they serialize; each iteration must end in one of
+// the two serial outcomes:
+//
+//	retry → cancel:  the revived (running) rows were caught by the cancel → cancelling
+//	cancel → retry:  the cancel was a no-op (nothing was running) → revived running
+//
+// Either way the tree stays internally consistent and the completed child is
+// never touched.
+func TestStress_RetryProcess_vs_CancelProcess(t *testing.T) {
+	if sharedPgDB == nil {
+		t.Skip("PostgreSQL not available (set POSTGRES_DSN)")
+	}
+	ctx := context.Background()
+	db := sharedPgDB
+
+	const iterations = 100
+	for i := 0; i < iterations; i++ {
+		db.sqldb.ExecContext(ctx, "DELETE FROM process_instances")
+		insertInst(t, db, "root", model.StatusFailed, "", nil, "child failed")
+		insertChild(t, db, "c-bad", model.StatusFailed, "root", "step1", []string{"root"}, "boom")
+		insertChild(t, db, "c-ok", model.StatusCompleted, "root", "step1", []string{"root"}, "")
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if err := db.RetryProcess(ctx, "root", false); err != nil && !pgDeadlock(err) {
+				t.Errorf("iteration %d: RetryProcess: %v", i, err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if err := db.CancelProcess(ctx, "root"); err != nil && !pgDeadlock(err) {
+				t.Errorf("iteration %d: CancelProcess: %v", i, err)
+			}
+		}()
+		wg.Wait()
+
+		root := mustStatus(t, db, "root")
+		bad := mustStatus(t, db, "c-bad")
+		ok := mustStatus(t, db, "c-ok")
+
+		valid := (root == model.StatusRunning && bad == model.StatusRunning) || // cancel was a no-op
+			(root == model.StatusCancelling && bad == model.StatusCancelling) || // cancel caught the revived rows
+			(root == model.StatusFailed && bad == model.StatusFailed) // retry lost to a deadlock
+		if !valid {
+			t.Errorf("iteration %d: inconsistent tree: root=%s c-bad=%s", i, root, bad)
+		}
+		if ok != model.StatusCompleted {
+			t.Errorf("iteration %d: completed child touched: %s", i, ok)
+		}
+		if root == model.StatusRunning || root == model.StatusCancelling {
+			if ws := mustWaitState(t, db, "root"); ws != model.WaitStateWaiting {
+				t.Errorf("iteration %d: revived root wait_state = %q, want waiting", i, ws)
+			}
+		}
+	}
+}
+
+// TestStress_ConcurrentRetry fires several RetryProcess calls at the same
+// settled failed tree. The tree lock serializes them: the first revives the
+// tree; later calls either see the pre-tx status check fail ("not retryable")
+// or enter the transaction, find a running root, and commit as a no-op.
+// The end state must always be a single clean revival.
+func TestStress_ConcurrentRetry(t *testing.T) {
+	if sharedPgDB == nil {
+		t.Skip("PostgreSQL not available (set POSTGRES_DSN)")
+	}
+	ctx := context.Background()
+	db := sharedPgDB
+
+	const (
+		iterations = 100
+		callers    = 8
+	)
+	for i := 0; i < iterations; i++ {
+		db.sqldb.ExecContext(ctx, "DELETE FROM process_instances")
+		insertInst(t, db, "root", model.StatusFailed, "", nil, "child failed")
+		insertChild(t, db, "c-bad", model.StatusFailed, "root", "step1", []string{"root"}, "boom")
+		insertChild(t, db, "c-ok", model.StatusCompleted, "root", "step1", []string{"root"}, "")
+
+		var wg sync.WaitGroup
+		var successes atomic.Int64
+		for c := 0; c < callers; c++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				err := db.RetryProcess(ctx, "root", false)
+				switch {
+				case err == nil:
+					successes.Add(1)
+				case pgDeadlock(err):
+				case strings.Contains(err.Error(), "not retryable"):
+				default:
+					t.Errorf("iteration %d: unexpected retry error: %v", i, err)
+				}
+			}()
+		}
+		wg.Wait()
+
+		if successes.Load() == 0 {
+			t.Errorf("iteration %d: no retry succeeded", i)
+		}
+		if got := mustStatus(t, db, "root"); got != model.StatusRunning {
+			t.Errorf("iteration %d: root = %s, want running", i, got)
+		}
+		if got := mustWaitState(t, db, "root"); got != model.WaitStateWaiting {
+			t.Errorf("iteration %d: root wait_state = %q, want waiting", i, got)
+		}
+		if got := mustStatus(t, db, "c-bad"); got != model.StatusRunning {
+			t.Errorf("iteration %d: c-bad = %s, want running", i, got)
+		}
+		if got := mustStatus(t, db, "c-ok"); got != model.StatusCompleted {
+			t.Errorf("iteration %d: c-ok = %s, want completed", i, got)
 		}
 	}
 }

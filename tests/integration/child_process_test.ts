@@ -356,3 +356,67 @@ test("child_parallel — recursive spawn completes with correct aggregated outpu
   });
   expect((data?.context?.output as any)?.processes).toBe(7);
 });
+
+// Regression: a parent with TWO sequential child steps must spawn both batches.
+// Before wait_state was persisted by UpdateInstanceProgress, the stale
+// 'collecting' left over from the first step's collect made the engine treat
+// the second spawn step as already-collected and skip it silently.
+test("child — two sequential child steps both spawn and collect", async () => {
+  const uid = crypto.randomUUID();
+  const leafName = `seq_leaf_${uid}`;
+  const parentName = `seq_parent_${uid}`;
+  const mock = await startMockService(0, { response: { ok: true } });
+
+  try {
+    await client.PUT("/definitions", {
+      body: {
+        name: leafName,
+        steps: [
+          {
+            id: "work",
+            call: { type: "rest" as const, endpoint: `http://localhost:${mock.port}/action` },
+            timeout_ms: 2000,
+            switch: [{ goto: "end" }],
+          },
+        ],
+        output: { done: "{{true}}" },
+      },
+    });
+    await client.PUT("/definitions", {
+      body: {
+        name: parentName,
+        steps: [
+          {
+            id: "first",
+            call: { type: "child" as const, name: leafName },
+            switch: [{ goto: "next" }],
+          },
+          {
+            id: "second",
+            call: { type: "child" as const, name: leafName },
+            switch: [{ goto: "end" }],
+          },
+        ],
+      },
+    });
+
+    const { data: startData } = await client.POST("/instances", {
+      body: { process: parentName },
+    });
+    const id = startData!.id;
+    expect(await waitForInstance(id, 10_000)).toBe("completed");
+
+    // Both leaves actually executed…
+    expect(mock.requestCount()).toBe(2);
+
+    // …and both collects produced an output.
+    const { data } = await client.GET("/instances/{id}", {
+      params: { path: { id } },
+    });
+    const outputs = data?.context?.outputs as any;
+    expect(outputs?.first?.done).toBe(true);
+    expect(outputs?.second?.done).toBe(true);
+  } finally {
+    await mock.stop();
+  }
+});

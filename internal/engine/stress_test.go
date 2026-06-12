@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -143,6 +145,337 @@ func TestStress_MultiWorker_ExactlyOnce(t *testing.T) {
 	}
 	t.Logf("engines: %d, instances: %d, poll: %v", engineCount, instanceCount, pollEvery)
 	t.Logf("total HTTP calls: %d (want %d)", total, instanceCount*2)
+}
+
+// TestStress_Chaos_CancelRetryRandomErrors runs a fleet of engines against
+// 3-level process trees (root → mid → parallel leaves) whose REST calls fail
+// randomly, while two chaos goroutines concurrently cancel and retry random
+// roots. Throughout the run a checker asserts the core lifecycle invariant on
+// live snapshots:
+//
+//	a terminal (completed/failed/cancelled) parent never has a non-terminal child
+//
+// — i.e. trees always settle bottom-up, and retries never revive a subtree
+// under a dead parent. After the chaos window the mock turns green and the
+// test drives every tree to completion via retries, proving no tree is ever
+// left stuck.
+//
+// SQLite only: the db package's stress tests share the PostgreSQL database and
+// truncate process_instances between iterations, which would race this test.
+// The PostgreSQL-specific locking paths are covered in internal/db/stress_test.go.
+func TestStress_Chaos_CancelRetryRandomErrors(t *testing.T) {
+	const (
+		rootCount   = 32 // 32 trees × 4 instances = 128 instances
+		engineCount = 6
+		pollEvery   = 1 * time.Millisecond
+		chaosFor    = 8 * time.Second
+		settleFor   = 60 * time.Second
+	)
+
+	database := openStressDB(t)
+
+	// Mock service: fails with probability failPct/100 (atomically switchable).
+	// Per (instance, step) it tracks whether a 200 was already served: repeat
+	// calls are legitimate only after failures (automatic on_error retries or a
+	// manual retry of a failed step), so any call arriving after a success is a
+	// double execution and recorded as a violation.
+	var failPct atomic.Int64
+	failPct.Store(30)
+	var totalCalls atomic.Int64
+	var callMu sync.Mutex
+	succeeded := map[string]bool{}
+	var doubleExecs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		totalCalls.Add(1)
+		var req struct {
+			InstanceID string `json:"instance_id"`
+			StepID     string `json:"step_id"`
+		}
+		json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck
+		key := req.InstanceID + "/" + req.StepID
+
+		fail := rand.Int63n(100) < failPct.Load()
+		callMu.Lock()
+		if succeeded[key] {
+			doubleExecs = append(doubleExecs, key)
+		}
+		if !fail {
+			succeeded[key] = true
+		}
+		callMu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		if fail {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error":"chaos"}`))
+			return
+		}
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	// Definitions: root ─child→ mid ─child_parallel→ {a,b} leaves.
+	// Every REST step gets one automatic retry on http.% so the on_error path
+	// is exercised too (immediateRetries → no backoff).
+	uid := time.Now().UnixNano()
+	leafName := fmt.Sprintf("chaos-leaf-%d", uid)
+	midName := fmt.Sprintf("chaos-mid-%d", uid)
+	rootName := fmt.Sprintf("chaos-root-%d", uid)
+
+	restStep := func(id string, last bool) *model.Step {
+		gt := model.GotoNext
+		if last {
+			gt = model.GotoEnd
+		}
+		return &model.Step{
+			ID:      id,
+			Call:    &model.Call{Type: model.CallTypeREST, Endpoint: srv.URL},
+			OnError: []model.ErrorCase{{Code: []string{"http.%"}, Retries: 1}},
+			Switch:  model.SwitchMap{{Goto: gt}},
+		}
+	}
+	leafDef := &model.ProcessDefinition{Name: leafName, Steps: []*model.Step{
+		restStep("work-1", false),
+		restStep("work-2", true),
+	}}
+	midDef := &model.ProcessDefinition{Name: midName, Steps: []*model.Step{
+		{
+			ID: "fanout",
+			Call: &model.Call{Type: model.CallTypeChildParallel, Children: map[string]model.ChildEntry{
+				"a": {Name: leafName},
+				"b": {Name: leafName},
+			}},
+			Switch: model.SwitchMap{{Goto: model.GotoNext}},
+		},
+		restStep("mid-work", true),
+	}}
+	rootDef := &model.ProcessDefinition{Name: rootName, Steps: []*model.Step{
+		{
+			ID:     "spawn-mid",
+			Call:   &model.Call{Type: model.CallTypeChild, Name: midName},
+			Switch: model.SwitchMap{{Goto: model.GotoNext}},
+		},
+		restStep("root-work", true),
+	}}
+	for _, def := range []*model.ProcessDefinition{leafDef, midDef, rootDef} {
+		if err := database.SaveDefinition(def, 1, nil, "chaos-hash-"+def.Name, ""); err != nil {
+			t.Fatalf("SaveDefinition %s: %v", def.Name, err)
+		}
+	}
+
+	rootIDs := make([]string, rootCount)
+	for i := 0; i < rootCount; i++ {
+		id := fmt.Sprintf("chaos-root-%d-%d", uid, i)
+		rootIDs[i] = id
+		inst := &model.ProcessInstance{
+			ID:             id,
+			ProcessName:    rootName,
+			ProcessVersion: 1,
+			StepQueue:      rootDef.Steps,
+			ContextData:    map[string]any{},
+			Status:         model.StatusRunning,
+		}
+		if err := database.SaveInstance(inst); err != nil {
+			t.Fatalf("SaveInstance %s: %v", id, err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var engines sync.WaitGroup
+	for e := 0; e < engineCount; e++ {
+		engines.Add(1)
+		eng := New(database, pollEvery, 20, true /* immediateRetries */, log)
+		go func() {
+			defer engines.Done()
+			eng.Run(ctx)
+		}()
+	}
+
+	isTerminal := func(s model.Status) bool {
+		return s == model.StatusCompleted || s == model.StatusFailed || s == model.StatusCancelled
+	}
+
+	// Invariant check on a single ListInstances snapshot (one query = one
+	// consistent view). Returns a description of the first violation found.
+	checkInvariant := func() string {
+		insts, err := database.ListInstances("")
+		if err != nil {
+			return "" // transient read error under contention; not a violation
+		}
+		byID := make(map[string]*model.ProcessInstance, len(insts))
+		for _, in := range insts {
+			byID[in.ID] = in
+		}
+		for _, in := range insts {
+			if in.ParentID == "" {
+				continue
+			}
+			parent, ok := byID[in.ParentID]
+			if !ok {
+				continue
+			}
+			if isTerminal(parent.Status) && !isTerminal(in.Status) {
+				return fmt.Sprintf("terminal parent %s (%s) has live child %s (%s)",
+					parent.ID, parent.Status, in.ID, in.Status)
+			}
+		}
+		return ""
+	}
+
+	// Chaos window: random cancels, random retries, continuous invariant checks.
+	var chaos sync.WaitGroup
+	chaosDone := make(chan struct{})
+	var violations []string
+	var vmu sync.Mutex
+
+	chaos.Add(3)
+	go func() { // canceller
+		defer chaos.Done()
+		for {
+			select {
+			case <-chaosDone:
+				return
+			case <-time.After(time.Duration(5+rand.Intn(15)) * time.Millisecond):
+				id := rootIDs[rand.Intn(len(rootIDs))]
+				database.CancelProcess(context.Background(), id) //nolint:errcheck
+			}
+		}
+	}()
+	go func() { // retrier
+		defer chaos.Done()
+		for {
+			select {
+			case <-chaosDone:
+				return
+			case <-time.After(time.Duration(5+rand.Intn(15)) * time.Millisecond):
+				id := rootIDs[rand.Intn(len(rootIDs))]
+				// Most retries race a non-settled tree and are rejected — that
+				// rejection path is part of what we are stressing.
+				database.RetryProcess(context.Background(), id, rand.Intn(2) == 0) //nolint:errcheck
+			}
+		}
+	}()
+	go func() { // invariant checker
+		defer chaos.Done()
+		for {
+			select {
+			case <-chaosDone:
+				return
+			case <-time.After(50 * time.Millisecond):
+				if v := checkInvariant(); v != "" {
+					vmu.Lock()
+					violations = append(violations, v)
+					vmu.Unlock()
+				}
+			}
+		}
+	}()
+
+	time.Sleep(chaosFor)
+	close(chaosDone)
+	chaos.Wait()
+
+	// Settlement phase: service turns green; drive every tree to completion by
+	// retrying settled failed/cancelled roots. Engines keep running.
+	failPct.Store(0)
+	deadline := time.Now().Add(settleFor)
+	for time.Now().Before(deadline) {
+		insts, err := database.ListInstances("")
+		if err != nil {
+			t.Fatalf("ListInstances: %v", err)
+		}
+		allRootsCompleted := true
+		allTerminal := true
+		byID := make(map[string]*model.ProcessInstance, len(insts))
+		for _, in := range insts {
+			byID[in.ID] = in
+			if !isTerminal(in.Status) {
+				allTerminal = false
+			}
+		}
+		for _, id := range rootIDs {
+			root := byID[id]
+			if root == nil {
+				t.Fatalf("root %s disappeared", id)
+			}
+			switch root.Status {
+			case model.StatusCompleted:
+				continue
+			case model.StatusFailed, model.StatusCancelled:
+				allRootsCompleted = false
+				database.RetryProcess(context.Background(), id, true) //nolint:errcheck
+			default:
+				allRootsCompleted = false // still draining or running
+			}
+		}
+		if allRootsCompleted && allTerminal {
+			break
+		}
+		if v := checkInvariant(); v != "" {
+			vmu.Lock()
+			violations = append(violations, v)
+			vmu.Unlock()
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	cancel()
+	engines.Wait()
+
+	// Final assertions.
+	vmu.Lock()
+	for _, v := range violations {
+		t.Errorf("invariant violation: %s", v)
+	}
+	vmu.Unlock()
+
+	insts, err := database.ListInstances("")
+	if err != nil {
+		t.Fatalf("ListInstances: %v", err)
+	}
+	byID := make(map[string]*model.ProcessInstance, len(insts))
+	for _, in := range insts {
+		byID[in.ID] = in
+	}
+	for _, in := range insts {
+		if !isTerminal(in.Status) {
+			t.Errorf("instance %s stuck in %q (wait_state %q)", in.ID, in.Status, in.WaitState)
+		}
+		if isTerminal(in.Status) && in.WaitState != model.WaitStateNone {
+			t.Errorf("terminal instance %s has wait_state %q", in.ID, in.WaitState)
+		}
+		if in.ParentID != "" {
+			parent := byID[in.ParentID]
+			if parent != nil && isTerminal(parent.Status) && !isTerminal(in.Status) {
+				t.Errorf("final state: terminal parent %s has live child %s (%s)", parent.ID, in.ID, in.Status)
+			}
+		}
+	}
+	for _, id := range rootIDs {
+		if got := byID[id].Status; got != model.StatusCompleted {
+			t.Errorf("root %s: status %q, want completed after green retries", id, got)
+		}
+	}
+
+	// Exactly-once on success: a step that returned 200 must never have been
+	// called again — cancels, retries, and on_error retries may only re-run
+	// steps whose previous attempts failed.
+	callMu.Lock()
+	for _, key := range doubleExecs {
+		t.Errorf("step executed again after a successful call: %s", key)
+	}
+	stepsRun := len(succeeded)
+	callMu.Unlock()
+
+	// And since every tree completed, every REST step succeeded exactly once.
+	// REST steps per tree: root-work(1) + mid-work(1) + 2 leaves × work-1/2(2) = 6.
+	if want := rootCount * 6; stepsRun != want {
+		t.Errorf("distinct successful (instance, step) pairs = %d, want %d", stepsRun, want)
+	}
+	t.Logf("instances: %d (roots %d), HTTP calls: %d, distinct successful steps: %d",
+		len(insts), rootCount, totalCalls.Load(), stepsRun)
 }
 
 func openStressDB(t *testing.T) *db.DB {

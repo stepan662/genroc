@@ -96,6 +96,7 @@ SET step_queue       = sqlc.arg(step_queue),
     context_data     = sqlc.arg(context_data),
     retry_count      = sqlc.arg(retry_count),
     next_retry_at    = sqlc.arg(next_retry_at),
+    wait_state       = sqlc.arg(wait_state),
     updated_at       = sqlc.arg(updated_at),
     worker_id        = NULL,
     lease_expires_at = NULL
