@@ -18,10 +18,10 @@ import {
   type GentProcess,
 } from "../helpers/server.ts";
 
-const TTL = num("BENCH_TTL", 11);
+const TTL = num("BENCH_TTL", 12);
 const ROOTS = num("BENCH_ROOTS", 1);
 const POLL_MS = num("BENCH_POLL_MS", 10);
-const MAX_CONCURRENT = num("BENCH_MAX_CONCURRENT", 1000);
+const MAX_CONCURRENT = num("BENCH_MAX_CONCURRENT", 200);
 const RUNS = num("BENCH_RUNS", 1);
 const BENCH_PORT = 8890; // distinct from the test servers (8888 sqlite, 8889 pg)
 
@@ -232,16 +232,27 @@ function report(results: EngineResult[]) {
 async function main() {
   const results: EngineResult[] = [];
 
-  const sqliteDb = join(tmpdir(), `gent_bench_${Date.now()}.db`);
-  results.push(await benchEngine("sqlite", sqliteDb, undefined));
+  // BENCH_ENGINES selects which engines to run (comma-separated), e.g.
+  // BENCH_ENGINES=postgres to skip the slow SQLite pass when tuning Postgres.
+  const engines = (process.env.BENCH_ENGINES ?? "sqlite,postgres")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
 
-  const dsn = process.env.POSTGRES_DSN;
-  if (dsn) {
-    results.push(await benchEngine("postgres", "", dsn));
-  } else {
-    console.log(
-      "\n(POSTGRES_DSN not set — skipping postgres; set it to compare)",
-    );
+  if (engines.includes("sqlite")) {
+    const sqliteDb = join(tmpdir(), `gent_bench_${Date.now()}.db`);
+    results.push(await benchEngine("sqlite", sqliteDb, undefined));
+  }
+
+  if (engines.includes("postgres")) {
+    const dsn = process.env.POSTGRES_DSN;
+    if (dsn) {
+      results.push(await benchEngine("postgres", "", dsn));
+    } else {
+      console.log(
+        "\n(POSTGRES_DSN not set — skipping postgres; set it to compare)",
+      );
+    }
   }
 
   report(results);

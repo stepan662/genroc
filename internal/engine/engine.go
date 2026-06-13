@@ -19,35 +19,49 @@ import (
 )
 
 const (
-	leaseDuration      = 10 * time.Second
-	leaseRenewInterval = 3 * time.Second
+	defaultLeaseDuration      = 10 * time.Second
+	defaultLeaseRenewInterval = 3 * time.Second
 )
 
 // Engine is the main orchestration loop. It polls the database for pending
 // instances and advances each one step at a time.
 type Engine struct {
-	db               *db.DB
-	pollEvery        time.Duration
-	immediateRetries bool
-	log              *slog.Logger
-	sem              chan struct{}
-	workerID         string
+	db                 *db.DB
+	pollEvery          time.Duration
+	immediateRetries   bool
+	leaseDuration      time.Duration // how long a claimed instance is leased to this worker
+	leaseRenewInterval time.Duration // how often the renewer re-stamps this worker's leases
+	log                *slog.Logger
+	sem                chan struct{}
+	workerID           string
+	inflight           sync.Map // instance IDs this worker is currently advancing (detects overwhelm via self-reclaim)
 }
 
 // New creates an Engine. pollEvery controls how often SQLite is checked for work.
 // maxConcurrent limits how many instances are processed in parallel and how many
 // are fetched per tick. immediateRetries disables exponential backoff (retries fire
-// instantly); intended for tests only.
-func New(database *db.DB, pollEvery time.Duration, maxConcurrent int, immediateRetries bool, log *slog.Logger) *Engine {
+// instantly); intended for tests only. leaseDuration / leaseRenewInterval control
+// lease ownership and renewal cadence; pass 0 for either to use the defaults
+// (10s / 3s). The renew interval must be comfortably shorter than the lease so the
+// renewer can re-stamp leases before they expire.
+func New(database *db.DB, pollEvery time.Duration, maxConcurrent int, immediateRetries bool, leaseDuration, leaseRenewInterval time.Duration, log *slog.Logger) *Engine {
 	hostname, _ := os.Hostname()
 	workerID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
+	if leaseDuration <= 0 {
+		leaseDuration = defaultLeaseDuration
+	}
+	if leaseRenewInterval <= 0 {
+		leaseRenewInterval = defaultLeaseRenewInterval
+	}
 	return &Engine{
-		db:               database,
-		pollEvery:        pollEvery,
-		immediateRetries: immediateRetries,
-		log:              log,
-		sem:              make(chan struct{}, maxConcurrent),
-		workerID:         workerID,
+		db:                 database,
+		pollEvery:          pollEvery,
+		immediateRetries:   immediateRetries,
+		leaseDuration:      leaseDuration,
+		leaseRenewInterval: leaseRenewInterval,
+		log:                log,
+		sem:                make(chan struct{}, maxConcurrent),
+		workerID:           workerID,
 	}
 }
 
@@ -72,59 +86,136 @@ func (e *Engine) Run(ctx context.Context) {
 		return
 	}
 
+	e.runPump(ctx)
+	e.log.Info("engine stopped")
+}
+
+// runPump is the continuous claim/dispatch loop used when pollEvery > 0. Unlike
+// Tick (a synchronous batch with a wg.Wait barrier, still used by the /tick
+// endpoint and manual mode), the pump never waits for a batch to finish: it tops
+// up work as worker slots free, so a slow instance never stalls the others.
+//
+// e.sem doubles as the idle detector and the concurrency bound. Reserving one
+// slot blocks exactly when all workers are busy and wakes the instant one frees,
+// giving natural backpressure and immediate top-up without a separate counter.
+// When a claim finds nothing the pump releases its slot and waits on the ticker —
+// the same adaptive cadence the old loop had. A WaitGroup drains in-flight
+// advances on shutdown.
+func (e *Engine) runPump(ctx context.Context) {
 	ticker := time.NewTicker(e.pollEvery)
 	defer ticker.Stop()
 
+	var wg sync.WaitGroup
+	defer wg.Wait()
+
 	for {
-		if ctx.Err() != nil {
-			e.log.Info("engine stopped")
+		// Block for one slot (wakes the instant a worker frees), then grab any
+		// other free slots without blocking. Acquiring all slots up front means the
+		// dispatch loop below never blocks: combined with the claim's
+		// wait_state<>'waiting' filter, that closes the window where an in-flight
+		// advance could finish between the claim and the dispatch guard and let a
+		// stale snapshot through. slots is the exact claim limit, so in-flight never
+		// exceeds maxConcurrent.
+		select {
+		case e.sem <- struct{}{}:
+		case <-ctx.Done():
 			return
 		}
+		slots := 1
+	fill:
+		for slots < cap(e.sem) {
+			select {
+			case e.sem <- struct{}{}:
+				slots++
+			default:
+				break fill
+			}
+		}
 
-		// Adaptive polling: when a tick did work there is likely more queued, so
-		// drain straight into the next tick instead of idling for pollEvery. Only
-		// fall back to the timer once a tick finds nothing — that keeps an idle
-		// engine at the configured poll rate without busy-spinning. In production
-		// (immediateRetries=false) a failing instance backs off into the future,
-		// so it cannot be re-claimed instantly and spin this loop.
-		n, _ := e.Tick(ctx)
-		if n > 0 {
+		insts, err := e.db.ClaimInstances(e.workerID, e.leaseDuration, slots)
+		// Release the slots we acquired but won't use (claimed fewer than slots).
+		for i := len(insts); i < slots; i++ {
+			<-e.sem
+		}
+		if err != nil || len(insts) == 0 {
+			if err != nil {
+				e.log.Error("claim instances", "err", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
 			continue
 		}
 
-		select {
-		case <-ctx.Done():
-			e.log.Info("engine stopped")
-			return
-		case <-ticker.C:
+		// Each dispatch consumes one pre-acquired slot (released when the advance
+		// finishes, or immediately if the guard skips an already in-flight instance).
+		for _, inst := range insts {
+			e.dispatch(ctx, &wg, inst)
 		}
 	}
+}
+
+// dispatch runs one instance's advance in its own goroutine and releases its
+// e.sem slot when done. The caller must have already reserved the slot.
+func (e *Engine) dispatch(ctx context.Context, wg *sync.WaitGroup, inst *model.ProcessInstance) {
+	// If we just re-claimed an instance this worker is still advancing, its lease
+	// expired before the advance finished: lease renewal can't keep up, so the
+	// engine is overwhelmed. This is inherent to a lease-based design — in a
+	// multi-worker deployment another worker would already have stolen and
+	// double-executed the instance. There is no reliable way to recover, so we
+	// fail loudly instead of silently corrupting state. The operator should lower
+	// --max-concurrent or increase the lease duration. (The pre-acquire pump makes
+	// this detection sound: a claim only returns non-'waiting' rows, so an instance
+	// claimed while in-flight is still in the inflight set here.)
+	if _, busy := e.inflight.LoadOrStore(inst.ID, struct{}{}); busy {
+		e.log.Error("engine overwhelmed: re-claimed an instance still being advanced by this worker; "+
+			"lease renewal cannot keep up. Lower --max-concurrent or increase the lease duration. "+
+			"Exiting to avoid duplicate execution.",
+			"id", inst.ID, "worker", e.workerID, "lease", e.leaseDuration, "max_concurrent", cap(e.sem))
+		os.Exit(1)
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() { e.inflight.Delete(inst.ID); <-e.sem }()
+		if err := e.advance(ctx, inst); err != nil {
+			e.log.Error("advance instance", "id", inst.ID, "err", err)
+		}
+	}()
 }
 
 // leaseRenewer renews all leases held by this worker in a single query every
 // leaseRenewInterval. Running as its own goroutine means renewals are never
 // blocked by a long tick.
 func (e *Engine) leaseRenewer(ctx context.Context) {
-	ticker := time.NewTicker(leaseRenewInterval)
+	ticker := time.NewTicker(e.leaseRenewInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := e.db.RenewWorkerLeases(e.workerID, leaseDuration); err != nil {
+			if err := e.db.RenewWorkerLeases(e.workerID, e.leaseDuration); err != nil {
 				e.log.Error("renew worker leases", "err", err)
 			}
 		}
 	}
 }
 
+// ManualTick reports whether the engine runs in manual-tick mode (pollEvery == 0),
+// i.e. it does not auto-advance and must be driven by explicit Tick calls. The
+// /tick endpoint is only meaningful in this mode; when the continuous pump is
+// running, calling Tick out-of-band would race the pump, so the endpoint refuses.
+func (e *Engine) ManualTick() bool { return e.pollEvery == 0 }
+
 // Tick claims pending instances and processes each in its own goroutine.
 // It blocks until all goroutines finish, so ticks never overlap and the same
 // instance is never advanced twice concurrently. Returns the number of instances
 // that were claimed and processed.
 func (e *Engine) Tick(ctx context.Context) (int, error) {
-	instances, err := e.db.ClaimInstances(e.workerID, leaseDuration, cap(e.sem))
+	instances, err := e.db.ClaimInstances(e.workerID, e.leaseDuration, cap(e.sem))
 	if err != nil {
 		e.log.Error("claim instances", "err", err)
 		return 0, err

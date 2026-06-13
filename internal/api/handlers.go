@@ -22,6 +22,7 @@ const defaultChannel = "latest"
 
 type tickProvider interface {
 	Tick(ctx context.Context) (int, error)
+	ManualTick() bool
 }
 
 // Handlers holds business logic for all API operations.
@@ -317,6 +318,9 @@ func (h *Handlers) retryInstance(id string, raw json.RawMessage) Reply {
 func (h *Handlers) tick(raw json.RawMessage) Reply {
 	if h.engine == nil {
 		return errReply(fmt.Errorf("engine not available"))
+	}
+	if !h.engine.ManualTick() {
+		return errReply(fmt.Errorf("tick is only available in manual mode; start the server with --poll 0"))
 	}
 	var req TickReq
 	if len(raw) > 0 {

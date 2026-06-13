@@ -117,10 +117,21 @@ FROM process_instances
 WHERE status = sqlc.arg(status)
 ORDER BY created_at DESC;
 
--- name: RenewWorkerLeases :exec
+-- name: RenewWorkerLeasesChunk :execrows
+-- Renews up to chunk_size of this worker's leases, soonest-to-expire first, that
+-- are not already stamped to new_expiry. Called in a loop (one small transaction
+-- per chunk) so a row locked by an in-flight advance stalls only its chunk, never
+-- every lease at once. The new_expiry predicate makes each row eligible once per
+-- pass, so the loop terminates.
 UPDATE process_instances
-SET lease_expires_at = sqlc.arg(lease_expires_at)
-WHERE worker_id = sqlc.arg(worker_id);
+SET lease_expires_at = sqlc.arg(new_expiry)
+WHERE id IN (
+    SELECT pi.id FROM process_instances pi
+    WHERE pi.worker_id = sqlc.arg(worker_id)
+      AND pi.lease_expires_at < sqlc.arg(new_expiry)
+    ORDER BY pi.lease_expires_at ASC
+    LIMIT sqlc.arg(chunk_size)
+);
 
 -- name: CountActiveSiblings :one
 SELECT COUNT(*) FROM process_instances

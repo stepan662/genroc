@@ -24,13 +24,21 @@ func main() {
 	tcpAddr := flag.String("tcp", "", "TCP listen address, e.g. 127.0.0.1:9090 (empty to disable)")
 	udsPath := flag.String("uds", "", "Unix socket path, e.g. /tmp/gent.sock (empty to disable)")
 	pollMs := flag.Int("poll", 500, "Engine poll interval in milliseconds")
-	maxConcurrent := flag.Int("max-concurrent", 100_000, "Max instances processed concurrently")
+	maxConcurrent := flag.Int("max-concurrent", 200, "Max instances advanced concurrently. Too high overwhelms the DB/lease renewer and the engine will exit; raise --lease-duration or the DB connection pool before raising this much further.")
 	immediateRetries := flag.Bool("immediate-retries", false, "Disable retry backoff (retries fire instantly); for testing only")
+	leaseDuration := flag.Duration("lease-duration", 10*time.Second, "How long a claimed instance is leased to a worker before another worker may reclaim it on crash")
+	leaseRenewInterval := flag.Duration("lease-renew-interval", 3*time.Second, "How often a worker re-stamps its leases; must be comfortably shorter than --lease-duration")
 	pprofAddr := flag.String("pprof", "", "pprof listen address, e.g. localhost:6060 (empty to disable)")
 	logLevel := flag.String("log", "debug", "Log level: debug, info, warn, error")
 	flag.Parse()
 
 	log := newLogger(*logLevel)
+
+	if *leaseRenewInterval >= *leaseDuration {
+		log.Error("--lease-renew-interval must be shorter than --lease-duration",
+			"lease_renew_interval", *leaseRenewInterval, "lease_duration", *leaseDuration)
+		os.Exit(1)
+	}
 
 	var database *db.DB
 	var dbErr error
@@ -47,7 +55,7 @@ func main() {
 	}
 	defer database.Close()
 
-	eng := engine.New(database, time.Duration(*pollMs)*time.Millisecond, *maxConcurrent, *immediateRetries, log)
+	eng := engine.New(database, time.Duration(*pollMs)*time.Millisecond, *maxConcurrent, *immediateRetries, *leaseDuration, *leaseRenewInterval, log)
 	handlers := api.NewHandlers(database, eng)
 	srv := api.NewServer(handlers, log)
 

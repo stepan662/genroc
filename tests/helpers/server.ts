@@ -30,7 +30,12 @@ function spawnProc(
   const pollArgs = pollMs !== undefined ? ["--poll", String(pollMs)] : [];
   const concArgs = maxConcurrent !== undefined ? ["--max-concurrent", String(maxConcurrent)] : [];
   const retryArgs = immediateRetries ? ["--immediate-retries"] : [];
-  return spawn(bin, [...dbArgs, "--http", `:${port}`, "--log", "error", ...pollArgs, ...concArgs, ...retryArgs], {
+  // Optional lease overrides via env (used by the benchmark to tune the lease).
+  const leaseArgs = [
+    ...(process.env.GENT_LEASE_DURATION ? ["--lease-duration", process.env.GENT_LEASE_DURATION] : []),
+    ...(process.env.GENT_LEASE_RENEW_INTERVAL ? ["--lease-renew-interval", process.env.GENT_LEASE_RENEW_INTERVAL] : []),
+  ];
+  return spawn(bin, [...dbArgs, "--http", `:${port}`, "--log", "error", ...pollArgs, ...concArgs, ...retryArgs, ...leaseArgs], {
     stdio: "ignore",
   });
 }

@@ -103,7 +103,9 @@ test("crash recovery — new worker re-executes an unconfirmed step after the pr
     // Crash: SIGKILL leaves the lease in the database without releasing it.
     gent1.crash();
 
-    const gent2 = await startGent(gentBin, GENT2_PORT, db, crashPgDSN);
+    // Manual-tick mode (--poll 0): /tick is only available when the continuous
+    // pump is off, and it lets us drive reclaim deterministically.
+    const gent2 = await startGent(gentBin, GENT2_PORT, db, crashPgDSN, 0);
     // The engine lease is 10 s. Instead of waiting it out, shift gent2's
     // clock forward so gent1's lease is already expired from its view,
     // and tick immediately so it reclaims the instance.

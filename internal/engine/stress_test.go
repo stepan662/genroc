@@ -94,7 +94,7 @@ func TestStress_MultiWorker_ExactlyOnce(t *testing.T) {
 	var wg sync.WaitGroup
 	for e := 0; e < engineCount; e++ {
 		wg.Add(1)
-		eng := New(database, pollEvery, 10, true /* immediateRetries */, log)
+		eng := New(database, pollEvery, 10, true /* immediateRetries */, 0, 0 /* default lease */, log)
 		go func() {
 			defer wg.Done()
 			eng.Run(ctx)
@@ -286,7 +286,7 @@ func TestStress_Chaos_CancelRetryRandomErrors(t *testing.T) {
 	var engines sync.WaitGroup
 	for e := 0; e < engineCount; e++ {
 		engines.Add(1)
-		eng := New(database, pollEvery, 20, true /* immediateRetries */, log)
+		eng := New(database, pollEvery, 20, true /* immediateRetries */, 0, 0 /* default lease */, log)
 		go func() {
 			defer engines.Done()
 			eng.Run(ctx)

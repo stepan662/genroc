@@ -386,3 +386,18 @@ test("retry with parallel children — only the failed child re-runs", async () 
     await badMock.stop();
   }
 }, 30_000);
+
+// /tick is a manual-mode tool: when the continuous pump is running (poll > 0),
+// an out-of-band tick would race it, so the endpoint refuses.
+test("tick is rejected when the engine runs the continuous pump", async () => {
+  const db = join(tmpdir(), `gent_tick_guard_${Date.now()}.db`);
+  // No poll arg → server uses its default poll interval (continuous mode).
+  const gent = await startGent(gentBin, TICK_PORT + 2, db);
+  try {
+    const { error } = await gent.client.POST("/tick", { body: { advance_ms: 0 } });
+    expect(error).toBeDefined();
+    expect(JSON.stringify(error)).toContain("manual mode");
+  } finally {
+    gent.stop();
+  }
+}, 30_000);

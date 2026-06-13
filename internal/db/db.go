@@ -564,11 +564,34 @@ func (db *DB) UpdateInstanceProgress(inst *model.ProcessInstance) error {
 	})
 }
 
+// renewChunkSize bounds how many leases a single renewal transaction touches.
+// Small chunks keep each transaction's lock set tiny, so a row locked by an
+// in-flight advance stalls only its chunk rather than every lease at once (a
+// single bulk UPDATE would block all renewals behind one contended row).
+const renewChunkSize = 100
+
+// RenewWorkerLeases re-stamps all of this worker's leases to now+leaseDur, in
+// small chunks (soonest-to-expire first). Each chunk is its own transaction, so
+// renewals make progress even while in-flight advances hold row locks.
 func (db *DB) RenewWorkerLeases(workerID string, leaseDur time.Duration) error {
-	return db.q.RenewWorkerLeases(context.Background(), dbgen.RenewWorkerLeasesParams{
-		WorkerID:       sql.NullString{String: workerID, Valid: true},
-		LeaseExpiresAt: sql.NullInt64{Int64: nowMillis() + leaseDur.Milliseconds(), Valid: true},
-	})
+	newExpiry := sql.NullInt64{Int64: nowMillis() + leaseDur.Milliseconds(), Valid: true}
+	worker := sql.NullString{String: workerID, Valid: true}
+	for {
+		n, err := db.q.RenewWorkerLeasesChunk(context.Background(), dbgen.RenewWorkerLeasesChunkParams{
+			NewExpiry: newExpiry,
+			WorkerID:  worker,
+			ChunkSize: renewChunkSize,
+		})
+		if err != nil {
+			return err
+		}
+		// Fewer than a full chunk renewed → no eligible leases remain. Renewed rows
+		// are stamped to newExpiry, so they no longer match the chunk's predicate;
+		// the eligible set shrinks each pass, guaranteeing termination.
+		if n < renewChunkSize {
+			return nil
+		}
+	}
 }
 
 // ClaimInstances atomically leases up to limit runnable instances to workerID.

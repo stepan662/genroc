@@ -667,20 +667,35 @@ func (q *Queries) LoadDefinitionsOnChannel(ctx context.Context, channel string) 
 	return items, nil
 }
 
-const renewWorkerLeases = `-- name: RenewWorkerLeases :exec
+const renewWorkerLeasesChunk = `-- name: RenewWorkerLeasesChunk :execrows
 UPDATE process_instances
 SET lease_expires_at = ?1
-WHERE worker_id = ?2
+WHERE id IN (
+    SELECT pi.id FROM process_instances pi
+    WHERE pi.worker_id = ?2
+      AND pi.lease_expires_at < ?1
+    ORDER BY pi.lease_expires_at ASC
+    LIMIT ?3
+)
 `
 
-type RenewWorkerLeasesParams struct {
-	LeaseExpiresAt sql.NullInt64
-	WorkerID       sql.NullString
+type RenewWorkerLeasesChunkParams struct {
+	NewExpiry sql.NullInt64
+	WorkerID  sql.NullString
+	ChunkSize int64
 }
 
-func (q *Queries) RenewWorkerLeases(ctx context.Context, arg RenewWorkerLeasesParams) error {
-	_, err := q.db.ExecContext(ctx, renewWorkerLeases, arg.LeaseExpiresAt, arg.WorkerID)
-	return err
+// Renews up to chunk_size of this worker's leases, soonest-to-expire first, that
+// are not already stamped to new_expiry. Called in a loop (one small transaction
+// per chunk) so a row locked by an in-flight advance stalls only its chunk, never
+// every lease at once. The new_expiry predicate makes each row eligible once per
+// pass, so the loop terminates.
+func (q *Queries) RenewWorkerLeasesChunk(ctx context.Context, arg RenewWorkerLeasesChunkParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, renewWorkerLeasesChunk, arg.NewExpiry, arg.WorkerID, arg.ChunkSize)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const updateInstance = `-- name: UpdateInstance :exec
