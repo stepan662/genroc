@@ -65,4 +65,10 @@ type ProcessInstance struct {
 	UpdatedAt     time.Time
 	WorkerID      *string
 	LeaseExpiresAt *time.Time
+
+	// ReclaimedExpired is a transient, non-persisted flag set by ClaimInstances
+	// when this instance was reclaimed from an expired lease (its prior worker_id
+	// was non-null) rather than picked up at a clean step boundary. It signals that
+	// the current step may have been interrupted mid-execution on the previous owner.
+	ReclaimedExpired bool
 }

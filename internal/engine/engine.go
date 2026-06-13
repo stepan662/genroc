@@ -254,6 +254,27 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) error
 		return e.cancelInstance(inst)
 	}
 
+	// Lease takeover: this instance was reclaimed from an expired lease, so its
+	// front step (StepQueue[0]) may have started executing on the previous owner
+	// before it crashed/stalled. Re-running is fine for idempotent steps, but an
+	// only_once (non-idempotent) call step cannot be safely re-executed — the call
+	// may already have happened — so fail the instance to honour at-most-once.
+	if inst.ReclaimedExpired {
+		stepID := ""
+		if len(inst.StepQueue) > 0 {
+			stepID = inst.StepQueue[0].ID
+		}
+		e.log.Warn("reclaimed instance with expired lease; previous owner crashed or stalled mid-step",
+			"id", inst.ID, "process", inst.ProcessName, "step", stepID)
+		if len(inst.StepQueue) > 0 {
+			s := inst.StepQueue[0]
+			if s.Call != nil && s.OnlyOnce != nil && *s.OnlyOnce {
+				return e.failInstance(inst, fmt.Sprintf(
+					"step %q is only_once and was interrupted by a lease takeover; cannot re-execute", s.ID))
+			}
+		}
+	}
+
 	// Process steps in a loop. A call-less step (pure switch/routing) has no
 	// external side effects, so once it resolves its goto we continue to the next
 	// step in-memory without persisting — collapsing a chain of switch-only steps

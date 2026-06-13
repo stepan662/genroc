@@ -605,43 +605,124 @@ func (db *DB) ClaimInstances(workerID string, leaseDur time.Duration, limit int)
 	now := nowMillis()
 	leaseExpiry := now + leaseDur.Milliseconds()
 
-	lock := ""
-	if db.dialect == "postgres" {
-		lock = "\n\t\t\t\tFOR UPDATE SKIP LOCKED"
-	}
-	query := `
-		UPDATE process_instances
-		SET worker_id = ?, lease_expires_at = ?
-		WHERE id IN (
-			SELECT id FROM process_instances
-			WHERE status IN ('running', 'failing', 'cancelling')
+	ctx := context.Background()
+
+	// Shared claimable predicate. The two `?` are both `now` (retry timer, lease expiry).
+	const where = `status IN ('running', 'failing', 'cancelling')
 			  AND wait_state <> 'waiting'
 			  AND (next_retry_at IS NULL OR next_retry_at <= ?)
-			  AND (worker_id IS NULL OR lease_expires_at <= ?)
-			ORDER BY created_at ASC, id ASC
-			LIMIT ?` + lock + `
-		)
-		RETURNING ` + instanceColumns
+			  AND (worker_id IS NULL OR lease_expires_at <= ?)`
 
-	rows, err := db.exec.QueryContext(context.Background(), query, workerID, leaseExpiry, now, now, limit)
+	if db.dialect == "postgres" {
+		// One statement: a CTE captures the prior worker_id (to flag lease takeovers)
+		// and FOR UPDATE SKIP LOCKED lets concurrent workers avoid blocking.
+		query := `
+			WITH cand AS (
+				SELECT id AS cand_id, worker_id AS prev_worker
+				FROM process_instances
+				WHERE ` + where + `
+				ORDER BY created_at ASC, id ASC
+				LIMIT ? FOR UPDATE SKIP LOCKED
+			)
+			UPDATE process_instances
+			SET worker_id = ?, lease_expires_at = ?
+			FROM cand
+			WHERE process_instances.id = cand.cand_id
+			RETURNING ` + instanceColumns + `, cand.prev_worker`
+
+		rows, err := db.exec.QueryContext(ctx, query, now, now, limit, workerID, leaseExpiry)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		var result []*model.ProcessInstance
+		for rows.Next() {
+			var r dbgen.ProcessInstance
+			var prevWorker sql.NullString
+			if err := rows.Scan(
+				&r.ID, &r.ProcessName, &r.ProcessVersion,
+				&r.StepQueue, &r.ContextData, &r.ParentID,
+				&r.CallStack, &r.RetryCount, &r.NextRetryAt,
+				&r.Status, &r.Error, &r.CreatedAt, &r.UpdatedAt,
+				&r.WorkerID, &r.LeaseExpiresAt, &r.WaitState, &r.SpawnStepID,
+				&prevWorker,
+			); err != nil {
+				return nil, err
+			}
+			inst, err := toInstance(r)
+			if err != nil {
+				return nil, err
+			}
+			inst.ReclaimedExpired = prevWorker.Valid && prevWorker.String != ""
+			result = append(result, inst)
+		}
+		return result, rows.Err()
+	}
+
+	// SQLite can't reference a FROM table in RETURNING, so it selects-then-updates
+	// in one transaction. Its single-writer model makes that atomic (no FOR UPDATE);
+	// the selected worker_id is the prior owner, before we overwrite it.
+	tx, _, raw, err := db.beginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer tx.Rollback()
 
+	selectQ := `SELECT ` + instanceColumns + `
+		FROM process_instances
+		WHERE ` + where + `
+		ORDER BY created_at ASC, id ASC
+		LIMIT ?`
+	rows, err := raw.QueryContext(ctx, selectQ, now, now, limit)
+	if err != nil {
+		return nil, err
+	}
 	var result []*model.ProcessInstance
+	ids := make([]string, 0, limit)
 	for rows.Next() {
 		r, err := scanInstance(rows)
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
 		inst, err := toInstance(r)
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
+		inst.ReclaimedExpired = inst.WorkerID != nil // prior worker present => takeover
 		result = append(result, inst)
+		ids = append(ids, inst.ID)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close() // must close the cursor before the UPDATE on the single connection
+	if len(result) == 0 {
+		return nil, tx.Commit()
+	}
+
+	idsJSON, err := json.Marshal(ids)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := raw.ExecContext(ctx,
+		`UPDATE process_instances SET worker_id = ?, lease_expires_at = ?
+		 WHERE id IN (SELECT value FROM json_each(?))`,
+		workerID, leaseExpiry, string(idsJSON)); err != nil {
+		return nil, err
+	}
+
+	// Reflect the new lease state on the returned instances.
+	newLease := toTime(leaseExpiry)
+	w := workerID
+	for _, inst := range result {
+		inst.WorkerID = &w
+		inst.LeaseExpiresAt = &newLease
+	}
+	return result, tx.Commit()
 }
 
 func (db *DB) GetInstance(id string) (*model.ProcessInstance, error) {
