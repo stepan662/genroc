@@ -7,7 +7,7 @@ log     ?= info
 
 # BUILD_FLAGS = CGO_ENABLED=1
 
-.PHONY: run build test test-unit test-int test-stress swagger client clean generate
+.PHONY: run build test test-unit test-int test-stress bench swagger client clean generate
 
 run:
 	$(BUILD_FLAGS) go run ./cmd/gent \
@@ -42,6 +42,12 @@ client: swagger
 
 test-int: client
 	cd tests && ~/.bun/bin/bun run typecheck && ~/.bun/bin/bun run test
+
+# Performance benchmark: recursive child-spawning process, SQLite vs Postgres.
+# Tunables: BENCH_TTL, BENCH_ROOTS, BENCH_POLL_MS, BENCH_MAX_CONCURRENT, BENCH_RUNS.
+# Set POSTGRES_DSN to also benchmark Postgres and print a comparison.
+bench: client
+	cd tests && ~/.bun/bin/bun run bench
 
 sqlc:
 	go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate

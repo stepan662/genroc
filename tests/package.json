@@ -7,7 +7,8 @@
     "generate": "openapi-typescript ../openapi.json -o generated/api.ts",
     "playground:generate": "bun run playground/codegen.ts",
     "playground:server": "bun run playground/server.ts",
-    "playground:run": "bun run playground/run.ts"
+    "playground:run": "bun run playground/run.ts",
+    "bench": "bun run bench/bench.ts"
   },
   "dependencies": {
     "ajv": "^8.20.0",
