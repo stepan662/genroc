@@ -77,9 +77,11 @@ func (q *Queries) FailAncestors(ctx context.Context, arg FailAncestorsParams) er
 }
 
 const findParentsOf = `-- name: FindParentsOf :many
-SELECT pd.parent_name, pc.version AS parent_version, pd.child_name, pd.child_version AS baked_version
+SELECT pd.parent_name, pc.version AS parent_version, defp.definition AS parent_definition,
+       pd.child_name, pd.child_version AS baked_version
 FROM process_dependencies pd
 JOIN process_channels pc ON pc.name = pd.parent_name AND pc.channel = ?1
+JOIN process_definitions defp ON defp.name = pd.parent_name AND defp.version = pc.version
 WHERE pd.parent_version = pc.version
   AND pd.child_name IN (SELECT value FROM json_each(?2))
 `
@@ -90,10 +92,11 @@ type FindParentsOfParams struct {
 }
 
 type FindParentsOfRow struct {
-	ParentName    string
-	ParentVersion int64
-	ChildName     string
-	BakedVersion  int64
+	ParentName       string
+	ParentVersion    int64
+	ParentDefinition string
+	ChildName        string
+	BakedVersion     int64
 }
 
 func (q *Queries) FindParentsOf(ctx context.Context, arg FindParentsOfParams) ([]FindParentsOfRow, error) {
@@ -108,6 +111,7 @@ func (q *Queries) FindParentsOf(ctx context.Context, arg FindParentsOfParams) ([
 		if err := rows.Scan(
 			&i.ParentName,
 			&i.ParentVersion,
+			&i.ParentDefinition,
 			&i.ChildName,
 			&i.BakedVersion,
 		); err != nil {
@@ -552,39 +556,6 @@ func (q *Queries) ListChannels(ctx context.Context, name string) ([]ListChannels
 	return items, nil
 }
 
-const listChannelsForChannel = `-- name: ListChannelsForChannel :many
-SELECT name, channel, version, updated_at FROM process_channels
-WHERE channel = ?1
-`
-
-func (q *Queries) ListChannelsForChannel(ctx context.Context, channel string) ([]ProcessChannel, error) {
-	rows, err := q.db.QueryContext(ctx, listChannelsForChannel, channel)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ProcessChannel
-	for rows.Next() {
-		var i ProcessChannel
-		if err := rows.Scan(
-			&i.Name,
-			&i.Channel,
-			&i.Version,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listDefinitions = `-- name: ListDefinitions :many
 SELECT name, version, definition, content_hash, created_at
 FROM process_definitions
@@ -706,6 +677,42 @@ func (q *Queries) ListInstancesByStatus(ctx context.Context, status string) ([]P
 			&i.WaitState,
 			&i.SpawnStepID,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const loadDefinitionsOnChannel = `-- name: LoadDefinitionsOnChannel :many
+SELECT pc.version, pd.definition
+FROM process_channels pc
+JOIN process_definitions pd ON pd.name = pc.name AND pd.version = pc.version
+WHERE pc.channel = ?1
+ORDER BY pc.name
+`
+
+type LoadDefinitionsOnChannelRow struct {
+	Version    int64
+	Definition string
+}
+
+func (q *Queries) LoadDefinitionsOnChannel(ctx context.Context, channel string) ([]LoadDefinitionsOnChannelRow, error) {
+	rows, err := q.db.QueryContext(ctx, loadDefinitionsOnChannel, channel)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LoadDefinitionsOnChannelRow
+	for rows.Next() {
+		var i LoadDefinitionsOnChannelRow
+		if err := rows.Scan(&i.Version, &i.Definition); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

@@ -343,13 +343,14 @@ func (db *DB) FindParentsOf(channel string, childVersions map[string]int) (stale
 
 	type entry struct {
 		version int
+		def     string // raw definition JSON, carried by every row of this parent
 		isStale bool
 	}
 	byName := make(map[string]*entry)
 	for _, r := range rows {
 		e := byName[r.ParentName]
 		if e == nil {
-			e = &entry{version: int(r.ParentVersion)}
+			e = &entry{version: int(r.ParentVersion), def: r.ParentDefinition}
 			byName[r.ParentName] = e
 		}
 		if int(r.BakedVersion) != childVersions[r.ChildName] {
@@ -358,11 +359,11 @@ func (db *DB) FindParentsOf(channel string, childVersions map[string]int) (stale
 	}
 
 	for name, e := range byName {
-		def, defErr := db.GetDefinition(name, e.version)
-		if defErr != nil {
-			return nil, nil, defErr
+		var def model.ProcessDefinition
+		if err := json.Unmarshal([]byte(e.def), &def); err != nil {
+			return nil, nil, fmt.Errorf("unmarshal definition %q v%d: %w", name, e.version, err)
 		}
-		vd := VersionedDef{Version: e.version, Def: def}
+		vd := VersionedDef{Version: e.version, Def: &def}
 		if e.isStale {
 			stale = append(stale, vd)
 		} else {
@@ -427,17 +428,17 @@ func (db *DB) ListChannels(name string) (map[string]int, error) {
 }
 
 func (db *DB) LoadDefinitionsOnChannel(channel string) ([]VersionedDef, error) {
-	rows, err := db.q.ListChannelsForChannel(context.Background(), channel)
+	rows, err := db.q.LoadDefinitionsOnChannel(context.Background(), channel)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]VersionedDef, 0, len(rows))
 	for _, r := range rows {
-		def, err := db.GetDefinition(r.Name, int(r.Version))
-		if err != nil {
+		var def model.ProcessDefinition
+		if err := json.Unmarshal([]byte(r.Definition), &def); err != nil {
 			return nil, err
 		}
-		out = append(out, VersionedDef{Version: int(r.Version), Def: def})
+		out = append(out, VersionedDef{Version: int(r.Version), Def: &def})
 	}
 	return out, nil
 }

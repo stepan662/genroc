@@ -62,9 +62,12 @@ SELECT channel, version FROM process_channels
 WHERE name = sqlc.arg(name)
 ORDER BY channel;
 
--- name: ListChannelsForChannel :many
-SELECT name, channel, version, updated_at FROM process_channels
-WHERE channel = sqlc.arg(channel);
+-- name: LoadDefinitionsOnChannel :many
+SELECT pc.version, pd.definition
+FROM process_channels pc
+JOIN process_definitions pd ON pd.name = pc.name AND pd.version = pc.version
+WHERE pc.channel = sqlc.arg(channel)
+ORDER BY pc.name;
 
 -- name: InsertInstance :exec
 INSERT INTO process_instances
@@ -150,9 +153,11 @@ WHERE parent_id = sqlc.arg(parent_id)
   AND spawn_step_id = sqlc.arg(spawn_step_id);
 
 -- name: FindParentsOf :many
-SELECT pd.parent_name, pc.version AS parent_version, pd.child_name, pd.child_version AS baked_version
+SELECT pd.parent_name, pc.version AS parent_version, defp.definition AS parent_definition,
+       pd.child_name, pd.child_version AS baked_version
 FROM process_dependencies pd
 JOIN process_channels pc ON pc.name = pd.parent_name AND pc.channel = sqlc.arg(channel)
+JOIN process_definitions defp ON defp.name = pd.parent_name AND defp.version = pc.version
 WHERE pd.parent_version = pc.version
   AND pd.child_name IN (SELECT value FROM json_each(sqlc.arg(names)));
 
