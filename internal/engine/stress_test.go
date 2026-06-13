@@ -478,6 +478,98 @@ func TestStress_Chaos_CancelRetryRandomErrors(t *testing.T) {
 		len(insts), rootCount, totalCalls.Load(), stepsRun)
 }
 
+// TestGracefulShutdown_ReleasesLeases verifies that a clean shutdown (ctx cancel)
+// drains in-flight work and releases the worker's leases. That invariant is what
+// keeps a healthy restart quiet: a released lease (worker_id NULL) is reclaimed as
+// a clean claim, so the engine never logs a "reclaimed instance with expired lease"
+// takeover warning. Such warnings should only appear after a hard crash, where the
+// lease is left held.
+func TestGracefulShutdown_ReleasesLeases(t *testing.T) {
+	database := openStressDB(t)
+
+	// Signals when the step is hit, then blocks until the test releases it, so the
+	// step stays in-flight (lease held) right up to shutdown. On shutdown the engine
+	// aborts its request client-side (transport.Send returns), so the assertions run
+	// without needing the handler to unblock; we close release at the end purely so
+	// srv.Close() doesn't wait on the leaked handler goroutine.
+	hit := make(chan struct{}, 1)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case hit <- struct{}{}:
+		default:
+		}
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release) // LIFO: runs before srv.Close() so the handler can exit
+
+	processName := fmt.Sprintf("graceful-%d", time.Now().UnixNano())
+	steps := []*model.Step{{
+		ID:     "work",
+		Call:   &model.Call{Type: model.CallTypeREST, Endpoint: srv.URL},
+		Switch: model.SwitchMap{{Goto: model.GotoEnd}},
+	}}
+	if err := database.SaveDefinition(&model.ProcessDefinition{Name: processName, Steps: steps}, 1, nil, "graceful-hash", ""); err != nil {
+		t.Fatalf("SaveDefinition: %v", err)
+	}
+
+	instID := fmt.Sprintf("gi-%d", time.Now().UnixNano())
+	if err := database.SaveInstance(&model.ProcessInstance{
+		ID:             instID,
+		ProcessName:    processName,
+		ProcessVersion: 1,
+		StepQueue:      steps,
+		ContextData:    map[string]any{},
+		Status:         model.StatusRunning,
+	}); err != nil {
+		t.Fatalf("SaveInstance: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	eng := New(database, time.Millisecond, 10, true /* immediateRetries */, 0, 0 /* default lease */, log)
+
+	done := make(chan struct{})
+	go func() { eng.Run(ctx); close(done) }()
+
+	// Wait until the engine has claimed the instance and the step is in-flight.
+	select {
+	case <-hit:
+	case <-time.After(10 * time.Second):
+		cancel()
+		t.Fatal("step never went in-flight")
+	}
+
+	// Sanity: an in-flight instance holds a lease.
+	if got, err := database.GetInstance(instID); err != nil {
+		t.Fatalf("GetInstance (in-flight): %v", err)
+	} else if got.WorkerID == nil {
+		t.Fatal("expected the in-flight instance to hold a lease (worker_id set)")
+	}
+
+	// Graceful shutdown: cancel and wait for Run to drain + return.
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("engine did not shut down within 10s")
+	}
+
+	// The drain must have released the lease — otherwise a restart would treat the
+	// instance as a takeover and log a spurious warning.
+	got, err := database.GetInstance(instID)
+	if err != nil {
+		t.Fatalf("GetInstance (after shutdown): %v", err)
+	}
+	if got.WorkerID != nil {
+		t.Fatalf("graceful shutdown left a held lease (worker_id=%q); a restart would log a spurious takeover warning", *got.WorkerID)
+	}
+	if got.LeaseExpiresAt != nil {
+		t.Fatal("graceful shutdown left lease_expires_at set; expected it cleared")
+	}
+}
+
 func openStressDB(t *testing.T) *db.DB {
 	t.Helper()
 	f, err := os.CreateTemp("", "gent-stress-*.db")
