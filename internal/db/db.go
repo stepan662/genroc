@@ -28,7 +28,8 @@ var pgFunctionsSQL string
 type DB struct {
 	sqldb   *sql.DB
 	q       *dbgen.Queries
-	dialect string // "sqlite" | "postgres"
+	exec    dbgen.DBTX // rewrites ?→$N on Postgres; use for hand-written SQL
+	dialect string     // "sqlite" | "postgres"
 }
 
 // OpenSQLite opens (or creates) the SQLite database at path and runs migrations.
@@ -75,18 +76,10 @@ func open(sqldb *sql.DB, dialect string) (*DB, error) {
 	if dialect == "postgres" {
 		dbtx = pgRewriter{dbtx}
 	}
-	return &DB{sqldb: sqldb, q: dbgen.New(dbtx), dialect: dialect}, nil
+	return &DB{sqldb: sqldb, q: dbgen.New(dbtx), exec: dbtx, dialect: dialect}, nil
 }
 
 func (db *DB) Close() error { return db.sqldb.Close() }
-
-// ph returns the positional placeholder for parameter n (1-indexed).
-func (db *DB) ph(n int) string {
-	if db.dialect == "postgres" {
-		return fmt.Sprintf("$%d", n)
-	}
-	return "?"
-}
 
 // ── time helpers ─────────────────────────────────────────────────────────────
 
@@ -172,18 +165,19 @@ func (db *DB) SaveDefinition(def *model.ProcessDefinition, version int, deps []D
 		return err
 	}
 	ctx := context.Background()
-	tx, qtx, err := db.beginTx(ctx, nil)
+	tx, qtx, _, err := db.beginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	now := nowMillis()
 
 	if err := qtx.InsertDefinition(ctx, dbgen.InsertDefinitionParams{
 		Name:        def.Name,
 		Version:     int64(version),
 		Definition:  string(data),
 		ContentHash: hash,
-		CreatedAt:   nowMillis(),
+		CreatedAt:   now,
 	}); err != nil {
 		return err
 	}
@@ -210,7 +204,7 @@ func (db *DB) SaveDefinition(def *model.ProcessDefinition, version int, deps []D
 			Name:      def.Name,
 			Channel:   channel,
 			Version:   int64(version),
-			UpdatedAt: nowMillis(),
+			UpdatedAt: now,
 		}); err != nil {
 			return err
 		}
@@ -450,59 +444,106 @@ func (db *DB) LoadDefinitionsOnChannel(channel string) ([]VersionedDef, error) {
 
 // ── Process Instances ─────────────────────────────────────────────────────────
 
-func (db *DB) SaveInstance(inst *model.ProcessInstance) error {
-	queue, err := json.Marshal(inst.StepQueue)
-	if err != nil {
-		return err
-	}
-	ctx, err := json.Marshal(inst.ContextData)
-	if err != nil {
-		return err
-	}
-	callStack, err := json.Marshal(inst.CallStack)
-	if err != nil {
-		return err
-	}
-	now := nowMillis()
-	return db.q.InsertInstance(context.Background(), dbgen.InsertInstanceParams{
-		ID:             inst.ID,
-		ProcessName:    inst.ProcessName,
-		ProcessVersion: int64(inst.ProcessVersion),
-		StepQueue:      string(queue),
-		ContextData:    string(ctx),
-		ParentID:       inst.ParentID,
-		SpawnStepID:    inst.SpawnStepID,
-		CallStack:      string(callStack),
-		RetryCount:     int64(inst.RetryCount),
-		NextRetryAt:    fromTimePtr(inst.NextRetryAt),
-		Status:         string(inst.Status),
-		WaitState:      string(inst.WaitState),
-		Error:          inst.Error,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	})
+// instanceColumns is the full process_instances column list, in the order
+// scanInstance reads them. Shared by the hand-written ClaimInstances and
+// RetryProcess queries so adding a column touches one place.
+const instanceColumns = `id, process_name, process_version, step_queue, context_data, parent_id,
+	call_stack, retry_count, next_retry_at, status, error,
+	created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_step_id`
+
+// scanInstance reads one process_instances row (in instanceColumns order) from a
+// *sql.Row or *sql.Rows.
+func scanInstance(s interface{ Scan(...any) error }) (dbgen.ProcessInstance, error) {
+	var r dbgen.ProcessInstance
+	err := s.Scan(
+		&r.ID, &r.ProcessName, &r.ProcessVersion,
+		&r.StepQueue, &r.ContextData, &r.ParentID,
+		&r.CallStack, &r.RetryCount, &r.NextRetryAt,
+		&r.Status, &r.Error, &r.CreatedAt, &r.UpdatedAt,
+		&r.WorkerID, &r.LeaseExpiresAt, &r.WaitState, &r.SpawnStepID,
+	)
+	return r, err
 }
 
-func (db *DB) UpdateInstance(inst *model.ProcessInstance) error {
+// marshalInstanceState serialises the two JSON blobs every instance write needs.
+func marshalInstanceState(inst *model.ProcessInstance) (stepQueue, contextData string, err error) {
 	queue, err := json.Marshal(inst.StepQueue)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	ctx, err := json.Marshal(inst.ContextData)
 	if err != nil {
-		return err
+		return "", "", err
 	}
-	return db.q.UpdateInstance(context.Background(), dbgen.UpdateInstanceParams{
+	return string(queue), string(ctx), nil
+}
+
+// updateInstanceParams builds the params for the UpdateInstance query from inst,
+// stamping updated_at with now.
+func updateInstanceParams(inst *model.ProcessInstance, now int64) (dbgen.UpdateInstanceParams, error) {
+	queue, ctx, err := marshalInstanceState(inst)
+	if err != nil {
+		return dbgen.UpdateInstanceParams{}, err
+	}
+	return dbgen.UpdateInstanceParams{
 		ID:          inst.ID,
-		StepQueue:   string(queue),
-		ContextData: string(ctx),
+		StepQueue:   queue,
+		ContextData: ctx,
 		RetryCount:  int64(inst.RetryCount),
 		NextRetryAt: fromTimePtr(inst.NextRetryAt),
 		Status:      string(inst.Status),
 		WaitState:   string(inst.WaitState),
 		Error:       inst.Error,
-		UpdatedAt:   nowMillis(),
-	})
+		UpdatedAt:   now,
+	}, nil
+}
+
+// insertInstanceParams builds the params for the InsertInstance query. status is
+// passed explicitly so callers can override it (e.g. spawned children inherit the
+// parent's status); created/updated timestamps are passed for the same reason.
+func insertInstanceParams(inst *model.ProcessInstance, status string, createdAt, updatedAt int64) (dbgen.InsertInstanceParams, error) {
+	queue, ctx, err := marshalInstanceState(inst)
+	if err != nil {
+		return dbgen.InsertInstanceParams{}, err
+	}
+	callStack, err := json.Marshal(inst.CallStack)
+	if err != nil {
+		return dbgen.InsertInstanceParams{}, err
+	}
+	return dbgen.InsertInstanceParams{
+		ID:             inst.ID,
+		ProcessName:    inst.ProcessName,
+		ProcessVersion: int64(inst.ProcessVersion),
+		StepQueue:      queue,
+		ContextData:    ctx,
+		ParentID:       inst.ParentID,
+		SpawnStepID:    inst.SpawnStepID,
+		CallStack:      string(callStack),
+		RetryCount:     int64(inst.RetryCount),
+		NextRetryAt:    fromTimePtr(inst.NextRetryAt),
+		Status:         status,
+		WaitState:      string(inst.WaitState),
+		Error:          inst.Error,
+		CreatedAt:      createdAt,
+		UpdatedAt:      updatedAt,
+	}, nil
+}
+
+func (db *DB) SaveInstance(inst *model.ProcessInstance) error {
+	now := nowMillis()
+	params, err := insertInstanceParams(inst, string(inst.Status), now, now)
+	if err != nil {
+		return err
+	}
+	return db.q.InsertInstance(context.Background(), params)
+}
+
+func (db *DB) UpdateInstance(inst *model.ProcessInstance) error {
+	params, err := updateInstanceParams(inst, nowMillis())
+	if err != nil {
+		return err
+	}
+	return db.q.UpdateInstance(context.Background(), params)
 }
 
 // UpdateInstanceProgress writes the mutable step state (queue, context, retry
@@ -514,18 +555,14 @@ func (db *DB) UpdateInstance(inst *model.ProcessInstance) error {
 // post-collect reset to ” must be persisted or the stale 'collecting' would
 // make the next spawn step skip phase 1 entirely.
 func (db *DB) UpdateInstanceProgress(inst *model.ProcessInstance) error {
-	queue, err := json.Marshal(inst.StepQueue)
-	if err != nil {
-		return err
-	}
-	ctx, err := json.Marshal(inst.ContextData)
+	queue, ctx, err := marshalInstanceState(inst)
 	if err != nil {
 		return err
 	}
 	return db.q.UpdateInstanceProgress(context.Background(), dbgen.UpdateInstanceProgressParams{
 		ID:          inst.ID,
-		StepQueue:   string(queue),
-		ContextData: string(ctx),
+		StepQueue:   queue,
+		ContextData: ctx,
 		RetryCount:  int64(inst.RetryCount),
 		NextRetryAt: fromTimePtr(inst.NextRetryAt),
 		WaitState:   string(inst.WaitState),
@@ -540,54 +577,36 @@ func (db *DB) RenewWorkerLeases(workerID string, leaseDur time.Duration) error {
 	})
 }
 
-// ClaimInstances is hand-written because SQLite and PostgreSQL require different
-// locking strategies: PostgreSQL uses FOR UPDATE SKIP LOCKED to safely handle
-// concurrent workers, while SQLite's single-writer model makes this unnecessary.
+// ClaimInstances atomically leases up to limit runnable instances to workerID.
+// PostgreSQL appends FOR UPDATE SKIP LOCKED so concurrent workers never block on
+// each other; SQLite's single-writer model needs no such clause. db.exec rewrites
+// the ? placeholders to $N on Postgres.
 //
 // wait_state <> 'waiting' excludes parents suspended for children.
 // Both ” (none) and 'collecting' are claimable.
 func (db *DB) ClaimInstances(workerID string, leaseDur time.Duration, limit int) ([]*model.ProcessInstance, error) {
 	now := nowMillis()
 	leaseExpiry := now + leaseDur.Milliseconds()
-	ctx := context.Background()
 
-	var query string
+	lock := ""
 	if db.dialect == "postgres" {
-		query = `
-			UPDATE process_instances
-			SET worker_id = $1, lease_expires_at = $2
-			WHERE id IN (
-				SELECT id FROM process_instances
-				WHERE status IN ('running', 'failing', 'cancelling')
-				  AND wait_state <> 'waiting'
-				  AND (next_retry_at IS NULL OR next_retry_at <= $3)
-				  AND (worker_id IS NULL OR lease_expires_at <= $4)
-				ORDER BY created_at ASC, id ASC
-				LIMIT $5
-				FOR UPDATE SKIP LOCKED
-			)
-			RETURNING id, process_name, process_version, step_queue, context_data, parent_id,
-			          call_stack, retry_count, next_retry_at, status, error,
-			          created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_step_id`
-	} else {
-		query = `
-			UPDATE process_instances
-			SET worker_id = ?, lease_expires_at = ?
-			WHERE id IN (
-				SELECT id FROM process_instances
-				WHERE status IN ('running', 'failing', 'cancelling')
-				  AND wait_state <> 'waiting'
-				  AND (next_retry_at IS NULL OR next_retry_at <= ?)
-				  AND (worker_id IS NULL OR lease_expires_at <= ?)
-				ORDER BY created_at ASC, id ASC
-				LIMIT ?
-			)
-			RETURNING id, process_name, process_version, step_queue, context_data, parent_id,
-			          call_stack, retry_count, next_retry_at, status, error,
-			          created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_step_id`
+		lock = "\n\t\t\t\tFOR UPDATE SKIP LOCKED"
 	}
+	query := `
+		UPDATE process_instances
+		SET worker_id = ?, lease_expires_at = ?
+		WHERE id IN (
+			SELECT id FROM process_instances
+			WHERE status IN ('running', 'failing', 'cancelling')
+			  AND wait_state <> 'waiting'
+			  AND (next_retry_at IS NULL OR next_retry_at <= ?)
+			  AND (worker_id IS NULL OR lease_expires_at <= ?)
+			ORDER BY created_at ASC, id ASC
+			LIMIT ?` + lock + `
+		)
+		RETURNING ` + instanceColumns
 
-	rows, err := db.sqldb.QueryContext(ctx, query, workerID, leaseExpiry, now, now, limit)
+	rows, err := db.exec.QueryContext(context.Background(), query, workerID, leaseExpiry, now, now, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -595,14 +614,8 @@ func (db *DB) ClaimInstances(workerID string, leaseDur time.Duration, limit int)
 
 	var result []*model.ProcessInstance
 	for rows.Next() {
-		var r dbgen.ProcessInstance
-		if err := rows.Scan(
-			&r.ID, &r.ProcessName, &r.ProcessVersion,
-			&r.StepQueue, &r.ContextData, &r.ParentID,
-			&r.CallStack, &r.RetryCount, &r.NextRetryAt,
-			&r.Status, &r.Error, &r.CreatedAt, &r.UpdatedAt,
-			&r.WorkerID, &r.LeaseExpiresAt, &r.WaitState, &r.SpawnStepID,
-		); err != nil {
+		r, err := scanInstance(rows)
+		if err != nil {
 			return nil, err
 		}
 		inst, err := toInstance(r)
@@ -666,55 +679,40 @@ func (db *DB) FinishChild(child *model.ProcessInstance) error {
 	}
 
 	ctx := context.Background()
-	tx, qtx, err := db.beginTx(ctx, nil)
+	tx, qtx, raw, err := db.beginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
 	// Acquire row locks (oldest-first) and read the parent's wait_state in one shot.
-	// The locking CTE (PostgreSQL) ensures the same lock order as CancelProcess and
-	// FailInstanceAndAncestors, preventing deadlocks. SQLite needs no explicit locking.
-	var parentWaitState string
+	// The locking CTE keeps the same lock order as CancelProcess and
+	// FailInstanceAndAncestors, preventing deadlocks; the FOR UPDATE is appended only
+	// on PostgreSQL — SQLite serialises via its single writer and runs the CTE without it.
+	lock := ""
 	if db.dialect == "postgres" {
-		err = tx.QueryRowContext(ctx, `
-			WITH locked AS (
-				SELECT id, wait_state FROM process_instances
-				WHERE id IN ($1, $2)
-				ORDER BY created_at, id FOR UPDATE
-			)
-			SELECT wait_state FROM locked WHERE id = $2`,
-			child.ID, child.ParentID).Scan(&parentWaitState)
-	} else {
-		err = tx.QueryRowContext(ctx,
-			"SELECT wait_state FROM process_instances WHERE id = ?",
-			child.ParentID).Scan(&parentWaitState)
+		lock = " FOR UPDATE"
 	}
+	var parentWaitState string
+	err = raw.QueryRowContext(ctx, `
+		WITH locked AS (
+			SELECT id, wait_state FROM process_instances
+			WHERE id IN (?, ?)
+			ORDER BY created_at, id`+lock+`
+		)
+		SELECT wait_state FROM locked WHERE id = ?`,
+		child.ID, child.ParentID, child.ParentID).Scan(&parentWaitState)
 	if err != nil && err != sql.ErrNoRows {
 		return fmt.Errorf("lock parent: %w", err)
 	}
 	parentFound := err == nil
 
 	// Save child as terminal.
-	queue, err := json.Marshal(child.StepQueue)
+	childParams, err := updateInstanceParams(child, nowMillis())
 	if err != nil {
 		return err
 	}
-	childCtx, err := json.Marshal(child.ContextData)
-	if err != nil {
-		return err
-	}
-	if err := qtx.UpdateInstance(ctx, dbgen.UpdateInstanceParams{
-		ID:          child.ID,
-		StepQueue:   string(queue),
-		ContextData: string(childCtx),
-		RetryCount:  int64(child.RetryCount),
-		NextRetryAt: fromTimePtr(child.NextRetryAt),
-		Status:      string(child.Status),
-		WaitState:   string(child.WaitState),
-		Error:       child.Error,
-		UpdatedAt:   nowMillis(),
-	}); err != nil {
+	if err := qtx.UpdateInstance(ctx, childParams); err != nil {
 		return fmt.Errorf("save child: %w", err)
 	}
 
@@ -807,48 +805,35 @@ func (db *DB) FailAncestors(child *model.ProcessInstance) error {
 // calling UpdateInstance + FailAncestors separately.
 func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 	ctx := context.Background()
-	tx, qtx, err := db.beginTx(ctx, nil)
+	tx, qtx, raw, err := db.beginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	now := nowMillis()
 
-	// Lock child and all ancestors oldest-first (PostgreSQL) — consistent with
-	// FinishChild and CancelProcess. Ancestors are read from the child's call_stack
-	// in the DB; no Go-side ID list needed. SQLite needs no explicit locking.
+	// Lock child and all ancestors oldest-first — consistent with FinishChild and
+	// CancelProcess. This step exists only to take FOR UPDATE locks, so it runs on
+	// PostgreSQL alone; SQLite serialises via its single writer. Ancestors are read
+	// from the child's call_stack in the DB; no Go-side ID list needed.
 	if db.dialect == "postgres" {
-		lockRows, lockErr := tx.QueryContext(ctx, `
+		lockRows, lockErr := raw.QueryContext(ctx, `
 			SELECT id FROM process_instances
-			WHERE id = $1
-			   OR id IN (SELECT jsonb_array_elements_text(
-			                 (SELECT call_stack::jsonb FROM process_instances WHERE id = $1)
-			             ))
-			ORDER BY created_at, id FOR UPDATE`, child.ID)
+			WHERE id = ?
+			   OR id IN (SELECT value FROM json_each(
+			                 (SELECT call_stack FROM process_instances WHERE id = ?)))
+			ORDER BY created_at, id FOR UPDATE`, child.ID, child.ID)
 		if lockErr != nil {
 			return fmt.Errorf("lock rows: %w", lockErr)
 		}
 		lockRows.Close()
 	}
 
-	queue, err := json.Marshal(child.StepQueue)
+	childParams, err := updateInstanceParams(child, now)
 	if err != nil {
 		return err
 	}
-	ctxData, err := json.Marshal(child.ContextData)
-	if err != nil {
-		return err
-	}
-	if err := qtx.UpdateInstance(ctx, dbgen.UpdateInstanceParams{
-		ID:          child.ID,
-		StepQueue:   string(queue),
-		ContextData: string(ctxData),
-		RetryCount:  int64(child.RetryCount),
-		NextRetryAt: fromTimePtr(child.NextRetryAt),
-		Status:      string(child.Status),
-		WaitState:   string(child.WaitState),
-		Error:       child.Error,
-		UpdatedAt:   nowMillis(),
-	}); err != nil {
+	if err := qtx.UpdateInstance(ctx, childParams); err != nil {
 		return err
 	}
 
@@ -860,7 +845,7 @@ func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 		}
 		if err := qtx.FailAncestors(ctx, dbgen.FailAncestorsParams{
 			Error:     child.Error,
-			UpdatedAt: nowMillis(),
+			UpdatedAt: now,
 			Ids:       string(idsJSON),
 		}); err != nil {
 			return err
@@ -873,8 +858,8 @@ func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 	// failing, so it must never enter the collect phase.
 	if child.ParentID != "" {
 		var parentWaitState string
-		err := tx.QueryRowContext(ctx,
-			"SELECT wait_state FROM process_instances WHERE id = "+db.ph(1),
+		err := raw.QueryRowContext(ctx,
+			"SELECT wait_state FROM process_instances WHERE id = ?",
 			child.ParentID).Scan(&parentWaitState)
 		if err != nil && err != sql.ErrNoRows {
 			return fmt.Errorf("read parent wait_state: %w", err)
@@ -890,7 +875,7 @@ func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 			if active == 0 {
 				if err := qtx.WakeParent(ctx, dbgen.WakeParentParams{
 					ID:        child.ParentID,
-					UpdatedAt: nowMillis(),
+					UpdatedAt: now,
 				}); err != nil {
 					return fmt.Errorf("wake parent: %w", err)
 				}
@@ -907,9 +892,12 @@ func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 // All running instances of the tree (the root and every row whose call_stack
 // contains it) transition to 'cancelling'.
 //
-// On PostgreSQL a single locking CTE acquires every row lock in created_at, id order
-// before the UPDATE runs — the same order used by FinishChild and FailInstanceAndAncestors,
-// eliminating deadlocks. Descendants are found via the JSONB ? operator.
+// The descendant scan is dialect-specific by necessity: PostgreSQL matches via the
+// JSONB `?` operator, backed by the call_stack GIN index (see open()), so it stays a
+// raw query with explicit $N rather than going through the ?→$N rewriter. A locking
+// CTE then takes every row lock in created_at, id order before the UPDATE — the same
+// order as FinishChild and FailInstanceAndAncestors, eliminating deadlocks. SQLite
+// uses json_each and serialises via its single writer.
 func (db *DB) CancelProcess(ctx context.Context, id string) error {
 	row, err := db.q.GetInstance(ctx, id)
 	if err != nil {
@@ -990,7 +978,7 @@ func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 		return fmt.Errorf("process is not retryable (status: %s)", status)
 	}
 
-	tx, qtx, err := db.beginTx(ctx, nil)
+	tx, qtx, _, err := db.beginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -999,16 +987,18 @@ func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 	// Lock and load the whole tree (root + descendants) in created_at, id order —
 	// the same lock order as CancelProcess/FinishChild/FailInstanceAndAncestors —
 	// so concurrent cancels and child completions serialize against the revival.
-	cols := `id, process_name, process_version, step_queue, context_data, parent_id,
-	         call_stack, retry_count, next_retry_at, status, error,
-	         created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_step_id`
+	//
+	// The descendant match is dialect-specific by necessity: PostgreSQL uses the
+	// JSONB `?` operator, which is backed by the call_stack GIN index (see open());
+	// SQLite uses json_each. Because of that literal `?` operator this query bypasses
+	// the placeholder rewriter and runs on the raw tx with explicit $N / ?.
 	var query string
 	if db.dialect == "postgres" {
-		query = `SELECT ` + cols + ` FROM process_instances
+		query = `SELECT ` + instanceColumns + ` FROM process_instances
 			WHERE id = $1 OR call_stack::jsonb ? $1
 			ORDER BY created_at, id FOR UPDATE`
 	} else {
-		query = `SELECT ` + cols + ` FROM process_instances
+		query = `SELECT ` + instanceColumns + ` FROM process_instances
 			WHERE id = ? OR EXISTS (SELECT 1 FROM json_each(call_stack) WHERE value = ?)
 			ORDER BY created_at, id`
 	}
@@ -1026,14 +1016,8 @@ func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 	rawRows := make(map[string]dbgen.ProcessInstance)
 	children := make(map[string]map[string][]*model.ProcessInstance) // parentID → spawnStepID → batch
 	for rows.Next() {
-		var r dbgen.ProcessInstance
-		if err := rows.Scan(
-			&r.ID, &r.ProcessName, &r.ProcessVersion,
-			&r.StepQueue, &r.ContextData, &r.ParentID,
-			&r.CallStack, &r.RetryCount, &r.NextRetryAt,
-			&r.Status, &r.Error, &r.CreatedAt, &r.UpdatedAt,
-			&r.WorkerID, &r.LeaseExpiresAt, &r.WaitState, &r.SpawnStepID,
-		); err != nil {
+		r, err := scanInstance(rows)
+		if err != nil {
 			return fmt.Errorf("scan tree row: %w", err)
 		}
 		inst, err := toInstance(r)
@@ -1146,21 +1130,22 @@ func (db *DB) SpawnChildrenAndWait(ctx context.Context, parent *model.ProcessIns
 		return nil
 	}
 
-	tx, qtx, err := db.beginTx(ctx, nil)
+	tx, qtx, raw, err := db.beginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	// Lock parent and read its current status to propagate to children.
-	var lockQuery string
+	// Lock parent and read its current status to propagate to children. FOR UPDATE
+	// is appended only on PostgreSQL; SQLite serialises via its single writer.
+	lock := ""
 	if db.dialect == "postgres" {
-		lockQuery = `SELECT status, wait_state FROM process_instances WHERE id = $1 FOR UPDATE`
-	} else {
-		lockQuery = `SELECT status, wait_state FROM process_instances WHERE id = ?`
+		lock = " FOR UPDATE"
 	}
 	var currentStatus, currentWaitState string
-	if err := tx.QueryRowContext(ctx, lockQuery, parent.ID).Scan(&currentStatus, &currentWaitState); err != nil {
+	if err := raw.QueryRowContext(ctx,
+		`SELECT status, wait_state FROM process_instances WHERE id = ?`+lock,
+		parent.ID).Scan(&currentStatus, &currentWaitState); err != nil {
 		return fmt.Errorf("lock parent: %w", err)
 	}
 	if currentWaitState != "" {
@@ -1172,59 +1157,31 @@ func (db *DB) SpawnChildrenAndWait(ctx context.Context, parent *model.ProcessIns
 	// position — ClaimInstances (ORDER BY created_at) always processes them in spawn order.
 	now := nowMillis()
 	for i, child := range children {
-		queue, err := json.Marshal(child.StepQueue)
-		if err != nil {
-			return err
-		}
-		ctxData, err := json.Marshal(child.ContextData)
-		if err != nil {
-			return err
-		}
-		callStack, err := json.Marshal(child.CallStack)
-		if err != nil {
-			return err
-		}
 		ts := now + int64(i)
-		if err := qtx.InsertInstance(ctx, dbgen.InsertInstanceParams{
-			ID:             child.ID,
-			ProcessName:    child.ProcessName,
-			ProcessVersion: int64(child.ProcessVersion),
-			StepQueue:      string(queue),
-			ContextData:    string(ctxData),
-			ParentID:       child.ParentID,
-			SpawnStepID:    child.SpawnStepID,
-			CallStack:      string(callStack),
-			RetryCount:     int64(child.RetryCount),
-			NextRetryAt:    sql.NullInt64{},
-			Status:         currentStatus,
-			WaitState:      string(model.WaitStateNone),
-			Error:          child.Error,
-			CreatedAt:      ts,
-			UpdatedAt:      ts,
-		}); err != nil {
+		params, err := insertInstanceParams(child, currentStatus, ts, ts)
+		if err != nil {
+			return err
+		}
+		if err := qtx.InsertInstance(ctx, params); err != nil {
 			return fmt.Errorf("insert child: %w", err)
 		}
 	}
 
 	// Suspend parent: keep status, set wait_state='waiting'.
-	parentQueue, err := json.Marshal(parent.StepQueue)
-	if err != nil {
-		return err
-	}
-	parentCtx, err := json.Marshal(parent.ContextData)
+	parentQueue, parentCtx, err := marshalInstanceState(parent)
 	if err != nil {
 		return err
 	}
 	if err := qtx.UpdateInstance(ctx, dbgen.UpdateInstanceParams{
 		ID:          parent.ID,
-		StepQueue:   string(parentQueue),
-		ContextData: string(parentCtx),
+		StepQueue:   parentQueue,
+		ContextData: parentCtx,
 		RetryCount:  int64(parent.RetryCount),
 		NextRetryAt: sql.NullInt64{},
 		Status:      currentStatus,
 		WaitState:   string(model.WaitStateWaiting),
 		Error:       parent.Error,
-		UpdatedAt:   nowMillis(),
+		UpdatedAt:   now,
 	}); err != nil {
 		return fmt.Errorf("suspend parent: %w", err)
 	}

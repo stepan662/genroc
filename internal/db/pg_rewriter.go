@@ -58,16 +58,18 @@ func rewritePlaceholders(query string) string {
 	return b.String()
 }
 
-// beginTx starts a transaction and returns the raw *sql.Tx alongside a
-// *dbgen.Queries already wrapped in pgRewriter when running on Postgres.
-func (db *DB) beginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, *dbgen.Queries, error) {
+// beginTx starts a transaction and returns the raw *sql.Tx, a *dbgen.Queries,
+// and a DBTX executor — both the latter already wrapped in pgRewriter when
+// running on Postgres. Use the returned executor (not the raw *sql.Tx) for
+// hand-written SQL so it can keep using ? placeholders on both engines.
+func (db *DB) beginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, *dbgen.Queries, dbgen.DBTX, error) {
 	tx, err := db.sqldb.BeginTx(ctx, opts)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	var dbtx dbgen.DBTX = tx
 	if db.dialect == "postgres" {
 		dbtx = pgRewriter{dbtx}
 	}
-	return tx, dbgen.New(dbtx), nil
+	return tx, dbgen.New(dbtx), dbtx, nil
 }
