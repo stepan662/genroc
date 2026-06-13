@@ -29,30 +29,46 @@ test("GET /definitions — lists registered definitions", async () => {
   expect(data!.some((d) => d.name === validDef.name)).toBe(true);
 });
 
-test("PUT /definitions — rejects task step without endpoint", async () => {
+test("PUT /definitions — rejects rest call without endpoint", async () => {
   const { data, error } = await client.PUT("/definitions", {
     body: {
       name: "bad",
-    
       steps: [
         {
           id: "s1",
-          call: { type: "rest" as const, endpoint: "http://localhost:19990/action" },
+          call: { type: "rest" as const } as any,
           switch: [{ goto: "end" }],
         },
       ],
     },
   });
 
-  expect(error).toBeUndefined();
-  expect(data?.name).toBe("bad");
+  expect(error).toBeDefined();
+  expect(data).toBeUndefined();
+});
+
+test("PUT /definitions — rejects unknown call type", async () => {
+  const { data, error } = await client.PUT("/definitions", {
+    body: {
+      name: "bad",
+      steps: [
+        {
+          id: "s1",
+          call: { type: "ftp", endpoint: "x" } as any,
+          switch: [{ goto: "end" }],
+        },
+      ],
+    },
+  });
+
+  expect(error).toBeDefined();
+  expect(data).toBeUndefined();
 });
 
 test("PUT /definitions — rejects unknown step type", async () => {
   const { data, error } = await client.PUT("/definitions", {
     body: {
       name: "bad",
-    
       steps: [{ type: "parallel", id: "p1" } as any],
     },
   });
@@ -61,18 +77,17 @@ test("PUT /definitions — rejects unknown step type", async () => {
   expect(data).toBeUndefined();
 });
 
-test("PUT /definitions — accepts valid definition", async () => {
+test("PUT /definitions — rejects missing process name", async () => {
   const { data, error } = await client.PUT("/definitions", {
     body: {
-      name: "valid",
-    
-      input_schema: {
-        type: "object",
-        properties: { foo: { type: "string" } },
-        required: ["foo"],
-      },
-      steps: [{ type: "task", id: "t1" } as any],
-    },
+      steps: [
+        {
+          id: "s1",
+          call: { type: "rest" as const, endpoint: "http://localhost:19990/action" },
+          switch: [{ goto: "end" }],
+        },
+      ],
+    } as any,
   });
 
   expect(error).toBeDefined();

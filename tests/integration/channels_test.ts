@@ -311,3 +311,213 @@ test("channels — process started by channel runs and completes", async () => {
   const status = await waitForInstance((inst as { id: string }).id, 10_000);
   expect(status).toBe("completed");
 });
+
+// ── content dedup / versioning ──────────────────────────────────────────────────
+
+type ChannelEntry = { channel: string; version: number };
+
+async function channelVersion(name: string, channel: string) {
+  const { data } = await client.GET("/channels", { params: { query: { name } } });
+  return (data as ChannelEntry[]).find((e) => e.channel === channel)?.version;
+}
+
+// A child whose steps differ from switchDef so it produces a new content hash.
+function switchDefV2(name: string) {
+  return { ...switchDef(name), steps: [{ id: "s2", switch: [{ goto: "end" }] }] };
+}
+
+test("channels — identical content on a new channel reuses the existing version", async () => {
+  const name = uid("proc");
+
+  await applyBatch([switchDef(name)], "latest"); // v1
+  const res = await applyBatch([switchDef(name)], "staging");
+  expect(res).toMatchObject([{ name, version: 1, saved: false }]);
+  expect(await channelVersion(name, "staging")).toBe(1);
+});
+
+test("channels — changed content creates a new version and advances the channel", async () => {
+  const name = uid("proc");
+
+  await applyBatch([restDef(name, "http://localhost/v1")], "latest");
+  const res = await applyBatch([restDef(name, "http://localhost/changed")], "latest");
+  expect(res).toMatchObject([{ name, version: 2, saved: true }]);
+  expect(await channelVersion(name, "latest")).toBe(2);
+});
+
+test("channels — re-applying a recursive (self-calling) process dedups", async () => {
+  const name = uid("recursive");
+  const selfRef = {
+    name,
+    steps: [
+      { id: "recurse", call: { type: "child" as const, name }, switch: [{ goto: "end" }] },
+    ],
+  };
+
+  await applyBatch([selfRef], "latest");
+  const res = await applyBatch([selfRef], "latest");
+  expect(res).toMatchObject([{ name, version: 1, saved: false }]);
+  expect(await channelVersion(name, "latest")).toBe(1);
+});
+
+test("channels — dedup reuses an older version, not just the latest", async () => {
+  const child = uid("child");
+  const parent = uid("parent");
+
+  // child@v1 + parent@v1 (deps: child@v1).
+  await applyBatch([switchDef(child), childDef(parent, child)], "latest");
+  // Advance child → v2, cascade parent → v2.
+  await applyBatch([switchDefV2(child)], "latest", true);
+
+  // Original content to a fresh channel: child matches v1, parent resolves child@v1 → matches v1.
+  const res = await applyBatch([switchDef(child), childDef(parent, child)], "staging");
+  for (const r of res) expect(r.saved).toBe(false);
+  expect(await channelVersion(child, "staging")).toBe(1);
+  expect(await channelVersion(parent, "staging")).toBe(1);
+});
+
+test("channels — same parent YAML resolves to different versions per channel", async () => {
+  const child = uid("child");
+  const parent = uid("parent");
+
+  // ch-a: child@v1, parent@v1.
+  await applyBatch([switchDef(child), childDef(parent, child)], "ch-a");
+  // ch-b: child@v2 only.
+  await applyBatch([switchDefV2(child)], "ch-b");
+
+  // Same parent YAML to ch-b: child resolves v2 → different deps → new parent@v2.
+  const resB = await applyBatch([childDef(parent, child)], "ch-b");
+  const pB = resB.find((r) => r.name === parent);
+  expect(pB?.saved).toBe(true);
+  expect(pB?.version).toBe(2);
+
+  // ch-c: child@v1 content, then same parent YAML → child resolves v1 → dedup parent@v1.
+  await applyBatch([switchDef(child)], "ch-c");
+  const resC = await applyBatch([childDef(parent, child)], "ch-c");
+  const pC = resC.find((r) => r.name === parent);
+  expect(pC?.saved).toBe(false);
+  expect(pC?.version).toBe(1);
+  expect(await channelVersion(parent, "ch-c")).toBe(1);
+});
+
+test("channels — parent with omitted child version resolves to the child's channel version", async () => {
+  const child = uid("child");
+  const parent = uid("parent");
+
+  await applyBatch([switchDef(child)], "latest");
+  await applyBatch([childDef(parent, child)], "latest");
+  expect(await channelVersion(parent, "latest")).toBe(1);
+});
+
+// ── batch validation errors ─────────────────────────────────────────────────────
+
+async function rawBatch(defs: object[], channel = "latest", autoUpdateParents = false) {
+  return client.PUT("/definitions/batch", {
+    body: { channel, auto_update_parents: autoUpdateParents, definitions: defs } as never,
+  });
+}
+
+test("channels — applying a parent whose child is on no channel is rejected", async () => {
+  const parent = uid("parent");
+  const missing = uid("missing");
+
+  const { data, error } = await rawBatch([childDef(parent, missing)]);
+  expect(error).toBeDefined();
+  expect(JSON.stringify(error)).toContain("not on channel");
+  expect(data).toBeUndefined();
+});
+
+test("channels — a batch listing parent before child applies (topological reorder)", async () => {
+  const child = uid("child");
+  const parent = uid("parent");
+
+  const res = await applyBatch([childDef(parent, child), switchDef(child)], "latest");
+  expect(res.find((r) => r.name === parent)).toBeDefined();
+  expect(res.find((r) => r.name === child)).toBeDefined();
+});
+
+test("channels — a dependency cycle in a batch is rejected", async () => {
+  const a = uid("a");
+  const b = uid("b");
+
+  const { data, error } = await rawBatch([childDef(a, b), childDef(b, a)]);
+  expect(error).toBeDefined();
+  expect(JSON.stringify(error)).toContain("cycle");
+  expect(data).toBeUndefined();
+});
+
+// ── auto-update-parents cascade variants ────────────────────────────────────────
+
+test("channels — auto-update cascades through multiple levels (leaf→parent→grandparent)", async () => {
+  const leaf = uid("leaf");
+  const parent = uid("parent");
+  const grand = uid("grand");
+
+  await applyBatch(
+    [switchDef(leaf), childDef(parent, leaf), childDef(grand, parent)],
+    "latest",
+  );
+
+  const res = await applyBatch([switchDefV2(leaf)], "latest", true);
+  const g = res.find((r) => r.name === grand);
+  expect(g).toBeDefined();
+  expect(g!.version).toBeGreaterThanOrEqual(2);
+});
+
+test("channels — cascade fires for a stale parent even when the child dedups", async () => {
+  const child = uid("child");
+  const parent = uid("parent");
+
+  // child@v1 + parent@v1.
+  await applyBatch([switchDef(child), childDef(parent, child)], "latest");
+  // Advance child → v2 without auto-update; parent is now stale.
+  await applyBatch([switchDefV2(child)], "latest");
+
+  // Re-apply child@v2 (dedups) WITH auto-update — cascade must still update the parent.
+  const res = await applyBatch([switchDefV2(child)], "latest", true);
+  const c = res.find((r) => r.name === child);
+  expect(c?.saved).toBe(false);
+  expect(c?.version).toBe(2);
+  const p = res.find((r) => r.name === parent);
+  expect(p).toBeDefined();
+  expect(p!.version).toBeGreaterThanOrEqual(2);
+  expect(await channelVersion(parent, "latest")).toBeGreaterThanOrEqual(2);
+});
+
+test("channels — cascade reuses an existing parent version instead of creating a redundant one", async () => {
+  const child = uid("child");
+  const parent = uid("parent");
+
+  // child@v1 + parent@v1, then child→v2 + parent→v2 (cascade) on latest.
+  await applyBatch([switchDef(child), childDef(parent, child)], "latest");
+  await applyBatch([switchDefV2(child)], "latest", true);
+
+  // Apply the already-existing content to a new channel — nothing should be saved.
+  const res = await applyBatch([switchDefV2(child), childDef(parent, child)], "staging", true);
+  for (const r of res) expect(r.saved).toBe(false);
+  expect(await channelVersion(parent, "staging")).toBe(2);
+});
+
+// ── promote / start_instance edge cases ─────────────────────────────────────────
+
+test("channels — promote preserves the source channel pointer", async () => {
+  const name = uid("proc");
+
+  await applyBatch([switchDef(name)], "staging");
+  await client.POST("/channels/promote", {
+    body: { from: "staging", to: "preserve-target" },
+  });
+
+  expect(await channelVersion(name, "staging")).toBe(1);
+  expect(await channelVersion(name, "preserve-target")).toBe(1);
+});
+
+test("channels — start_instance with a non-existent channel is rejected", async () => {
+  const name = uid("proc");
+
+  await applyBatch([switchDef(name)], "stable");
+  const { data, error } = await client.POST("/instances", {
+    body: { process: name, channel: "nonexistent" } as never,
+  });
+  expect(error).toBeDefined();
+  expect(data).toBeUndefined();
+});

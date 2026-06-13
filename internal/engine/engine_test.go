@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"encoding/json"
 	"testing"
 
 	"gent/internal/model"
@@ -124,36 +123,5 @@ func TestIsRetryAllowed(t *testing.T) {
 				t.Errorf("isRetryAllowed(%q) = %v, want %v", tt.errCode, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestSwitchMap_JSON_RoundTrip(t *testing.T) {
-	original := model.SwitchMap{
-		{Case: "self.paid == true", Goto: "$ship"},
-		{Goto: model.GotoEnd},
-	}
-
-	data, err := json.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	want := `[{"case":"self.paid == true","goto":"$ship"},{"goto":"end"}]`
-	if string(data) != want {
-		t.Errorf("marshal: got %s, want %s", data, want)
-	}
-
-	var decoded model.SwitchMap
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	if len(decoded) != len(original) {
-		t.Fatalf("length mismatch: got %d, want %d", len(decoded), len(original))
-	}
-	for i := range original {
-		if decoded[i] != original[i] {
-			t.Errorf("case %d: got %+v, want %+v", i, decoded[i], original[i])
-		}
 	}
 }
