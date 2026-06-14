@@ -1,0 +1,306 @@
+package db
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+
+	dbgen "gent/internal/db/gen"
+	"gent/internal/model"
+)
+
+// ── Public types ──────────────────────────────────────────────────────────────
+
+// DependencyRow represents a row in process_dependencies.
+type DependencyRow struct {
+	ParentName    string
+	ParentVersion int
+	StepID        string
+	ChildKey      string
+	ChildName     string
+	ChildVersion  int
+}
+
+// StaleRefRow is returned by FindStaleRefs.
+type StaleRefRow struct {
+	ParentName     string
+	ParentVersion  int
+	StepID         string
+	ChildName      string
+	BakedVersion   int
+	ChannelVersion int
+}
+
+// VersionedDef pairs a ProcessDefinition with its server-assigned version number.
+type VersionedDef struct {
+	Version int
+	Def     *model.ProcessDefinition
+}
+
+// ── Process Definitions ───────────────────────────────────────────────────────
+
+// SaveDefinition persists a new process definition version with its dependencies.
+// If channel is non-empty, the channel pointer is updated in the same transaction
+// so a crash cannot leave a definition saved without a channel pointing to it.
+func (db *DB) SaveDefinition(def *model.ProcessDefinition, version int, deps []DependencyRow, hash string, channel string) error {
+	data, err := json.Marshal(def)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	tx, qtx, _, err := db.beginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := nowMillis()
+
+	if err := qtx.InsertDefinition(ctx, dbgen.InsertDefinitionParams{
+		Name:        def.Name,
+		Version:     int64(version),
+		Definition:  string(data),
+		ContentHash: hash,
+		CreatedAt:   now,
+	}); err != nil {
+		return err
+	}
+	if err := qtx.DeleteDependencies(ctx, dbgen.DeleteDependenciesParams{
+		ParentName:    def.Name,
+		ParentVersion: int64(version),
+	}); err != nil {
+		return err
+	}
+	for _, d := range deps {
+		if err := qtx.InsertDependency(ctx, dbgen.InsertDependencyParams{
+			ParentName:    d.ParentName,
+			ParentVersion: int64(d.ParentVersion),
+			StepID:        d.StepID,
+			ChildKey:      d.ChildKey,
+			ChildName:     d.ChildName,
+			ChildVersion:  int64(d.ChildVersion),
+		}); err != nil {
+			return err
+		}
+	}
+	if channel != "" {
+		if err := qtx.UpsertChannel(ctx, dbgen.UpsertChannelParams{
+			Name:      def.Name,
+			Channel:   channel,
+			Version:   int64(version),
+			UpdatedAt: now,
+		}); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Drop any stale cache entry: InsertDefinition uses ON CONFLICT DO UPDATE, so
+	// re-registering an existing (name, version) can change its content.
+	db.defCache.Delete(defKey{name: def.Name, version: version})
+	return nil
+}
+
+func (db *DB) GetDefinition(name string, version int) (*model.ProcessDefinition, error) {
+	key := defKey{name: name, version: version}
+
+	raw, ok := db.defCache.Load(key)
+	if !ok {
+		row, err := db.q.GetDefinition(context.Background(), dbgen.GetDefinitionParams{Name: name, Version: int64(version)})
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("definition %q v%d not found", name, version)
+		}
+		if err != nil {
+			return nil, err
+		}
+		raw = row.Definition
+		db.defCache.Store(key, raw)
+	}
+
+	// Unmarshal a fresh copy every call so callers never share mutable Step pointers.
+	var def model.ProcessDefinition
+	return &def, json.Unmarshal([]byte(raw.(string)), &def)
+}
+
+func (db *DB) LatestVersion(name string) (int, error) {
+	v, err := db.q.LatestVersion(context.Background(), name)
+	if err != nil {
+		return 0, err
+	}
+	if v == nil {
+		return 0, fmt.Errorf("no definitions found for %q", name)
+	}
+	return int(v.(int64)), nil
+}
+
+func (db *DB) ListDefinitions() ([]VersionedDef, error) {
+	rows, err := db.q.ListDefinitions(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]VersionedDef, len(rows))
+	for i, r := range rows {
+		var def model.ProcessDefinition
+		if err := json.Unmarshal([]byte(r.Definition), &def); err != nil {
+			return nil, err
+		}
+		out[i] = VersionedDef{Version: int(r.Version), Def: &def}
+	}
+	return out, nil
+}
+
+func (db *DB) FindVersionByHash(name, hash string) (int, error) {
+	v, err := db.q.FindVersionByHash(context.Background(), dbgen.FindVersionByHashParams{
+		Name:        name,
+		ContentHash: hash,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if v == nil {
+		return 0, fmt.Errorf("no version found for %q with given hash", name)
+	}
+	return int(v.(int64)), nil
+}
+
+func (db *DB) GetDependencyVersion(parentName string, parentVersion int, stepID string, childKey string) (int, error) {
+	v, err := db.q.GetDependencyVersion(context.Background(), dbgen.GetDependencyVersionParams{
+		ParentName:    parentName,
+		ParentVersion: int64(parentVersion),
+		StepID:        stepID,
+		ChildKey:      childKey,
+	})
+	if err == sql.ErrNoRows {
+		return 0, fmt.Errorf("dependency not found for %q v%d step %q child %q", parentName, parentVersion, stepID, childKey)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return int(v), nil
+}
+
+// FindParentsOf returns all processes on channel that have deps referencing any
+// of the given children. stale = dep version doesn't match the target; current = matches.
+// A parent is stale if ANY of its relevant deps are mismatched.
+func (db *DB) FindParentsOf(channel string, childVersions map[string]int) (stale, current []VersionedDef, err error) {
+	if len(childVersions) == 0 {
+		return nil, nil, nil
+	}
+	names := make([]string, 0, len(childVersions))
+	for name := range childVersions {
+		names = append(names, name)
+	}
+	namesJSON, err := json.Marshal(names)
+	if err != nil {
+		return nil, nil, err
+	}
+	rows, err := db.q.FindParentsOf(context.Background(), dbgen.FindParentsOfParams{
+		Channel: channel,
+		Names:   string(namesJSON),
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	type entry struct {
+		version int
+		def     string // raw definition JSON, carried by every row of this parent
+		isStale bool
+	}
+	byName := make(map[string]*entry)
+	for _, r := range rows {
+		e := byName[r.ParentName]
+		if e == nil {
+			e = &entry{version: int(r.ParentVersion), def: r.ParentDefinition}
+			byName[r.ParentName] = e
+		}
+		if int(r.BakedVersion) != childVersions[r.ChildName] {
+			e.isStale = true
+		}
+	}
+
+	for name, e := range byName {
+		var def model.ProcessDefinition
+		if err := json.Unmarshal([]byte(e.def), &def); err != nil {
+			return nil, nil, fmt.Errorf("unmarshal definition %q v%d: %w", name, e.version, err)
+		}
+		vd := VersionedDef{Version: e.version, Def: &def}
+		if e.isStale {
+			stale = append(stale, vd)
+		} else {
+			current = append(current, vd)
+		}
+	}
+	return stale, current, nil
+}
+
+func (db *DB) FindStaleRefs(channel string) ([]StaleRefRow, error) {
+	rows, err := db.q.FindStaleRefs(context.Background(), channel)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]StaleRefRow, len(rows))
+	for i, r := range rows {
+		out[i] = StaleRefRow{
+			ParentName:     r.ParentName,
+			ParentVersion:  int(r.ParentVersion),
+			StepID:         r.StepID,
+			ChildName:      r.ChildName,
+			BakedVersion:   int(r.BakedVersion),
+			ChannelVersion: int(r.ChannelVersion),
+		}
+	}
+	return out, nil
+}
+
+// ── Channels ──────────────────────────────────────────────────────────────────
+
+func (db *DB) SaveChannel(name, channel string, version int) error {
+	return db.q.UpsertChannel(context.Background(), dbgen.UpsertChannelParams{
+		Name:      name,
+		Channel:   channel,
+		Version:   int64(version),
+		UpdatedAt: nowMillis(),
+	})
+}
+
+func (db *DB) GetChannel(name, channel string) (int, error) {
+	v, err := db.q.GetChannel(context.Background(), dbgen.GetChannelParams{Name: name, Channel: channel})
+	if err == sql.ErrNoRows {
+		return 0, fmt.Errorf("process %q has no channel %q", name, channel)
+	}
+	return int(v), err
+}
+
+func (db *DB) DeleteChannel(name, channel string) error {
+	return db.q.DeleteChannel(context.Background(), dbgen.DeleteChannelParams{Name: name, Channel: channel})
+}
+
+func (db *DB) ListChannels(name string) (map[string]int, error) {
+	rows, err := db.q.ListChannels(context.Background(), name)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]int, len(rows))
+	for _, r := range rows {
+		out[r.Channel] = int(r.Version)
+	}
+	return out, nil
+}
+
+func (db *DB) LoadDefinitionsOnChannel(channel string) ([]VersionedDef, error) {
+	rows, err := db.q.LoadDefinitionsOnChannel(context.Background(), channel)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]VersionedDef, 0, len(rows))
+	for _, r := range rows {
+		var def model.ProcessDefinition
+		if err := json.Unmarshal([]byte(r.Definition), &def); err != nil {
+			return nil, err
+		}
+		out = append(out, VersionedDef{Version: int(r.Version), Def: &def})
+	}
+	return out, nil
+}

@@ -1,33 +1,47 @@
-package db
+package dbtest
 
 import (
 	"context"
+	"database/sql"
 	"log"
 	"os"
 	"testing"
 	"time"
 
+	dbpkg "gent/internal/db"
 	"gent/internal/model"
 )
 
 // sharedPgDB is opened once in TestMain and reused across all tests.
-// nil when POSTGRES_DSN is not set.
-var sharedPgDB *DB
+// nil when POSTGRES_DSN is not set. sharedPgRaw is a plain connection to the
+// same database, used only to wipe tables between tests (the db package keeps
+// its connection unexported, so the black-box tests open their own).
+var (
+	sharedPgDB  *dbpkg.DB
+	sharedPgRaw *sql.DB
+)
 
 func TestMain(m *testing.M) {
 	if dsn := os.Getenv("POSTGRES_DSN"); dsn != "" {
-		pg, err := OpenPostgres(dsn)
+		pg, err := dbpkg.OpenPostgres(dsn)
 		if err != nil {
 			log.Fatalf("open postgres for tests: %v", err)
 		}
 		sharedPgDB = pg
 		defer pg.Close()
+
+		raw, err := sql.Open("postgres", dsn)
+		if err != nil {
+			log.Fatalf("open raw postgres for tests: %v", err)
+		}
+		sharedPgRaw = raw
+		defer raw.Close()
 	}
 	os.Exit(m.Run())
 }
 
 type backend struct {
-	db   *DB
+	db   *dbpkg.DB
 	name string
 }
 
@@ -42,7 +56,7 @@ func testBackends(t *testing.T) []backend {
 		t.Fatal(err)
 	}
 	f.Close()
-	sqlite, err := OpenSQLite(f.Name())
+	sqlite, err := dbpkg.OpenSQLite(f.Name())
 	if err != nil {
 		os.Remove(f.Name())
 		t.Fatal(err)
@@ -53,16 +67,18 @@ func testBackends(t *testing.T) []backend {
 
 	if sharedPgDB != nil {
 		ctx := context.Background()
-		sharedPgDB.sqldb.ExecContext(ctx, "DELETE FROM process_instances")
-		sharedPgDB.sqldb.ExecContext(ctx, "DELETE FROM process_channels")
-		sharedPgDB.sqldb.ExecContext(ctx, "DELETE FROM process_definitions")
+		for _, table := range []string{"process_instances", "process_channels", "process_definitions"} {
+			if _, err := sharedPgRaw.ExecContext(ctx, "DELETE FROM "+table); err != nil {
+				t.Fatalf("reset %s: %v", table, err)
+			}
+		}
 		out = append(out, backend{sharedPgDB, "postgres"})
 	}
 
 	return out
 }
 
-func insertRunning(t *testing.T, db *DB, id string) {
+func insertRunning(t *testing.T, db *dbpkg.DB, id string) {
 	t.Helper()
 	inst := &model.ProcessInstance{
 		ID:             id,

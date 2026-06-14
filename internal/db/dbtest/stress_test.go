@@ -1,4 +1,4 @@
-package db
+package dbtest
 
 import (
 	"context"
@@ -45,7 +45,7 @@ func TestStress_CancelProcess_vs_FailInstanceAndAncestors(t *testing.T) {
 	var deadlockCount, successCount int
 
 	for i := 0; i < iterations; i++ {
-		db.sqldb.ExecContext(ctx, "DELETE FROM process_instances")
+		sharedPgRaw.ExecContext(ctx, "DELETE FROM process_instances")
 		insertInst(t, db, "parent", model.StatusRunning, "", nil, "")
 		insertInst(t, db, "child", model.StatusRunning, "parent", []string{"parent"}, "")
 
@@ -120,7 +120,7 @@ func TestStress_ClaimInstances_MultiWorker(t *testing.T) {
 		workerCount   = 10
 	)
 
-	db.sqldb.ExecContext(ctx, "DELETE FROM process_instances")
+	sharedPgRaw.ExecContext(ctx, "DELETE FROM process_instances")
 	for j := 0; j < instanceCount; j++ {
 		insertInst(t, db, fmt.Sprintf("inst-%d", j), model.StatusRunning, "", nil, "")
 	}
@@ -196,7 +196,7 @@ func TestStress_ConcurrentFinishChild(t *testing.T) {
 	)
 
 	for i := 0; i < iterations; i++ {
-		db.sqldb.ExecContext(ctx, "DELETE FROM process_instances")
+		sharedPgRaw.ExecContext(ctx, "DELETE FROM process_instances")
 		insertInstW(t, db, "parent", model.StatusRunning, model.WaitStateWaiting, "", nil, "")
 		for j := 0; j < siblings; j++ {
 			insertInst(t, db, fmt.Sprintf("child-%d", j), model.StatusRunning, "parent", []string{"parent"}, "")
@@ -269,7 +269,7 @@ func TestStress_CancelProcess_vs_FinishChild(t *testing.T) {
 	)
 
 	for i := 0; i < iterations; i++ {
-		db.sqldb.ExecContext(ctx, "DELETE FROM process_instances")
+		sharedPgRaw.ExecContext(ctx, "DELETE FROM process_instances")
 		insertInstW(t, db, "parent", model.StatusRunning, model.WaitStateWaiting, "", nil, "")
 		for j := 0; j < siblings; j++ {
 			insertInst(t, db, fmt.Sprintf("child-%d", j), model.StatusRunning, "parent", []string{"parent"}, "")
@@ -343,7 +343,7 @@ func TestStress_RetryProcess_vs_CancelProcess(t *testing.T) {
 
 	const iterations = 100
 	for i := 0; i < iterations; i++ {
-		db.sqldb.ExecContext(ctx, "DELETE FROM process_instances")
+		sharedPgRaw.ExecContext(ctx, "DELETE FROM process_instances")
 		insertInst(t, db, "root", model.StatusFailed, "", nil, "child failed")
 		insertChild(t, db, "c-bad", model.StatusFailed, "root", "step1", []string{"root"}, "boom")
 		insertChild(t, db, "c-ok", model.StatusCompleted, "root", "step1", []string{"root"}, "")
@@ -402,7 +402,7 @@ func TestStress_ConcurrentRetry(t *testing.T) {
 		callers    = 8
 	)
 	for i := 0; i < iterations; i++ {
-		db.sqldb.ExecContext(ctx, "DELETE FROM process_instances")
+		sharedPgRaw.ExecContext(ctx, "DELETE FROM process_instances")
 		insertInst(t, db, "root", model.StatusFailed, "", nil, "child failed")
 		insertChild(t, db, "c-bad", model.StatusFailed, "root", "step1", []string{"root"}, "boom")
 		insertChild(t, db, "c-ok", model.StatusCompleted, "root", "step1", []string{"root"}, "")

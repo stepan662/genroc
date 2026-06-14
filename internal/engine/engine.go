@@ -638,7 +638,7 @@ func (e *Engine) saveAndNotify(inst *model.ProcessInstance) error {
 func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInstance, step *model.Step) (any, bool, error) {
 	// Phase 2: parent woke up with children done — collect their outputs.
 	if inst.WaitState == model.WaitStateCollecting {
-		if err := e.db.CollectChildOutputs(ctx, inst, step); err != nil {
+		if err := e.collectChildOutputs(ctx, inst, step); err != nil {
 			inst.WaitState = model.WaitStateNone
 			return nil, true, e.failInstance(inst, fmt.Sprintf("step %q collect: %v", step.ID, err))
 		}

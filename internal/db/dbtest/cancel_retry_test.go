@@ -1,15 +1,16 @@
-package db
+package dbtest
 
 import (
 	"context"
 	"strings"
 	"testing"
 
+	dbpkg "gent/internal/db"
 	"gent/internal/model"
 )
 
 // insertInst inserts an instance with the given status, parent, call stack, and error.
-func insertInst(t *testing.T, db *DB, id string, status model.Status, parentID string, callStack []string, errMsg string) {
+func insertInst(t *testing.T, db *dbpkg.DB, id string, status model.Status, parentID string, callStack []string, errMsg string) {
 	t.Helper()
 	inst := &model.ProcessInstance{
 		ID:             id,
@@ -27,7 +28,7 @@ func insertInst(t *testing.T, db *DB, id string, status model.Status, parentID s
 	}
 }
 
-func mustStatus(t *testing.T, db *DB, id string) model.Status {
+func mustStatus(t *testing.T, db *dbpkg.DB, id string) model.Status {
 	t.Helper()
 	inst, err := db.GetInstance(id)
 	if err != nil {
@@ -36,7 +37,7 @@ func mustStatus(t *testing.T, db *DB, id string) model.Status {
 	return inst.Status
 }
 
-func mustError(t *testing.T, db *DB, id string) string {
+func mustError(t *testing.T, db *dbpkg.DB, id string) string {
 	t.Helper()
 	inst, err := db.GetInstance(id)
 	if err != nil {
@@ -45,7 +46,7 @@ func mustError(t *testing.T, db *DB, id string) string {
 	return inst.Error
 }
 
-func mustWaitState(t *testing.T, db *DB, id string) model.WaitState {
+func mustWaitState(t *testing.T, db *dbpkg.DB, id string) model.WaitState {
 	t.Helper()
 	inst, err := db.GetInstance(id)
 	if err != nil {
@@ -55,7 +56,7 @@ func mustWaitState(t *testing.T, db *DB, id string) model.WaitState {
 }
 
 // insertInstW inserts an instance with an explicit wait_state (for testing waiting parents).
-func insertInstW(t *testing.T, db *DB, id string, status model.Status, waitState model.WaitState, parentID string, callStack []string, errMsg string) {
+func insertInstW(t *testing.T, db *dbpkg.DB, id string, status model.Status, waitState model.WaitState, parentID string, callStack []string, errMsg string) {
 	t.Helper()
 	inst := &model.ProcessInstance{
 		ID:             id,
@@ -305,7 +306,7 @@ func TestSpawnChildrenAndWait_CancellingParent(t *testing.T) {
 }
 
 // insertChild inserts a child instance spawned by the given parent step.
-func insertChild(t *testing.T, db *DB, id string, status model.Status, parentID, spawnStepID string, callStack []string, errMsg string) {
+func insertChild(t *testing.T, db *dbpkg.DB, id string, status model.Status, parentID, spawnStepID string, callStack []string, errMsg string) {
 	t.Helper()
 	inst := &model.ProcessInstance{
 		ID:             id,
@@ -587,7 +588,7 @@ func TestRetryProcess_EmptyQueue(t *testing.T) {
 
 // TestFailInstanceAndAncestors_LastActiveChild_WakesParent verifies that when
 // the failing child is the last active member of its spawn batch, the parent
-// is marked failing AND woken (wait_state '') so the engine can settle it —
+// is marked failing AND woken (wait_state ”) so the engine can settle it —
 // never 'collecting': that state is reserved for all-completed batches.
 func TestFailInstanceAndAncestors_LastActiveChild_WakesParent(t *testing.T) {
 	for _, b := range testBackends(t) {
@@ -801,9 +802,9 @@ func TestFinishChild_StepScoped(t *testing.T) {
 	}
 }
 
-// TestCollectChildOutputs_StepScoped verifies that output collection only reads
-// children of the collecting step, not earlier batches.
-func TestCollectChildOutputs_StepScoped(t *testing.T) {
+// TestChildrenForStep_StepScoped verifies that reading a step's children returns
+// only that step's batch, not earlier batches spawned by the same parent.
+func TestChildrenForStep_StepScoped(t *testing.T) {
 	for _, b := range testBackends(t) {
 		t.Run(b.name, func(t *testing.T) {
 			insertInst(t, b.db, "parent", model.StatusRunning, "", nil, "")
@@ -825,18 +826,18 @@ func TestCollectChildOutputs_StepScoped(t *testing.T) {
 				}
 			}
 
-			parent, err := b.db.GetInstance("parent")
+			kids, err := b.db.ChildrenForStep(context.Background(), "parent", "stepB")
 			if err != nil {
-				t.Fatalf("GetInstance: %v", err)
+				t.Fatalf("ChildrenForStep: %v", err)
 			}
-			step := &model.Step{ID: "stepB", Call: &model.Call{Type: model.CallTypeChild}}
-			if err := b.db.CollectChildOutputs(context.Background(), parent, step); err != nil {
-				t.Fatalf("CollectChildOutputs: %v", err)
+			if len(kids) != 1 {
+				t.Fatalf("expected 1 child for stepB, got %d", len(kids))
 			}
-
-			got := parent.ContextData["outputs"].(map[string]any)["stepB"]
-			if got != "fresh" {
-				t.Errorf("outputs[stepB]: expected %q, got %v", "fresh", got)
+			if kids[0].ID != "new" {
+				t.Errorf("expected child %q, got %q", "new", kids[0].ID)
+			}
+			if got := kids[0].ContextData["output"]; got != "fresh" {
+				t.Errorf("child output: expected %q, got %v", "fresh", got)
 			}
 		})
 	}

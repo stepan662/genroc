@@ -15,15 +15,17 @@ Rules:
 - Use `sqlc.arg(name)` for all query parameters — never hardcode `?` or `$1`. sqlc translates this to the correct placeholder per engine.
 - `gen_pg_validate/` is gitignored. Run `sqlc generate` then `go build ./...` locally to validate cross-engine compatibility.
 
-Exceptions (hand-written in `db.go`, not in `queries.sql`):
-- `ClaimInstances` — PostgreSQL uses `FOR UPDATE SKIP LOCKED` for concurrent workers; SQLite's single-writer model does not support this.
-- `FindParentsOf` — dynamic-length `IN (...)` clause cannot be expressed in sqlc.
+Exceptions (hand-written in Go, not in `queries.sql`):
+- `ClaimInstances` (`db_claim.go`) — PostgreSQL uses `FOR UPDATE SKIP LOCKED` for concurrent workers; SQLite's single-writer model does not support this.
+- `FindParentsOf` (`db_registry.go`) — dynamic-length `IN (...)` clause cannot be expressed in sqlc.
+
+The hand-written persistence layer is split across `db_*.go` files by domain (`db_registry.go`, `db_instances.go`, `db_claim.go`, `db_lifecycle.go`); `db.go` holds the `DB` type, connection setup, and time/null helpers.
 
 ### Adding a query
 
 1. Add to `internal/db/queries.sql` with annotation `-- name: QueryName :one/:many/:exec`
 2. Run `sqlc generate` from repo root
-3. Add a wrapper method on `*DB` in `db.go` if needed (e.g. to hide int64↔int conversions)
+3. Add a wrapper method on `*DB` in the matching `db_*.go` file if needed (e.g. to hide int64↔int conversions)
 
 Install sqlc: `go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest`
 
