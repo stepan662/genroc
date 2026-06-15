@@ -1,0 +1,1 @@
+https://stepan662.github.io/gent-go/bench/
