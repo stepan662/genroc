@@ -1,0 +1,326 @@
+// Generalized spawn benchmark runner. A workload is a readable YAML file under
+// workloads/ describing a gent process (pure orchestration, no external HTTP calls)
+// plus a small bench header; this runner applies it, drives it across the selected
+// engines, and reports throughput. It isolates engine + DB throughput and compares
+// SQLite (single writer) vs Postgres (concurrent workers).
+//
+//   bun run bench/run.ts recursive                              # SQLite only
+//   POSTGRES_DSN=postgres://… bun run bench/run.ts recursive    # + Postgres compare
+//   make bench-recursive | bench-deep                           # via Makefile
+//
+// Workloads (workloads/<name>.yaml):
+//   recursive — full binary tree (wide); concurrent throughput ceiling.
+//   deep      — narrow/tall tree; per-spawn depth cost.
+// Their defaults are sized to roughly the same instance count (~8k) so the two shapes
+// are directly comparable.
+//
+// A workload's instance count is SELF-REPORTED: the runner reads each root's
+// output[count_field] after completion (recursive/deep sum their subtree size).
+//
+// Each YAML's `bench` section is the single source of truth for the run: input, roots,
+// count_field, poll_ms, runs, and per-engine concurrency (under `sqlite:`/`postgres:`).
+// Concurrency is per engine — SQLite's single writer overwhelms at high concurrency
+// while Postgres' concurrent workers thrive on it. The runner reads NO numeric env
+// overrides, so there is exactly one place to look for a knob.
+//
+// Env is only for invocation, never workload numbers: BENCH_WORKLOAD (or argv[2])
+// selects the workload, BENCH_ENGINES filters which engines run, BENCH_JSON sets the
+// results output path.
+
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { arch, cpus, platform, release, tmpdir, totalmem } from "node:os";
+import {
+  buildGentBinary,
+  startGent,
+  type GentProcess,
+} from "../helpers/server.ts";
+
+// Workloads are statically imported (Bun parses .yaml natively) so tsc and the
+// bundler resolve them; adding a workload = a new YAML + one line here.
+import recursive from "./workloads/recursive.yaml";
+import deep from "./workloads/deep.yaml";
+
+const WORKLOADS: Record<string, Workload> = { recursive, deep };
+
+// Per-engine knobs (under bench.sqlite / bench.postgres).
+interface EngineConfig {
+  concurrency?: number; // max in-flight instances on this engine
+}
+
+// A workload file: a `bench` section (the whole run config) plus the gent definition(s).
+interface BenchConfig {
+  input?: Record<string, unknown>; // root input
+  roots?: number; // root count (default 1)
+  count_field: string; // output field holding each root's instance count
+  poll_ms?: number; // server + client poll interval (default 10)
+  runs?: number; // repeats per engine (default 1)
+  timeout_ms?: number; // per-root completion timeout (default 180000)
+  concurrency?: number; // shared fallback when an engine omits its own (default 20)
+  sqlite?: EngineConfig;
+  postgres?: EngineConfig;
+}
+
+interface Workload {
+  bench: BenchConfig;
+  process?: unknown; // single gent definition
+  defs?: unknown[]; // or several (applied in order)
+}
+
+const DEFAULT_POLL_MS = 10;
+const DEFAULT_RUNS = 1;
+const DEFAULT_TIMEOUT_MS = 180_000;
+const DEFAULT_CONCURRENCY = 20;
+const BENCH_PORT = 8890; // distinct from the test servers (8888 sqlite, 8889 pg)
+const BENCH_ENGINES = process.env.BENCH_ENGINES ?? "sqlite,postgres";
+
+// Host fingerprint: printed and stamped onto every result so a step-change in the
+// charts can be told apart from a runner/hardware change (e.g. GitHub swaps CPUs).
+const HOST = (() => {
+  const c = cpus();
+  const model = c[0]?.model?.trim() ?? "unknown";
+  return `${model} · ${c.length} cores · ${Math.round(totalmem() / 1024 ** 3)}GB · ${platform()} ${arch()} ${release()}`;
+})();
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+type Client = GentProcess["client"];
+
+// BENCH_WORKLOAD (or argv[2]) selects which workload YAML to run.
+const NAME = process.argv[2] ?? process.env.BENCH_WORKLOAD ?? "recursive";
+const workload = WORKLOADS[NAME];
+if (!workload) {
+  console.error(
+    `unknown workload "${NAME}"; available: ${Object.keys(WORKLOADS).join(", ")}`,
+  );
+  process.exit(1);
+}
+
+const bench = workload.bench;
+if (!bench) throw new Error(`workload "${NAME}" has no bench section`);
+
+const INPUT: Record<string, unknown> = { ...(bench.input ?? {}) };
+const ROOTS = bench.roots ?? 1;
+const COUNT_FIELD = bench.count_field;
+const POLL_MS = bench.poll_ms ?? DEFAULT_POLL_MS;
+const RUNS = bench.runs ?? DEFAULT_RUNS;
+const TIMEOUT_MS = bench.timeout_ms ?? DEFAULT_TIMEOUT_MS;
+const DEFS = workload.defs ?? (workload.process ? [workload.process] : []);
+if (DEFS.length === 0) throw new Error(`workload "${NAME}" defines no process`);
+
+// The process name to start: the first applied definition is the root.
+const DEFS_NAME = (DEFS[0] as { name?: string }).name;
+if (!DEFS_NAME) throw new Error(`workload "${NAME}" root definition has no name`);
+
+// Per-engine concurrency: the engine's own `concurrency`, else the workload's shared
+// fallback, else the built-in default.
+function concurrencyFor(engine: string): number {
+  const perEngine = engine === "sqlite" ? bench.sqlite : bench.postgres;
+  return perEngine?.concurrency ?? bench.concurrency ?? DEFAULT_CONCURRENCY;
+}
+
+// Poll until terminal; returns the final instance status payload.
+async function waitDone(client: Client, id: string) {
+  const deadline = Date.now() + TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const { data, error } = await client.GET("/instances/{id}", {
+      params: { path: { id } },
+    });
+    if (error) throw new Error(`get_instance failed: ${JSON.stringify(error)}`);
+    const status = data?.status;
+    if (
+      status === "completed" ||
+      status === "failed" ||
+      status === "cancelled"
+    ) {
+      return data!;
+    }
+    await sleep(POLL_MS);
+  }
+  throw new Error(`instance ${id} did not finish within ${TIMEOUT_MS}ms`);
+}
+
+interface RunResult {
+  elapsed: number;
+  instances: number;
+}
+
+// Run the workload once against an already-running, already-applied server.
+async function runOnce(client: Client): Promise<RunResult> {
+  const start = Date.now();
+  const ids: string[] = [];
+  for (let i = 0; i < ROOTS; i++) {
+    const { data, error } = await client.POST("/instances", {
+      body: { process: DEFS_NAME, input: INPUT } as never,
+    });
+    if (error) throw new Error(`start failed: ${JSON.stringify(error)}`);
+    ids.push(data!.id);
+  }
+
+  const finals = await Promise.all(ids.map((id) => waitDone(client, id)));
+  const elapsed = Date.now() - start;
+
+  // Sum each root's self-reported instance count (its subtree size).
+  let instances = 0;
+  for (const f of finals) {
+    if (f.status !== "completed") {
+      throw new Error(`root ${f.id} ended ${f.status}: ${f.error ?? ""}`);
+    }
+    const out = f.context?.output as Record<string, number> | undefined;
+    const n = out?.[COUNT_FIELD];
+    if (typeof n !== "number") {
+      throw new Error(
+        `root ${f.id}: expected numeric output.${COUNT_FIELD}, got ${JSON.stringify(n)}`,
+      );
+    }
+    instances += n;
+  }
+  return { elapsed, instances };
+}
+
+interface EngineResult {
+  engine: string;
+  durations: number[];
+  instances: number;
+  concurrency: number;
+}
+
+async function benchEngine(
+  engine: string,
+  dbPath: string,
+  dsn: string | undefined,
+): Promise<EngineResult> {
+  const concurrency = concurrencyFor(engine);
+  const bin = await buildGentBinary();
+  const server = await startGent(
+    bin,
+    BENCH_PORT,
+    dbPath,
+    dsn,
+    POLL_MS,
+    concurrency,
+  );
+  try {
+    for (const def of DEFS) {
+      const { error } = await server.client.PUT("/definitions", {
+        body: def as never,
+      });
+      if (error) throw new Error(`register failed: ${JSON.stringify(error)}`);
+    }
+    const durations: number[] = [];
+    let instances = 0;
+    for (let run = 0; run < RUNS; run++) {
+      const r = await runOnce(server.client);
+      durations.push(r.elapsed);
+      instances = r.instances;
+    }
+    return { engine, durations, instances, concurrency };
+  } finally {
+    server.stop();
+    await sleep(200); // let the process release the port before the next engine
+  }
+}
+
+function fmt(n: number, width: number) {
+  return String(n).padStart(width);
+}
+
+function report(results: EngineResult[]) {
+  const total = results[0]?.instances ?? 0;
+  const throughput = (ms: number) => Math.round((total / ms) * 1000);
+
+  console.log(
+    "\nconfig: " +
+      `workload=${NAME} input=${JSON.stringify(INPUT)} roots=${ROOTS} ` +
+      `instances=${total} poll_ms=${POLL_MS} runs=${RUNS}`,
+  );
+  console.log(`host:   ${HOST}\n`);
+
+  console.log(
+    "engine".padEnd(10) +
+      "runs".padStart(6) +
+      "instances".padStart(11) +
+      "conc".padStart(6) +
+      "min_ms".padStart(9) +
+      "avg_ms".padStart(9) +
+      "max_ms".padStart(9) +
+      "thrpt(inst/s)".padStart(15),
+  );
+
+  const avgThr: Record<string, number> = {};
+  for (const r of results) {
+    const min = Math.min(...r.durations);
+    const max = Math.max(...r.durations);
+    const avg = Math.round(
+      r.durations.reduce((a, b) => a + b, 0) / r.durations.length,
+    );
+    avgThr[r.engine] = throughput(avg);
+    console.log(
+      r.engine.padEnd(10) +
+        fmt(r.durations.length, 6) +
+        fmt(r.instances, 11) +
+        fmt(r.concurrency, 6) +
+        fmt(min, 9) +
+        fmt(avg, 9) +
+        fmt(max, 9) +
+        fmt(throughput(avg), 15),
+    );
+  }
+
+  if (avgThr.sqlite && avgThr.postgres) {
+    const ratio = (avgThr.postgres / avgThr.sqlite).toFixed(2);
+    console.log(`\npostgres/sqlite throughput ratio: ${ratio}x`);
+  }
+}
+
+// When BENCH_JSON is set, write the results as a github-action-benchmark
+// customBiggerIsBetter array (so CI can chart throughput per commit over time).
+function writeBenchJSON(path: string, results: EngineResult[]) {
+  const entries = results.map((r) => {
+    const avg = Math.round(
+      r.durations.reduce((a, b) => a + b, 0) / r.durations.length,
+    );
+    return {
+      name: `spawn ${NAME} ${r.engine}`,
+      unit: "inst/s",
+      value: Math.round((r.instances / avg) * 1000),
+      extra: HOST, // shown in github-action-benchmark chart tooltips
+    };
+  });
+  writeFileSync(path, JSON.stringify(entries, null, 2));
+}
+
+async function main() {
+  const results: EngineResult[] = [];
+
+  // BENCH_ENGINES selects which engines to run (comma-separated), e.g.
+  // BENCH_ENGINES=postgres to skip the slow SQLite pass when tuning Postgres.
+  const engines = BENCH_ENGINES.split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (engines.includes("sqlite")) {
+    const sqliteDb = join(tmpdir(), `gent_bench_${Date.now()}.db`);
+    results.push(await benchEngine("sqlite", sqliteDb, undefined));
+  }
+
+  if (engines.includes("postgres")) {
+    const dsn = process.env.POSTGRES_DSN;
+    if (dsn) {
+      results.push(await benchEngine("postgres", "", dsn));
+    } else {
+      console.log(
+        "\n(POSTGRES_DSN not set — skipping postgres; set it to compare)",
+      );
+    }
+  }
+
+  report(results);
+  const jsonPath = process.env.BENCH_JSON;
+  if (jsonPath) writeBenchJSON(jsonPath, results);
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
