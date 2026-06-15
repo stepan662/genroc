@@ -29,7 +29,7 @@
 
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { arch, cpus, platform, release, tmpdir, totalmem } from "node:os";
 import {
   buildGentBinary,
   startGent,
@@ -73,6 +73,14 @@ const DEFAULT_TIMEOUT_MS = 180_000;
 const DEFAULT_CONCURRENCY = 20;
 const BENCH_PORT = 8890; // distinct from the test servers (8888 sqlite, 8889 pg)
 const BENCH_ENGINES = process.env.BENCH_ENGINES ?? "sqlite,postgres";
+
+// Host fingerprint: printed and stamped onto every result so a step-change in the
+// charts can be told apart from a runner/hardware change (e.g. GitHub swaps CPUs).
+const HOST = (() => {
+  const c = cpus();
+  const model = c[0]?.model?.trim() ?? "unknown";
+  return `${model} · ${c.length} cores · ${Math.round(totalmem() / 1024 ** 3)}GB · ${platform()} ${arch()} ${release()}`;
+})();
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -224,8 +232,9 @@ function report(results: EngineResult[]) {
   console.log(
     "\nconfig: " +
       `workload=${NAME} input=${JSON.stringify(INPUT)} roots=${ROOTS} ` +
-      `instances=${total} poll_ms=${POLL_MS} runs=${RUNS}\n`,
+      `instances=${total} poll_ms=${POLL_MS} runs=${RUNS}`,
   );
+  console.log(`host:   ${HOST}\n`);
 
   console.log(
     "engine".padEnd(10) +
@@ -275,6 +284,7 @@ function writeBenchJSON(path: string, results: EngineResult[]) {
       name: `spawn ${NAME} ${r.engine}`,
       unit: "inst/s",
       value: Math.round((r.instances / avg) * 1000),
+      extra: HOST, // shown in github-action-benchmark chart tooltips
     };
   });
   writeFileSync(path, JSON.stringify(entries, null, 2));
