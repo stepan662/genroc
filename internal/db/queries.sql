@@ -133,6 +133,9 @@ WHERE parent_id = sqlc.arg(parent_id)
   AND spawn_step_id = sqlc.arg(spawn_step_id)
   AND status NOT IN ('completed', 'failed', 'cancelled');
 
+-- name: GetWaitState :one
+SELECT wait_state FROM process_instances WHERE id = sqlc.arg(id);
+
 -- name: WakeParent :exec
 UPDATE process_instances
 SET wait_state = CASE WHEN status = 'running' THEN 'collecting' ELSE '' END,

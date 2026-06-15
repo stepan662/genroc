@@ -367,6 +367,17 @@ func (q *Queries) GetInstance(ctx context.Context, id string) (ProcessInstance, 
 	return i, err
 }
 
+const getWaitState = `-- name: GetWaitState :one
+SELECT wait_state FROM process_instances WHERE id = ?1
+`
+
+func (q *Queries) GetWaitState(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRowContext(ctx, getWaitState, id)
+	var wait_state string
+	err := row.Scan(&wait_state)
+	return wait_state, err
+}
+
 const insertDefinition = `-- name: InsertDefinition :exec
 INSERT INTO process_definitions (name, version, definition, content_hash, created_at)
 VALUES (?1, ?2, ?3, ?4, ?5)

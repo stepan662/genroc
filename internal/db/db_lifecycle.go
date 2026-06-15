@@ -147,10 +147,7 @@ func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 	// transition failing → failed. WakeParent picks '' here — the parent is
 	// failing, so it must never enter the collect phase.
 	if child.ParentID != "" {
-		var parentWaitState string
-		err := raw.QueryRowContext(ctx,
-			"SELECT wait_state FROM process_instances WHERE id = ?",
-			child.ParentID).Scan(&parentWaitState)
+		parentWaitState, err := qtx.GetWaitState(ctx, child.ParentID)
 		if err != nil && err != sql.ErrNoRows {
 			return fmt.Errorf("read parent wait_state: %w", err)
 		}
