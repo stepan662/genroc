@@ -9,14 +9,22 @@ on:
   workflow_dispatch:
 
 # github-action-benchmark needs contents:write to push the time series to gh-pages
-# (only on non-PR events; see auto-push below).
+# (only on non-PR events; see the chart job below).
 permissions:
   contents: write
 
 jobs:
+  # One leg per workload, each with its OWN Postgres service, run in parallel — so
+  # recursive's leftover rows never bias deep's claim latency (and vice versa), and the
+  # suite finishes in roughly one workload's time. Both run at default size (~8k
+  # instances) so the wide and narrow shapes are directly comparable.
   bench:
-    name: benchmarks (report-only)
+    name: bench (${{ matrix.workload }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        workload: [recursive, deep]
     services:
       postgres:
         image: postgres:16
@@ -34,10 +42,6 @@ jobs:
     env:
       CGO_ENABLED: "1"
       POSTGRES_DSN: postgres://gent:gent@localhost:5432/gent_test?sslmode=disable
-      # CI-only cap: shared 2-core runners + SQLite's single writer overwhelm the
-      # engine's lease renewal at the default concurrency (it self-exits). Keeps the
-      # local default (200) intact while stabilizing CI.
-      BENCH_MAX_CONCURRENT: "20"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -53,49 +57,59 @@ jobs:
       - name: Install test dependencies
         run: cd tests && bun install --frozen-lockfile
 
-      # Smaller workload on PRs (smoke); full size on push/schedule/manual.
-      - name: Size workloads
+      - name: Run bench
+        run: BENCH_JSON="$RUNNER_TEMP/${{ matrix.workload }}.json" make bench-${{ matrix.workload }}
+
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.workload }}
+          path: ${{ runner.temp }}/${{ matrix.workload }}.json
+
+      # Surface this leg's numbers in its job summary (the only report on PRs, where
+      # the chart job below is skipped).
+      - name: Results to job summary
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "BENCH_TTL=10"        >> "$GITHUB_ENV"   # 2047 nodes
-            echo "BENCH_DRAIN_N=10000" >> "$GITHUB_ENV"
-          else
-            echo "BENCH_TTL=12"        >> "$GITHUB_ENV"   # 8191 nodes
-            echo "BENCH_DRAIN_N=50000" >> "$GITHUB_ENV"
-          fi
+          {
+            echo "### Benchmark: ${{ matrix.workload }}"
+            echo ""
+            echo "| metric | inst/s |"
+            echo "| --- | --- |"
+            jq -r '.[] | "| \(.name) | \(.value) |"' "$RUNNER_TEMP/${{ matrix.workload }}.json"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Spawn bench (SQLite + Postgres)
-        run: BENCH_JSON="$RUNNER_TEMP/spawn.json" make bench
+  # Merge the per-workload results and push the per-commit time series (charts under the
+  # gh-pages branch) so a regression can be traced to a commit. Non-PR only: the action
+  # always fetches gh-pages, which doesn't exist on PR branches — and PRs already show
+  # their numbers in the per-leg summaries above. Report-only: never fails the build.
+  chart:
+    name: chart history
+    needs: bench
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Drain bench (Postgres backlog)
-        run: BENCH_JSON="$RUNNER_TEMP/drain.json" make bench-drain
+      - name: Download results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bench-*
+          merge-multiple: true
+          path: results
 
       - name: Merge results
-        run: jq -s 'add' "$RUNNER_TEMP/spawn.json" "$RUNNER_TEMP/drain.json" > "$RUNNER_TEMP/bench.json"
+        run: jq -s 'add' results/*.json > "$RUNNER_TEMP/bench.json"
 
-      - name: Archive results for this run
+      - name: Archive merged results for this run
         uses: actions/upload-artifact@v4
         with:
           name: bench-results-${{ github.sha }}
           path: ${{ runner.temp }}/bench.json
 
-      # Always surface this run's numbers in the job summary (the only report on PRs,
-      # where history tracking below is skipped).
-      - name: Results to job summary
-        run: |
-          {
-            echo "### Benchmark results"
-            echo ""
-            echo "| metric | inst/s |"
-            echo "| --- | --- |"
-            jq -r '.[] | "| \(.name) | \(.value) |"' "$RUNNER_TEMP/bench.json"
-          } >> "$GITHUB_STEP_SUMMARY"
-
       # github-action-benchmark fetches gh-pages and fails if it doesn't exist yet.
-      # Create it as an empty orphan branch on the first non-PR run, via plumbing so
-      # the working tree / current checkout is untouched.
+      # Create it as an empty orphan branch on the first run, via plumbing so the
+      # working tree / current checkout is untouched.
       - name: Ensure gh-pages branch exists
-        if: github.event_name != 'pull_request'
         run: |
           if ! git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
             git config user.email "github-action-benchmark@users.noreply.github.com"
@@ -105,12 +119,7 @@ jobs:
             git push origin "$commit:refs/heads/gh-pages"
           fi
 
-      # Store the per-commit time series (charts under the gh-pages branch) so a
-      # regression can be traced to a commit. Non-PR only: the action always fetches
-      # gh-pages (even with auto-push off), which doesn't exist on PR branches — and
-      # PRs already show their numbers in the summary above. Report-only: never fails.
       - name: Track history
-        if: github.event_name != 'pull_request'
         uses: benchmark-action/github-action-benchmark@v1
         with:
           name: gent throughput
@@ -119,6 +128,6 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           gh-pages-branch: gh-pages
           benchmark-data-dir-path: bench
-          auto-push: ${{ github.event_name != 'pull_request' }}
+          auto-push: true
           summary-always: true
           fail-on-alert: false

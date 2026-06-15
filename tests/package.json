@@ -8,8 +8,8 @@
     "playground:generate": "bun run playground/codegen.ts",
     "playground:server": "bun run playground/server.ts",
     "playground:run": "bun run playground/run.ts",
-    "bench": "bun run bench/bench.ts",
-    "bench-drain": "bun run bench/drain.ts"
+    "bench-recursive": "bun run bench/run.ts recursive",
+    "bench-deep": "bun run bench/run.ts deep"
   },
   "dependencies": {
     "ajv": "^8.20.0",

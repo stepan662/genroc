@@ -1,0 +1,80 @@
+# Deep spawn workload: a mostly-linear tree that splits every 10 levels (the `c`
+# countdown), so depth ≈ ttl with a bounded node count. NARROW and tall — the top of
+# the tree is 1-2 instances wide and concurrency only ramps up near the bottom, so a
+# single ttl-deep critical path gates completion. It probes how nesting DEPTH (not
+# width) affects per-spawn cost, the counterpart to the wide recursive workload.
+#
+#   make bench-deep   (POSTGRES_DSN=… to also compare Postgres)
+#
+# Each node carries a countdown `c`: it splits (two children, c reset to 10) when c
+# reaches 1, else descends (one child, c-1) — branching every 10 levels. (A countdown,
+# not ttl % 10, because `%` needs integer operands and JSON inputs are floats.)
+# count_field: every node sums its branch counts + 1, so the root reports its subtree size.
+
+bench:
+  # ttl 95 (with split 10) yields ~8182 nodes — matched to recursive's ttl 12 (8191)
+  # so the wide and narrow shapes run at the same instance count and compare directly.
+  input: { ttl: 95, c: 10 }
+  roots: 1
+  count_field: processes
+  poll_ms: 10
+  runs: 1
+  # This shape is mostly 1-2 instances wide, so concurrency rarely binds; SQLite still
+  # overwhelms more easily here, so keep its cap modest.
+  sqlite:
+    concurrency: 20
+  postgres:
+    concurrency: 200
+
+process:
+  name: deep
+  input_schema:
+    type: object
+    properties:
+      ttl: { type: integer }
+      c: { type: integer }
+    required: [ttl, c]
+  steps:
+    - id: recursion_condition
+      switch:
+        - case: "input.ttl <= 0"
+          goto: end
+        - case: "input.c <= 1"
+          goto: $split
+        - goto: $descend
+    - id: split
+      call:
+        type: child_parallel
+        children:
+          first:
+            name: deep
+            input: { ttl: "{{ input.ttl - 1 }}", c: "{{ 10 }}" }
+            output_schema:
+              type: object
+              properties:
+                processes: { type: number }
+              required: [processes]
+          second:
+            name: deep
+            input: { ttl: "{{ input.ttl - 1 }}", c: "{{ 10 }}" }
+            output_schema:
+              type: object
+              properties:
+                processes: { type: number }
+              required: [processes]
+      switch:
+        - goto: end
+    - id: descend
+      call:
+        type: child
+        name: deep
+        input: { ttl: "{{ input.ttl - 1 }}", c: "{{ input.c - 1 }}" }
+        output_schema:
+          type: object
+          properties:
+            processes: { type: number }
+          required: [processes]
+      switch:
+        - goto: end
+  output:
+    processes: "{{ (outputs.split.first.processes ?? 0) + (outputs.split.second.processes ?? 0) + (outputs.descend.processes ?? 0) + 1 }}"

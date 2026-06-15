@@ -1,0 +1,60 @@
+# Recursive spawn workload: a full binary tree. Every node spawns two children with
+# ttl-1 until ttl hits 0, so a root expands to 2^(ttl+1)-1 nodes. WIDE and shallow —
+# hundreds of siblings are runnable at once, so it saturates the worker pool and
+# measures the engine + DB's concurrent claim/advance throughput ceiling.
+#
+#   make bench-recursive   (POSTGRES_DSN=… to also compare Postgres)
+#
+# count_field: each node sums its children's counts + 1, so the root reports its own
+# subtree size — the instance count the runner charts.
+
+bench:
+  input: { ttl: 12 }
+  roots: 1
+  count_field: processes
+  poll_ms: 10
+  runs: 1
+  # Concurrency per engine: SQLite's single writer overwhelms past ~20, while
+  # Postgres' concurrent workers keep scaling — this wide tree feeds them well.
+  sqlite:
+    concurrency: 20
+  postgres:
+    concurrency: 200
+
+process:
+  name: recursive
+  input_schema:
+    type: object
+    properties:
+      ttl: { type: integer }
+    required: [ttl]
+  steps:
+    - id: recursion_condition
+      switch:
+        - case: "input.ttl > 0"
+          goto: $recursion
+        - goto: end
+    - id: recursion
+      call:
+        type: child_parallel
+        children:
+          first:
+            name: recursive
+            input: { ttl: "{{ input.ttl - 1 }}" }
+            output_schema:
+              type: object
+              properties:
+                processes: { type: number }
+              required: [processes]
+          second:
+            name: recursive
+            input: { ttl: "{{ input.ttl - 1 }}" }
+            output_schema:
+              type: object
+              properties:
+                processes: { type: number }
+              required: [processes]
+      switch:
+        - goto: end
+  output:
+    processes: "{{ (outputs.recursion.first.processes ?? 0) + (outputs.recursion.second.processes ?? 0) + 1 }}"
