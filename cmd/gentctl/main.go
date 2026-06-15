@@ -343,18 +343,31 @@ func runLogsCmd(server string, args []string) {
 	}
 
 	var resp []struct {
-		Time    string `json:"time"`
-		Level   string `json:"level"`
-		Event   string `json:"event"`
-		Step    string `json:"step"`
-		Message string `json:"message"`
-		Code    string `json:"code"`
+		Time     string `json:"time"`
+		Instance string `json:"instance"`
+		Depth    int    `json:"depth"`
+		Level    string `json:"level"`
+		Event    string `json:"event"`
+		Step     string `json:"step"`
+		Message  string `json:"message"`
+		Code     string `json:"code"`
 	}
 	if err := callGet(u, &resp); err != nil {
 		fatal("%v", err)
 	}
 	for _, l := range resp {
-		line := fmt.Sprintf("%s  %-5s  %-24s", l.Time, strings.ToUpper(l.Level), l.Event)
+		// In tree mode, indent by the instance's depth in the subtree and tag the
+		// line with a short instance id, so the chronological stream still reads as
+		// a tree. Cap the indent so a deep subtree doesn't run off-screen.
+		indent := ""
+		if *treeFlag {
+			depth := l.Depth
+			if depth > 12 {
+				depth = 12
+			}
+			indent = strings.Repeat("  ", depth)
+		}
+		line := fmt.Sprintf("%s%s  %-5s  %-24s", indent, l.Time, strings.ToUpper(l.Level), l.Event)
 		if l.Step != "" {
 			line += "  step=" + l.Step
 		}
@@ -364,8 +377,19 @@ func runLogsCmd(server string, args []string) {
 		if l.Message != "" {
 			line += "  " + l.Message
 		}
+		if *treeFlag {
+			line += "  [" + shortID(l.Instance) + "]"
+		}
 		fmt.Println(line)
 	}
+}
+
+// shortID truncates an instance id for compact tree-log display.
+func shortID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }
 
 func runCancelCmd(server string, args []string) {

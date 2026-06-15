@@ -15,15 +15,6 @@
       "output": {
         "$ref": "#/$defs/recursion_output"
       }
-    },
-    "recursion2": {
-      "call_type": "child_parallel",
-      "input": {
-        "type": "object"
-      },
-      "output": {
-        "$ref": "#/$defs/recursion2_output"
-      }
     }
   },
   "$defs": {
@@ -47,31 +38,6 @@
       },
       "required": [
         "num"
-      ]
-    },
-    "recursion2_output": {
-      "type": "object",
-      "properties": {
-        "first": {
-          "type": "object",
-          "properties": {
-            "num": {
-              "type": "integer"
-            }
-          }
-        },
-        "second": {
-          "type": "object",
-          "properties": {
-            "num": {
-              "type": "integer"
-            }
-          }
-        }
-      },
-      "required": [
-        "first",
-        "second"
       ]
     },
     "recursion_output": {

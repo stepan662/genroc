@@ -157,6 +157,13 @@ func TestListTreeLogs_AggregatesSubtree(t *testing.T) {
 			if len(fromRoot) != 4 {
 				t.Fatalf("subtree(root): want 4 entries, got %d", len(fromRoot))
 			}
+			// Depth is the instance's distance from the queried root.
+			wantDepth := map[string]int{"root": 0, "child-a": 1, "child-b": 1, "grandchild": 2}
+			for _, e := range fromRoot {
+				if e.Depth != wantDepth[e.InstanceID] {
+					t.Errorf("depth for %s: want %d, got %d", e.InstanceID, wantDepth[e.InstanceID], e.Depth)
+				}
+			}
 
 			// Subtree from a mid-tree node: child-a + grandchild = 2. Works from any
 			// node, not just the root — the win over the old root_id column.
@@ -166,6 +173,13 @@ func TestListTreeLogs_AggregatesSubtree(t *testing.T) {
 			}
 			if len(fromChildA) != 2 {
 				t.Fatalf("subtree(child-a): want 2 entries, got %d", len(fromChildA))
+			}
+			// Depth is relative to the queried node: child-a is now the root (0).
+			wantChildADepth := map[string]int{"child-a": 0, "grandchild": 1}
+			for _, e := range fromChildA {
+				if e.Depth != wantChildADepth[e.InstanceID] {
+					t.Errorf("depth from child-a for %s: want %d, got %d", e.InstanceID, wantChildADepth[e.InstanceID], e.Depth)
+				}
 			}
 
 			// Per-instance view stays scoped to one instance.

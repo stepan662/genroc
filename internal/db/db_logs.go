@@ -96,16 +96,20 @@ func (db *DB) ListLogs(instanceID string, opts LogQuery) ([]*model.LogEntry, err
 // idx_instances_parent_step index. Hand-written (not sqlc) because sqlc's SQLite
 // grammar can't parse WITH RECURSIVE; both runtime drivers support it, and db.exec
 // rewrites ? → $N on Postgres. The cursor/level predicates mirror ListLogs.
+// The subtree CTE also carries each instance's depth relative to the queried
+// node (the node itself is depth 0), surfaced per log row so callers can render
+// the tree (e.g. gentctl indents by depth). Joining subtree (rather than
+// instance_id IN (subtree)) makes st.depth selectable.
 const treeLogsQuery = `
-WITH RECURSIVE subtree(id) AS (
-    SELECT id FROM process_instances WHERE id = ?
+WITH RECURSIVE subtree(id, depth) AS (
+    SELECT id, 0 FROM process_instances WHERE id = ?
     UNION ALL
-    SELECT pi.id FROM process_instances pi JOIN subtree s ON pi.parent_id = s.id
+    SELECT pi.id, s.depth + 1 FROM process_instances pi JOIN subtree s ON pi.parent_id = s.id
 )
-SELECT pl.id, pl.instance_id, pl.level, pl.event, pl.step_id, pl.message, pl.code, pl.detail, pl.created_at
+SELECT pl.id, pl.instance_id, pl.level, pl.event, pl.step_id, pl.message, pl.code, pl.detail, pl.created_at, st.depth
 FROM process_logs pl
-WHERE pl.instance_id IN (SELECT id FROM subtree)
-  AND (? = '' OR pl.level = ?)
+JOIN subtree st ON st.id = pl.instance_id
+WHERE (? = '' OR pl.level = ?)
   AND pl.created_at >= ?
   AND (pl.created_at > ? OR (pl.created_at = ? AND pl.id > ?))
 ORDER BY pl.created_at, pl.id
@@ -113,6 +117,7 @@ LIMIT ?`
 
 // ListTreeLogs returns every log for the subtree rooted at the given instance
 // (the node itself and all descendants), oldest-first. rootID may be any node.
+// Each entry's Depth is its instance's distance from rootID (rootID = 0).
 func (db *DB) ListTreeLogs(rootID string, opts LogQuery) ([]*model.LogEntry, error) {
 	rows, err := db.exec.QueryContext(context.Background(), treeLogsQuery,
 		rootID, opts.Level, opts.Level, opts.Since,
@@ -121,19 +126,25 @@ func (db *DB) ListTreeLogs(rootID string, opts LogQuery) ([]*model.LogEntry, err
 		return nil, err
 	}
 	defer rows.Close()
-	var logs []dbgen.ProcessLog
+	var out []*model.LogEntry
 	for rows.Next() {
 		var r dbgen.ProcessLog
+		var depth int64
 		if err := rows.Scan(&r.ID, &r.InstanceID, &r.Level, &r.Event,
-			&r.StepID, &r.Message, &r.Code, &r.Detail, &r.CreatedAt); err != nil {
+			&r.StepID, &r.Message, &r.Code, &r.Detail, &r.CreatedAt, &depth); err != nil {
 			return nil, err
 		}
-		logs = append(logs, r)
+		e, err := toLogEntry(r)
+		if err != nil {
+			return nil, err
+		}
+		e.Depth = int(depth)
+		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return toLogEntries(logs)
+	return out, nil
 }
 
 // PruneLogs deletes every log older than the given cutoff (unix millis) and

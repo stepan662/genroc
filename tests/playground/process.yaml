@@ -26,30 +26,5 @@ steps:
             type: integer
         required: [num]
     switch: end
-
-  - id: recursion2
-    call:
-      type: child_parallel
-      children:
-        first:
-          name: order-pipeline
-          input:
-            ttl: "{{ input.ttl - 1 }}"
-          output_schema:
-            type: object
-            properties:
-              num:
-                type: integer
-        second:
-          name: order-pipeline
-          input:
-            ttl: "{{ input.ttl - 1 }}"
-          output_schema:
-            type: object
-            properties:
-              num:
-                type: integer
-    switch: end
-
 output:
   num: "{{ (outputs.recursion.num ?? 0) + 1 }}"

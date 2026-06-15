@@ -28,31 +28,6 @@ const stepSchemas: Record<string, object> = {
     "required": [
       "num"
     ]
-  },
-  "recursion2": {
-    "type": "object",
-    "properties": {
-      "first": {
-        "type": "object",
-        "properties": {
-          "num": {
-            "type": "integer"
-          }
-        }
-      },
-      "second": {
-        "type": "object",
-        "properties": {
-          "num": {
-            "type": "integer"
-          }
-        }
-      }
-    },
-    "required": [
-      "first",
-      "second"
-    ]
   }
 }
 

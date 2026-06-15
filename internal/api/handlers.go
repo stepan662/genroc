@@ -150,13 +150,15 @@ type InstanceStatusResp struct {
 }
 
 type LogEntryResp struct {
-	Time    string         `json:"time"`
-	Level   model.LogLevel `json:"level"`
-	Event   string         `json:"event"`
-	Step    string         `json:"step,omitempty"`
-	Message string         `json:"message,omitempty"`
-	Code    string         `json:"code,omitempty"`
-	Detail  map[string]any `json:"detail,omitempty"`
+	Time     string         `json:"time"`
+	Instance string         `json:"instance"`
+	Depth    int            `json:"depth"` // distance from the queried subtree root (0 = the queried node)
+	Level    model.LogLevel `json:"level"`
+	Event    string         `json:"event"`
+	Step     string         `json:"step,omitempty"`
+	Message  string         `json:"message,omitempty"`
+	Code     string         `json:"code,omitempty"`
+	Detail   map[string]any `json:"detail,omitempty"`
 }
 
 // --- Envelope ---
@@ -340,13 +342,15 @@ func (h *Handlers) listInstanceLogs(id string, raw json.RawMessage) Reply {
 	resp := make([]LogEntryResp, len(logs))
 	for i, l := range logs {
 		resp[i] = LogEntryResp{
-			Time:    l.CreatedAt.Format(time.RFC3339Nano),
-			Level:   l.Level,
-			Event:   l.Event,
-			Step:    l.StepID,
-			Message: l.Message,
-			Code:    l.Code,
-			Detail:  l.Detail,
+			Time:     l.CreatedAt.Format(time.RFC3339Nano),
+			Instance: l.InstanceID,
+			Depth:    l.Depth,
+			Level:    l.Level,
+			Event:    l.Event,
+			Step:     l.StepID,
+			Message:  l.Message,
+			Code:     l.Code,
+			Detail:   l.Detail,
 		}
 	}
 	return okReply(resp)

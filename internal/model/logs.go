@@ -43,4 +43,7 @@ type LogEntry struct {
 	Code       string         `json:"code,omitempty"`
 	Detail     map[string]any `json:"detail,omitempty"`
 	CreatedAt  time.Time      `json:"created_at"`
+	// Depth is the instance's distance from the queried subtree root; only set by
+	// ListTreeLogs (0 for single-instance queries). Not persisted.
+	Depth int `json:"-"`
 }
