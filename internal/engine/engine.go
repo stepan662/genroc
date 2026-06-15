@@ -33,6 +33,26 @@ type LogConfig struct {
 
 const logPruneInterval = time.Minute
 
+// OverwhelmError is returned by Run when the engine re-claimed an instance it was
+// still advancing: the in-flight advance outlived its lease, so lease renewal can't
+// keep up. There is no safe recovery — in a multi-worker deployment another worker
+// would already have stolen and double-executed the instance — so the pump stops
+// claiming, in-flight work is drained, and Run returns this. The binary should log it
+// and exit non-zero so the worker is restarted; lowering --max-concurrent or raising
+// the lease duration prevents recurrence.
+type OverwhelmError struct {
+	InstanceID    string
+	WorkerID      string
+	Lease         time.Duration
+	MaxConcurrent int
+}
+
+func (e *OverwhelmError) Error() string {
+	return fmt.Sprintf("engine overwhelmed: re-claimed instance %s still being advanced by worker %s; "+
+		"lease renewal cannot keep up (lease=%s, max_concurrent=%d). Lower --max-concurrent or increase the lease duration.",
+		e.InstanceID, e.WorkerID, e.Lease, e.MaxConcurrent)
+}
+
 // Engine is the main orchestration loop. It polls the database for pending
 // instances and advances each one step at a time.
 type Engine struct {
@@ -84,9 +104,11 @@ func (e *Engine) retryDelay(attempt int) time.Duration {
 	return transport.RetryDelay(attempt)
 }
 
-// Run starts the engine loop and blocks until ctx is cancelled.
+// Run starts the engine loop and blocks until ctx is cancelled. It returns nil on a
+// clean shutdown, or an *OverwhelmError if the pump stopped because the engine could
+// not keep up with its leases (in-flight work is drained before it returns either way).
 // When pollEvery is zero the engine does not auto-tick; call Tick explicitly.
-func (e *Engine) Run(ctx context.Context) {
+func (e *Engine) Run(ctx context.Context) error {
 	e.log.Info("engine started", "poll_interval", e.pollEvery, "max_concurrent", cap(e.sem), "worker_id", e.workerID)
 
 	go e.leaseRenewer(ctx)
@@ -99,11 +121,16 @@ func (e *Engine) Run(ctx context.Context) {
 		e.log.Info("engine in manual tick mode")
 		<-ctx.Done()
 		e.log.Info("engine stopped")
-		return
+		return nil
 	}
 
-	e.runPump(ctx)
-	e.log.Info("engine stopped")
+	err := e.runPump(ctx)
+	if err != nil {
+		e.log.Error("engine stopped after draining in-flight work", "err", err)
+	} else {
+		e.log.Info("engine stopped")
+	}
+	return err
 }
 
 // runPump is the continuous claim/dispatch loop used when pollEvery > 0. Unlike
@@ -117,12 +144,12 @@ func (e *Engine) Run(ctx context.Context) {
 // When a claim finds nothing the pump releases its slot and waits on the ticker —
 // the same adaptive cadence the old loop had. A WaitGroup drains in-flight
 // advances on shutdown.
-func (e *Engine) runPump(ctx context.Context) {
+func (e *Engine) runPump(ctx context.Context) error {
 	ticker := time.NewTicker(e.pollEvery)
 	defer ticker.Stop()
 
 	var wg sync.WaitGroup
-	defer wg.Wait()
+	defer wg.Wait() // stop claiming, finish in-flight advances, then return
 
 	for {
 		// Block for one slot (wakes the instant a worker frees), then grab any
@@ -135,7 +162,7 @@ func (e *Engine) runPump(ctx context.Context) {
 		select {
 		case e.sem <- struct{}{}:
 		case <-ctx.Done():
-			return
+			return nil
 		}
 		slots := 1
 	fill:
@@ -159,38 +186,45 @@ func (e *Engine) runPump(ctx context.Context) {
 			}
 			select {
 			case <-ctx.Done():
-				return
+				return nil
 			case <-ticker.C:
 			}
 			continue
 		}
 
 		// Each dispatch consumes one pre-acquired slot (released when the advance
-		// finishes, or immediately if the guard skips an already in-flight instance).
+		// finishes). If dispatch reports overwhelm, stop claiming and return: the
+		// deferred wg.Wait drains the advances already in flight first.
 		for _, inst := range insts {
-			e.dispatch(ctx, &wg, inst)
+			if err := e.dispatch(ctx, &wg, inst); err != nil {
+				return err
+			}
 		}
 	}
 }
 
 // dispatch runs one instance's advance in its own goroutine and releases its
-// e.sem slot when done. The caller must have already reserved the slot.
-func (e *Engine) dispatch(ctx context.Context, wg *sync.WaitGroup, inst *model.ProcessInstance) {
+// e.sem slot when done. The caller must have already reserved the slot. It returns
+// an *OverwhelmError (without starting an advance) if the instance is already
+// in-flight on this worker; the caller stops the pump and drains.
+func (e *Engine) dispatch(ctx context.Context, wg *sync.WaitGroup, inst *model.ProcessInstance) error {
 	// If we just re-claimed an instance this worker is still advancing, its lease
 	// expired before the advance finished: lease renewal can't keep up, so the
 	// engine is overwhelmed. This is inherent to a lease-based design — in a
 	// multi-worker deployment another worker would already have stolen and
 	// double-executed the instance. There is no reliable way to recover, so we
-	// fail loudly instead of silently corrupting state. The operator should lower
-	// --max-concurrent or increase the lease duration. (The pre-acquire pump makes
-	// this detection sound: a claim only returns non-'waiting' rows, so an instance
-	// claimed while in-flight is still in the inflight set here.)
+	// stop the pump and surface the error rather than silently corrupting state.
+	// The operator should lower --max-concurrent or increase the lease duration.
+	// (The pre-acquire pump makes this detection sound: a claim only returns
+	// non-'waiting' rows, so an instance claimed while in-flight is still in the
+	// inflight set here.)
 	if _, busy := e.inflight.LoadOrStore(inst.ID, struct{}{}); busy {
-		e.log.Error("engine overwhelmed: re-claimed an instance still being advanced by this worker; "+
-			"lease renewal cannot keep up. Lower --max-concurrent or increase the lease duration. "+
-			"Exiting to avoid duplicate execution.",
-			"id", inst.ID, "worker", e.workerID, "lease", e.leaseDuration, "max_concurrent", cap(e.sem))
-		os.Exit(1)
+		return &OverwhelmError{
+			InstanceID:    inst.ID,
+			WorkerID:      e.workerID,
+			Lease:         e.leaseDuration,
+			MaxConcurrent: cap(e.sem),
+		}
 	}
 	wg.Add(1)
 	go func() {
@@ -200,6 +234,7 @@ func (e *Engine) dispatch(ctx context.Context, wg *sync.WaitGroup, inst *model.P
 			e.log.Error("advance instance", "id", inst.ID, "err", err)
 		}
 	}()
+	return nil
 }
 
 // leaseRenewer renews all leases held by this worker in a single query every

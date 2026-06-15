@@ -72,11 +72,19 @@ func main() {
 	defer stop()
 
 	var wg sync.WaitGroup
+	var engErr error
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		eng.Run(ctx)
+		// Run drains in-flight work before returning. A non-nil error (engine
+		// overwhelmed) means this worker can't keep up: wind everything down and
+		// exit non-zero so the supervisor restarts it.
+		if err := eng.Run(ctx); err != nil {
+			engErr = err
+			log.Error("engine stopped with fatal error; shutting down", "err", err)
+			stop()
+		}
 	}()
 
 	if *pprofAddr != "" {
@@ -123,6 +131,9 @@ func main() {
 	<-ctx.Done()
 	log.Info("shutting down")
 	wg.Wait()
+	if engErr != nil {
+		os.Exit(1)
+	}
 }
 
 func newLogger(level string) *slog.Logger {

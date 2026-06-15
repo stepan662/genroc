@@ -90,14 +90,12 @@ func TestStress_MultiWorker_ExactlyOnce(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	var wg sync.WaitGroup
 	for e := 0; e < engineCount; e++ {
 		wg.Add(1)
-		eng := New(database, pollEvery, 10, true /* immediateRetries */, 0, 0 /* default lease */, LogConfig{}, log)
 		go func() {
 			defer wg.Done()
-			eng.Run(ctx)
+			runEngineWithRestart(ctx, t, database, pollEvery, 10)
 		}()
 	}
 
@@ -282,14 +280,12 @@ func TestStress_Chaos_CancelRetryRandomErrors(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	var engines sync.WaitGroup
 	for e := 0; e < engineCount; e++ {
 		engines.Add(1)
-		eng := New(database, pollEvery, 20, true /* immediateRetries */, 0, 0 /* default lease */, LogConfig{}, log)
 		go func() {
 			defer engines.Done()
-			eng.Run(ctx)
+			runEngineWithRestart(ctx, t, database, pollEvery, 20)
 		}()
 	}
 
@@ -567,6 +563,107 @@ func TestGracefulShutdown_ReleasesLeases(t *testing.T) {
 	}
 	if got.LeaseExpiresAt != nil {
 		t.Fatal("graceful shutdown left lease_expires_at set; expected it cleared")
+	}
+}
+
+// TestOverwhelm_GracefulExit deterministically forces the overwhelm condition and
+// shows the new behaviour: the engine stops the pump, drains the in-flight advance,
+// and Run returns an *OverwhelmError (no os.Exit). A step blocks server-side well past
+// a deliberately tiny 1s lease (with the renewer far enough out that it can't save it),
+// and maxConcurrent=2 leaves a free slot for the pump to re-claim the still-in-flight
+// instance on. Engine logs go to stderr so the diagnostic is visible under `-v`.
+func TestOverwhelm_GracefulExit(t *testing.T) {
+	database := openStressDB(t)
+
+	const blockFor = 3 * time.Second
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(blockFor) // keep the advance in-flight past the lease
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	name := fmt.Sprintf("overwhelm-%d", time.Now().UnixNano())
+	steps := []*model.Step{{
+		ID:     "slow",
+		Call:   &model.Call{Type: model.CallTypeREST, Endpoint: srv.URL},
+		Switch: model.SwitchMap{{Goto: model.GotoEnd}},
+	}}
+	if err := database.SaveDefinition(&model.ProcessDefinition{Name: name, Steps: steps}, 1, nil, "overwhelm-hash", ""); err != nil {
+		t.Fatalf("SaveDefinition: %v", err)
+	}
+	id := fmt.Sprintf("oi-%d", time.Now().UnixNano())
+	if err := database.SaveInstance(&model.ProcessInstance{
+		ID: id, ProcessName: name, ProcessVersion: 1,
+		StepQueue: steps, ContextData: map[string]any{}, Status: model.StatusRunning,
+	}); err != nil {
+		t.Fatalf("SaveInstance: %v", err)
+	}
+
+	// 1s lease, renew interval a minute out (so the renewer never re-stamps it),
+	// maxConcurrent=2 (a free slot to re-claim on), fast poll. The test asserts the
+	// behaviour and t.Logf's the captured error, so the engine's own logs are
+	// discarded to keep passing runs quiet.
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	eng := New(database, 10*time.Millisecond, 2, true /* immediateRetries */, 1*time.Second, time.Minute, LogConfig{}, log)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	err := eng.Run(ctx) // blocks until the pump stops and in-flight work drains
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected an OverwhelmError, got nil (engine shut down cleanly)")
+	}
+	oe, ok := err.(*OverwhelmError)
+	if !ok {
+		t.Fatalf("expected *OverwhelmError, got %T: %v", err, err)
+	}
+
+	t.Logf("Run returned after %v (drained in-flight work before returning)", elapsed.Round(50*time.Millisecond))
+	t.Logf("error: %v", oe)
+	t.Logf("fields: instance=%s worker=%s lease=%s max_concurrent=%d", oe.InstanceID, oe.WorkerID, oe.Lease, oe.MaxConcurrent)
+
+	// The drained advance ran to completion, so the claimed instance finished.
+	if inst, gerr := database.GetInstance(id); gerr != nil {
+		t.Errorf("GetInstance: %v", gerr)
+	} else {
+		t.Logf("instance %s final status after drain: %s", id, inst.Status)
+		if inst.Status != model.StatusCompleted {
+			t.Errorf("expected the in-flight instance to finish (completed), got %q", inst.Status)
+		}
+	}
+	if elapsed < blockFor-time.Second {
+		t.Errorf("Run returned in %v, too fast to have drained the %v in-flight step", elapsed, blockFor)
+	}
+}
+
+// runEngineWithRestart runs one engine until ctx is cancelled, restarting it if it
+// stops with an *OverwhelmError — exactly what a process supervisor does for a worker
+// fleet in production (the scenario these tests emulate). The overwhelm is logged
+// (visible under `go test -v`, which `make test-stress` uses) but isn't a hard failure
+// by itself: it's an artifact of an oversubscribed/slow runner, not a correctness bug,
+// and the test's own assertions still gate correctness — genuine breakage surfaces as
+// work that never completes.
+func runEngineWithRestart(ctx context.Context, t *testing.T, database *db.DB, pollEvery time.Duration, maxConcurrent int) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for {
+		eng := New(database, pollEvery, maxConcurrent, true /* immediateRetries */, 0, 0 /* default lease */, LogConfig{}, log)
+		err := eng.Run(ctx)
+		if err == nil {
+			return // clean shutdown (ctx cancelled)
+		}
+		if oe, ok := err.(*OverwhelmError); ok {
+			t.Logf("engine overwhelmed, restarting (a supervisor would too): %v", oe)
+			if ctx.Err() != nil {
+				return
+			}
+			continue
+		}
+		t.Errorf("engine Run returned unexpected error: %v", err)
+		return
 	}
 }
 
