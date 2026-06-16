@@ -7,7 +7,7 @@ const validDef = {
   steps: [
     {
       id: "step1",
-      call: { type: "rest" as const, endpoint: "http://localhost:19990/action" },
+      action: { type: "rest" as const, endpoint: "http://localhost:19990/action" },
       timeout_ms: 1000,
       switch: [{ goto: "end" }],
     },
@@ -36,7 +36,7 @@ test("PUT /definitions — rejects rest call without endpoint", async () => {
       steps: [
         {
           id: "s1",
-          call: { type: "rest" as const } as any,
+          action: { type: "rest" as const } as any,
           switch: [{ goto: "end" }],
         },
       ],
@@ -54,7 +54,7 @@ test("PUT /definitions — rejects unknown call type", async () => {
       steps: [
         {
           id: "s1",
-          call: { type: "ftp", endpoint: "x" } as any,
+          action: { type: "ftp", endpoint: "x" } as any,
           switch: [{ goto: "end" }],
         },
       ],
@@ -83,7 +83,7 @@ test("PUT /definitions — rejects missing process name", async () => {
       steps: [
         {
           id: "s1",
-          call: { type: "rest" as const, endpoint: "http://localhost:19990/action" },
+          action: { type: "rest" as const, endpoint: "http://localhost:19990/action" },
           switch: [{ goto: "end" }],
         },
       ],

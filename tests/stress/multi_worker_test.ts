@@ -125,7 +125,7 @@ for (const backend of backends) {
               },
               {
                 id: "recursion",
-                call: {
+                action: {
                   type: "child_parallel" as const,
                   children: {
                     first: {

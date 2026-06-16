@@ -73,8 +73,8 @@ var registry = func() []actionDef {
 				Steps: []*model.Step{
 					{
 						ID: "charge",
-						Call: &model.Call{
-							Type:     model.CallTypeREST,
+						Action: &model.Action{
+							Type:     model.ActionTypeREST,
 							Endpoint: "http://localhost:9001/charge",
 							OutputSchema: &schema.SchemaNode{
 								Type: schema.SchemaType{"object"},
@@ -91,13 +91,13 @@ var registry = func() []actionDef {
 					},
 					{
 						ID:        "ship",
-						Call:      &model.Call{Type: model.CallTypeREST, Endpoint: "http://localhost:9002/ship"},
+						Action:      &model.Action{Type: model.ActionTypeREST, Endpoint: "http://localhost:9002/ship"},
 						Switch:    model.SwitchMap{{Goto: model.GotoEnd}},
 						TimeoutMs: 3000, OnError: []model.ErrorCase{{Retries: 2}},
 					},
 					{
 						ID:        "refund",
-						Call:      &model.Call{Type: model.CallTypeREST, Endpoint: "http://localhost:9003/refund"},
+						Action:      &model.Action{Type: model.ActionTypeREST, Endpoint: "http://localhost:9003/refund"},
 						Switch:    model.SwitchMap{{Goto: model.GotoEnd}},
 						TimeoutMs: 3000, OnError: []model.ErrorCase{{Retries: 1}},
 					},
@@ -170,7 +170,7 @@ var registry = func() []actionDef {
 				Definitions: []model.ProcessDefinition{
 					{
 						Name:  "child_process",
-						Steps: []*model.Step{{ID: "run", Call: &model.Call{Type: model.CallTypeREST, Endpoint: "http://localhost:9001/run"}}},
+						Steps: []*model.Step{{ID: "run", Action: &model.Action{Type: model.ActionTypeREST, Endpoint: "http://localhost:9001/run"}}},
 					},
 				},
 			},
@@ -254,7 +254,7 @@ var registry = func() []actionDef {
 			Req: []model.ProcessDefinition{
 				{
 					Name:  "order_pipeline",
-					Steps: []*model.Step{{ID: "charge", Call: &model.Call{Type: model.CallTypeREST, Endpoint: "http://localhost:9001/charge"}}},
+					Steps: []*model.Step{{ID: "charge", Action: &model.Action{Type: model.ActionTypeREST, Endpoint: "http://localhost:9001/charge"}}},
 				},
 			},
 			Resp: []map[string]any{{"process": "order_pipeline", "version": 1}},

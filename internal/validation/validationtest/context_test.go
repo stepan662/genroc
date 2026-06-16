@@ -10,7 +10,7 @@ func TestGenerate_ContextSets_LinearChain_RequiredOutputNonNullable(t *testing.T
 		"steps": [
 			{
 				"id": "A",
-				"call": {"type": "rest", "endpoint": "http://x", "output_schema": {
+				"action": {"type": "rest", "endpoint": "http://x", "output_schema": {
 					"type": "object",
 					"properties": { "ok": { "type": "boolean" } },
 					"required": ["ok"]
@@ -18,7 +18,7 @@ func TestGenerate_ContextSets_LinearChain_RequiredOutputNonNullable(t *testing.T
 			},
 			{
 				"id": "B",
-				"call": {"type": "rest", "endpoint": "http://x"},
+				"action": {"type": "rest", "endpoint": "http://x"},
 				"params": { "flag": "{{outputs.A.ok}}" }
 			}
 		]
@@ -46,16 +46,16 @@ func TestGenerate_ContextSets_ExclusiveBranch_SkippedStepOutputNullable(t *testi
 			},
 			{
 				"id": "fast",
-				"call": {"type": "rest", "endpoint": "http://x", "output_schema": {
+				"action": {"type": "rest", "endpoint": "http://x", "output_schema": {
 					"type": "object",
 					"properties": { "speed": { "type": "number" } },
 					"required": ["speed"]
 				}}
 			},
-			{ "id": "slow", "call": {"type": "rest", "endpoint": "http://x"} },
+			{ "id": "slow", "action": {"type": "rest", "endpoint": "http://x"} },
 			{
 				"id": "merge",
-				"call": {"type": "rest", "endpoint": "http://x"},
+				"action": {"type": "rest", "endpoint": "http://x"},
 				"params": { "s": "{{outputs.fast.speed}}" }
 			}
 		]
@@ -74,7 +74,7 @@ func TestGenerate_ContextSets_PreBranchStepRequiredAtAllMergePoints(t *testing.T
 		"steps": [
 			{
 				"id": "pre",
-				"call": {"type": "rest", "endpoint": "http://x", "output_schema": {
+				"action": {"type": "rest", "endpoint": "http://x", "output_schema": {
 					"type": "object",
 					"properties": { "id": { "type": "integer" } },
 					"required": ["id"]
@@ -84,11 +84,11 @@ func TestGenerate_ContextSets_PreBranchStepRequiredAtAllMergePoints(t *testing.T
 				"id": "gate",
 				"switch": [{"case": "outputs.pre.id == 1", "goto": "$path_a"}, {"goto": "$path_b"}]
 			},
-			{ "id": "path_a", "call": {"type": "rest", "endpoint": "http://x"} },
-			{ "id": "path_b", "call": {"type": "rest", "endpoint": "http://x"} },
+			{ "id": "path_a", "action": {"type": "rest", "endpoint": "http://x"} },
+			{ "id": "path_b", "action": {"type": "rest", "endpoint": "http://x"} },
 			{
 				"id": "post",
-				"call": {"type": "rest", "endpoint": "http://x"},
+				"action": {"type": "rest", "endpoint": "http://x"},
 				"params": { "pre_id": "{{outputs.pre.id}}" }
 			}
 		]
@@ -107,7 +107,7 @@ func TestGenerate_ContextSets_DefaultEndSwitch_SuccessorRequiredNotOptional(t *t
 		"steps": [
 			{
 				"id": "decide",
-				"call": {"type": "rest", "endpoint": "http://x", "output_schema": {
+				"action": {"type": "rest", "endpoint": "http://x", "output_schema": {
 					"type": "object",
 					"properties": { "ok": { "type": "boolean" } },
 					"required": ["ok"]
@@ -116,7 +116,7 @@ func TestGenerate_ContextSets_DefaultEndSwitch_SuccessorRequiredNotOptional(t *t
 			},
 			{
 				"id": "work",
-				"call": {"type": "rest", "endpoint": "http://x"},
+				"action": {"type": "rest", "endpoint": "http://x"},
 				"params": { "flag": "{{outputs.decide.ok}}" }
 			}
 		]
@@ -135,7 +135,7 @@ func TestGenerate_OnError_MixedPath_FailingStepOutputNullable(t *testing.T) {
 		"steps": [
 			{
 				"id": "start",
-				"call": {"type": "rest", "endpoint": "http://x", "output_schema": {
+				"action": {"type": "rest", "endpoint": "http://x", "output_schema": {
 					"type": "object",
 					"properties": {"ok": {"type": "boolean"}},
 					"required": ["ok"]
@@ -145,7 +145,7 @@ func TestGenerate_OnError_MixedPath_FailingStepOutputNullable(t *testing.T) {
 			},
 			{
 				"id": "finale",
-				"call": {"type": "rest", "endpoint": "http://x"},
+				"action": {"type": "rest", "endpoint": "http://x"},
 				"params": {"val": "{{outputs.start.ok}}", "errCode": "{{error.code}}"},
 				"switch": "end"
 			}
@@ -167,7 +167,7 @@ func TestGenerate_OnError_ExclusivePath_ErrorRequiredOutputAbsent(t *testing.T) 
 		"steps": [
 			{
 				"id": "worker",
-				"call": {"type": "rest", "endpoint": "http://x", "output_schema": {
+				"action": {"type": "rest", "endpoint": "http://x", "output_schema": {
 					"type": "object",
 					"properties": {"result": {"type": "string"}},
 					"required": ["result"]
@@ -177,7 +177,7 @@ func TestGenerate_OnError_ExclusivePath_ErrorRequiredOutputAbsent(t *testing.T) 
 			},
 			{
 				"id": "handler",
-				"call": {"type": "rest", "endpoint": "http://x"},
+				"action": {"type": "rest", "endpoint": "http://x"},
 				"params": {"code": "{{error.code}}"},
 				"switch": "end"
 			}
@@ -199,7 +199,7 @@ func TestGenerate_Switch_ScalarNext_CreatesSequentialEdge(t *testing.T) {
 		"steps": [
 			{
 				"id": "a",
-				"call": {"type": "rest", "endpoint": "http://x", "output_schema": {
+				"action": {"type": "rest", "endpoint": "http://x", "output_schema": {
 					"type": "object",
 					"properties": {"ok": {"type": "boolean"}},
 					"required": ["ok"]
@@ -208,7 +208,7 @@ func TestGenerate_Switch_ScalarNext_CreatesSequentialEdge(t *testing.T) {
 			},
 			{
 				"id": "b",
-				"call": {"type": "rest", "endpoint": "http://x"},
+				"action": {"type": "rest", "endpoint": "http://x"},
 				"params": {"flag": "{{outputs.a.ok}}"},
 				"switch": "end"
 			}
@@ -232,7 +232,7 @@ func TestGenerate_Switch_ScalarStepRef_CreatesJumpEdge(t *testing.T) {
 			{"id": "gate", "switch": "$fast"},
 			{
 				"id": "fast",
-				"call": {"type": "rest", "endpoint": "http://x", "output_schema": {
+				"action": {"type": "rest", "endpoint": "http://x", "output_schema": {
 					"type": "object",
 					"properties": {"speed": {"type": "number"}},
 					"required": ["speed"]
@@ -241,7 +241,7 @@ func TestGenerate_Switch_ScalarStepRef_CreatesJumpEdge(t *testing.T) {
 			},
 			{
 				"id": "merge",
-				"call": {"type": "rest", "endpoint": "http://x"},
+				"action": {"type": "rest", "endpoint": "http://x"},
 				"params": {"s": "{{outputs.fast.speed}}"},
 				"switch": "end"
 			}
@@ -261,7 +261,7 @@ func TestGenerate_OnError_EndTerminal_RecognisedAsTerminal(t *testing.T) {
 		"steps": [
 			{
 				"id": "step",
-				"call": {"type": "rest", "endpoint": "http://x", "output_schema": {
+				"action": {"type": "rest", "endpoint": "http://x", "output_schema": {
 					"type": "object",
 					"properties": {"result": {"type": "string"}},
 					"required": ["result"]

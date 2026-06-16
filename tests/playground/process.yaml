@@ -14,7 +14,7 @@ steps:
       - goto: end
 
   - id: recursion
-    call:
+    action:
       type: child
       name: order-pipeline
       input:

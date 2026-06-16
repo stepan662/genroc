@@ -76,7 +76,7 @@ test("crash recovery — new worker re-executes an unconfirmed step after the pr
         steps: [
           {
             id: "work",
-            call: {
+            action: {
               type: "rest" as const,
               endpoint: `http://localhost:${mock.port}/action`,
             },
@@ -152,7 +152,7 @@ test("crash recovery — an only_once step is failed (not re-executed) after a l
         steps: [
           {
             id: "work",
-            call: {
+            action: {
               type: "rest" as const,
               endpoint: `http://localhost:${mock.port}/action`,
             },

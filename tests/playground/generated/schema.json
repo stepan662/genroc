@@ -8,7 +8,7 @@
   },
   "tasks": {
     "recursion": {
-      "call_type": "child",
+      "action_type": "child",
       "input": {
         "type": "object"
       },

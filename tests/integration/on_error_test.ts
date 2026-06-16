@@ -14,7 +14,7 @@ test("on_error — HTTP failure routes to recovery step", async () => {
       steps: [
         {
           id: "call",
-          call: {
+          action: {
             type: "rest" as const,
             endpoint: `http://localhost:${failMock.port}/action`,
           },
@@ -24,7 +24,7 @@ test("on_error — HTTP failure routes to recovery step", async () => {
         },
         {
           id: "recovery",
-          call: {
+          action: {
             type: "rest" as const,
             endpoint: `http://localhost:${recoveryMock.port}/action`,
             output_schema: {
@@ -69,7 +69,7 @@ test("on_error — error context available in recovery step params", async () =>
       steps: [
         {
           id: "call",
-          call: {
+          action: {
             type: "rest" as const,
             endpoint: `http://localhost:${failMock.port}/action`,
           },
@@ -80,7 +80,7 @@ test("on_error — error context available in recovery step params", async () =>
         {
           id: "recovery",
           params: { error_code: "{{error.code}}" },
-          call: {
+          action: {
             type: "rest" as const,
             endpoint: `http://localhost:${recoveryMock.port}/action`,
             output_schema: {
@@ -123,7 +123,7 @@ test("on_error — unmatched code fails instance", async () => {
       steps: [
         {
           id: "call",
-          call: {
+          action: {
             type: "rest" as const,
             endpoint: `http://localhost:${failMock.port}/action`,
           },
@@ -133,7 +133,7 @@ test("on_error — unmatched code fails instance", async () => {
         },
         {
           id: "unreachable",
-          call: {
+          action: {
             type: "rest" as const,
             endpoint: `http://localhost:${failMock.port}/action`,
           },

@@ -72,8 +72,8 @@ func parentDef(t *testing.T, inputSchemaRaw string, entries []model.ChildEntry) 
 		Steps: []*model.Step{
 			{
 				ID: "spawn",
-				Call: &model.Call{
-					Type:     model.CallTypeChildParallel,
+				Action: &model.Action{
+					Type:     model.ActionTypeChildParallel,
 					Children: children,
 				},
 				Switch: model.SwitchMap{{Goto: model.GotoEnd}},
@@ -125,7 +125,7 @@ func TestValidateChildProcessRefs_noChildProcessSteps(t *testing.T) {
 	def := &model.ProcessDefinition{
 		Name: "parent",
 		Steps: []*model.Step{
-			{ID: "fetch", Call: &model.Call{Type: model.CallTypeREST, Endpoint: "http://example.com"}},
+			{ID: "fetch", Action: &model.Action{Type: model.ActionTypeREST, Endpoint: "http://example.com"}},
 		},
 	}
 	assertValidateOK(t, def, stubGetter{})
@@ -356,8 +356,8 @@ func singleChildDef(t *testing.T, inputSchemaRaw string, entry model.ChildEntry)
 		Steps: []*model.Step{
 			{
 				ID: "spawn",
-				Call: &model.Call{
-					Type:    model.CallTypeChild,
+				Action: &model.Action{
+					Type:    model.ActionTypeChild,
 					Name:    entry.Name,
 					Version: entry.Version,
 					Input:   entry.Input,

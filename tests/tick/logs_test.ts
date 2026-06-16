@@ -44,7 +44,7 @@ beforeAll(async () => {
   await ctx.env.define(okProc, [
     {
       id: "first",
-      call: {
+      action: {
         type: "rest" as const,
         endpoint: `http://localhost:${okMockPort}/action`,
         output_schema: {
@@ -57,7 +57,7 @@ beforeAll(async () => {
     },
     {
       id: "second",
-      call: {
+      action: {
         type: "rest" as const,
         endpoint: `http://localhost:${okMockPort}/action`,
       },
@@ -70,7 +70,7 @@ beforeAll(async () => {
   await ctx.env.define(failProc, [
     {
       id: "work",
-      call: {
+      action: {
         type: "rest" as const,
         endpoint: `http://localhost:${failMockPort}/action`,
       },

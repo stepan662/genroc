@@ -16,7 +16,7 @@ func buildInputs(steps []*model.Step, tasks map[string]TaskSchemas, processInput
 	}
 	required, optional, mustErr, mayErr := computeContextSets(steps)
 	for _, s := range steps {
-		if s.Call != nil {
+		if s.Action != nil {
 			ctx := contextSchema(required[s.ID], optional[s.ID], tasks, processInput, mustErr[s.ID], mayErr[s.ID])
 			if len(defs) > 0 {
 				ctx = withDefs(ctx, defs)
@@ -28,7 +28,7 @@ func buildInputs(steps []*model.Step, tasks map[string]TaskSchemas, processInput
 					return err
 				}
 				if !inMap {
-					ts.CallType = s.Call.Type
+					ts.ActionType = s.Action.Type
 				}
 				ts.Input = input
 				tasks[s.ID] = ts
@@ -49,7 +49,7 @@ func buildInputs(steps []*model.Step, tasks map[string]TaskSchemas, processInput
 				opt = filtered
 			}
 			switchCtx := contextSchema(req, opt, tasks, processInput, mustErr[s.ID], mayErr[s.ID])
-			if s.Call != nil {
+			if s.Action != nil {
 				switchCtx = addSelfSchema(switchCtx, s)
 			}
 			if len(defs) > 0 {
@@ -157,8 +157,8 @@ func contextSchema(preceding []string, optional []string, tasks map[string]TaskS
 
 func addSelfSchema(ctx *schema.SchemaNode, s *model.Step) *schema.SchemaNode {
 	var selfSchema *schema.SchemaNode
-	if s.Call != nil {
-		selfSchema = s.Call.OutputSchema
+	if s.Action != nil {
+		selfSchema = s.Action.OutputSchema
 	}
 	if selfSchema == nil {
 		selfSchema = &schema.SchemaNode{Type: schema.SchemaType{"object"}}

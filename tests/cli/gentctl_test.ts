@@ -22,13 +22,13 @@ function switchDef(name: string) {
 }
 
 function restDef(name: string, endpoint = "http://localhost/x") {
-  return { name, steps: [{ id: "s1", call: { type: "rest", endpoint }, switch: [{ goto: "end" }] }] };
+  return { name, steps: [{ id: "s1", action: { type: "rest", endpoint }, switch: [{ goto: "end" }] }] };
 }
 
 function childDef(name: string, childName: string) {
   return {
     name,
-    steps: [{ id: "spawn", call: { type: "child", name: childName }, switch: [{ goto: "end" }] }],
+    steps: [{ id: "spawn", action: { type: "child", name: childName }, switch: [{ goto: "end" }] }],
   };
 }
 

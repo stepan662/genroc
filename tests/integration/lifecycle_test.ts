@@ -17,7 +17,7 @@ test("lifecycle — task step completes when service returns ok", async () => {
       steps: [
         {
           id: "call",
-          call: {
+          action: {
             type: "rest" as const,
             endpoint: `http://localhost:${mock.port}/action`,
             output_schema: { type: "object", properties: { done: { type: "boolean" } } },
@@ -54,7 +54,7 @@ test("lifecycle — task step fails and marks failed", async () => {
       steps: [
         {
           id: "call",
-          call: { type: "rest" as const, endpoint: `http://localhost:${mock.port}/action` },
+          action: { type: "rest" as const, endpoint: `http://localhost:${mock.port}/action` },
           timeout_ms: 500,
           switch: [{ goto: "end" }],
         },
@@ -92,12 +92,12 @@ test("lifecycle — conditional routes to correct branch", async () => {
       steps: [
         {
           id: "start",
-          call: { type: "rest" as const, endpoint: `http://localhost:${thenMock.port}/action` },
+          action: { type: "rest" as const, endpoint: `http://localhost:${thenMock.port}/action` },
           switch: [{ case: "input.go_then", goto: "$then_step" }, { goto: "$else_step" }],
         },
         {
           id: "then_step",
-          call: {
+          action: {
             type: "rest" as const,
             endpoint: `http://localhost:${thenMock.port}/action`,
             output_schema: { type: "object", properties: { branch: { type: "string" } } },
@@ -107,7 +107,7 @@ test("lifecycle — conditional routes to correct branch", async () => {
         },
         {
           id: "else_step",
-          call: {
+          action: {
             type: "rest" as const,
             endpoint: `http://localhost:${elseMock.port}/action`,
             output_schema: { type: "object", properties: { branch: { type: "string" } } },
@@ -164,7 +164,7 @@ test("lifecycle — task fails when output violates output_schema", async () => 
       steps: [
         {
           id: "charge",
-          call: {
+          action: {
             type: "rest" as const,
             endpoint: `http://localhost:${mock.port}/action`,
             output_schema: {

@@ -28,7 +28,7 @@ func ValidateChildProcessRefs(def *model.ProcessDefinition, currentVersion int, 
 	required, optional, mustErr, mayErr := computeContextSets(def.Steps)
 
 	for _, s := range def.Steps {
-		if s.Call == nil {
+		if s.Action == nil {
 			continue
 		}
 		ctx := contextSchema(required[s.ID], optional[s.ID], tasks, processInput, mustErr[s.ID], mayErr[s.ID])
@@ -36,14 +36,14 @@ func ValidateChildProcessRefs(def *model.ProcessDefinition, currentVersion int, 
 			ctx = withDefs(ctx, defs)
 		}
 
-		switch s.Call.Type {
-		case model.CallTypeChild:
-			entry := model.ChildEntry{Name: s.Call.Name, Version: s.Call.Version, Input: s.Call.Input}
+		switch s.Action.Type {
+		case model.ActionTypeChild:
+			entry := model.ChildEntry{Name: s.Action.Name, Version: s.Action.Version, Input: s.Action.Input}
 			if err := validateChildEntry(s.ID, "child", entry, ctx, defs, def, currentVersion, getter); err != nil {
 				return err
 			}
-		case model.CallTypeChildParallel:
-			for key, entry := range s.Call.Children {
+		case model.ActionTypeChildParallel:
+			for key, entry := range s.Action.Children {
 				if err := validateChildEntry(s.ID, fmt.Sprintf("children[%q]", key), entry, ctx, defs, def, currentVersion, getter); err != nil {
 					return err
 				}

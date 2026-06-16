@@ -21,14 +21,14 @@ const GotoEnd = "end"
 // non-terminal steps; using it on the last step is a validation error.
 const GotoNext = "next"
 
-// CallType identifies how the engine invokes a step's action.
-type CallType string
+// ActionType identifies how the engine invokes a step's action.
+type ActionType string
 
 const (
-	CallTypeREST          CallType = "rest"
-	CallTypeScript        CallType = "script"
-	CallTypeChild         CallType = "child"
-	CallTypeChildParallel CallType = "child_parallel"
+	ActionTypeREST          ActionType = "rest"
+	ActionTypeScript        ActionType = "script"
+	ActionTypeChild         ActionType = "child"
+	ActionTypeChildParallel ActionType = "child_parallel"
 )
 
 // ChildEntry describes a single named child process in a "child_parallel" call.
@@ -39,7 +39,7 @@ type ChildEntry struct {
 	OutputSchema *schema.SchemaNode `json:"output_schema,omitempty" description:"JSON Schema to validate and expose this child's output."`
 }
 
-// Call describes how to invoke a step's action. It is a discriminated union on Type.
+// Action describes how to invoke a step's action. It is a discriminated union on Type.
 //   - "rest":           Endpoint (required), Headers (optional), AcceptedStatus (optional), OutputSchema (optional)
 //   - "script":         Exec (required), OutputSchema (optional)
 //   - "child":          Name (required), Input (optional), OutputSchema (optional) — single child process
@@ -49,8 +49,8 @@ type ChildEntry struct {
 // context as outputs.stepID. Without it the body is available only as "self" in this step's switch.
 //
 // AcceptedStatus (rest only): HTTP status patterns treated as non-errors. Defaults to any 2xx.
-type Call struct {
-	Type           CallType               `json:"type"`
+type Action struct {
+	Type           ActionType               `json:"type"`
 	Endpoint       string                 `json:"endpoint,omitempty"`        // rest
 	Headers        map[string]string      `json:"headers,omitempty"`         // rest, values are expressions
 	AcceptedStatus []string               `json:"accepted_status,omitempty"` // rest: HTTP status patterns accepted as non-errors
@@ -62,9 +62,9 @@ type Call struct {
 	Children       map[string]ChildEntry  `json:"children,omitempty"`        // child_parallel
 }
 
-// JSONSchemaBytes returns the JSON Schema for Call as a discriminated union
+// JSONSchemaBytes returns the JSON Schema for Action as a discriminated union
 // so that OpenAPI reflection produces a proper oneOf instead of a flat object.
-func (Call) JSONSchemaBytes() ([]byte, error) {
+func (Action) JSONSchemaBytes() ([]byte, error) {
 	return []byte(`{
 		"oneOf": [
 			{
@@ -287,8 +287,8 @@ func (e *ErrorCase) UnmarshalJSON(data []byte) error {
 // Step is a single unit of work in a process definition.
 // Every step must have a switch (and optionally a call).
 //
-//   - Call-only (Call set, Switch present): executes the call, then routes via switch.
-//   - Switch-only (Call nil, Switch present): pure routing step with no external call.
+//   - Action-only (Action set, Switch present): executes the call, then routes via switch.
+//   - Switch-only (Action nil, Switch present): pure routing step with no external call.
 //   - Both: executes the call first, then evaluates the switch (with this step's output as "self").
 //
 // Switch is always required. Use the scalar shorthand ("next", "end", "$step-id") for
@@ -298,7 +298,7 @@ func (e *ErrorCase) UnmarshalJSON(data []byte) error {
 // (invalid on the last step — use "end" instead); "$step-id" jumps to a named step.
 type Step struct {
 	ID        string            `json:"id"                 validate:"required" description:"Unique step identifier. 'end' and 'next' are reserved and cannot be used."`
-	Call      *Call             `json:"call,omitempty"                        description:"Describes the action to perform. Omit for switch-only (routing) steps."`
+	Action      *Action             `json:"action,omitempty"                        description:"Describes the action to perform. Omit for switch-only (routing) steps."`
 	TimeoutMs int               `json:"timeout_ms,omitempty"                  description:"Maximum execution time in milliseconds. 0 means no timeout."`
 	OnlyOnce  *bool             `json:"only_once,omitempty"                   description:"When true, the engine guarantees at-most-once execution: retries are only allowed for pre.* errors (remote never reached) or on_error rules with not_reached:true. Defaults to false (retryable)."`
 	OnError   []ErrorCase       `json:"on_error,omitempty"                    description:"Ordered error-routing rules evaluated when the call fails. First match wins."`
@@ -326,25 +326,25 @@ func (d *ProcessDefinition) Normalize() error {
 		d.InputSchema = normalized
 	}
 	for _, s := range d.Steps {
-		if s.Call == nil {
+		if s.Action == nil {
 			continue
 		}
-		if s.Call.OutputSchema != nil {
-			normalized, err := schema.Normalize(s.Call.OutputSchema)
+		if s.Action.OutputSchema != nil {
+			normalized, err := schema.Normalize(s.Action.OutputSchema)
 			if err != nil {
-				return fmt.Errorf("step %q call.output_schema: %w", s.ID, err)
+				return fmt.Errorf("step %q action.output_schema: %w", s.ID, err)
 			}
-			s.Call.OutputSchema = normalized
+			s.Action.OutputSchema = normalized
 		}
-		if s.Call.Type == CallTypeChildParallel {
-			for key, entry := range s.Call.Children {
+		if s.Action.Type == ActionTypeChildParallel {
+			for key, entry := range s.Action.Children {
 				if entry.OutputSchema != nil {
 					normalized, err := schema.Normalize(entry.OutputSchema)
 					if err != nil {
-						return fmt.Errorf("step %q call.children[%q].output_schema: %w", s.ID, key, err)
+						return fmt.Errorf("step %q action.children[%q].output_schema: %w", s.ID, key, err)
 					}
 					entry.OutputSchema = normalized
-					s.Call.Children[key] = entry
+					s.Action.Children[key] = entry
 				}
 			}
 		}
@@ -381,31 +381,31 @@ func validateStep(s *Step, stepIDs map[string]struct{}, stepIdx, lastIdx int) er
 		return fmt.Errorf("step ID %q is reserved", s.ID)
 	}
 
-	if s.Call != nil {
-		switch s.Call.Type {
-		case CallTypeREST:
-			if s.Call.Endpoint == "" {
-				return fmt.Errorf("step %q: call.endpoint is required for type %q", s.ID, s.Call.Type)
+	if s.Action != nil {
+		switch s.Action.Type {
+		case ActionTypeREST:
+			if s.Action.Endpoint == "" {
+				return fmt.Errorf("step %q: action.endpoint is required for type %q", s.ID, s.Action.Type)
 			}
-		case CallTypeScript:
-			if s.Call.Exec == "" {
-				return fmt.Errorf("step %q: call.exec is required for type %q", s.ID, s.Call.Type)
+		case ActionTypeScript:
+			if s.Action.Exec == "" {
+				return fmt.Errorf("step %q: action.exec is required for type %q", s.ID, s.Action.Type)
 			}
-		case CallTypeChild:
-			if s.Call.Name == "" {
-				return fmt.Errorf("step %q: call.name is required for type %q", s.ID, s.Call.Type)
+		case ActionTypeChild:
+			if s.Action.Name == "" {
+				return fmt.Errorf("step %q: action.name is required for type %q", s.ID, s.Action.Type)
 			}
-		case CallTypeChildParallel:
-			if len(s.Call.Children) == 0 {
-				return fmt.Errorf("step %q: call.children is required for type %q", s.ID, s.Call.Type)
+		case ActionTypeChildParallel:
+			if len(s.Action.Children) == 0 {
+				return fmt.Errorf("step %q: action.children is required for type %q", s.ID, s.Action.Type)
 			}
-			for key, entry := range s.Call.Children {
+			for key, entry := range s.Action.Children {
 				if entry.Name == "" {
-					return fmt.Errorf("step %q: call.children[%q].name is required", s.ID, key)
+					return fmt.Errorf("step %q: action.children[%q].name is required", s.ID, key)
 				}
 			}
 		default:
-			return fmt.Errorf("step %q: call.type must be one of: rest, script, child, child_parallel", s.ID)
+			return fmt.Errorf("step %q: action.type must be one of: rest, script, child, child_parallel", s.ID)
 		}
 	}
 
@@ -472,20 +472,20 @@ func validateStep(s *Step, stepIDs map[string]struct{}, stepIdx, lastIdx int) er
 			}
 		}
 	}
-	if s.Call != nil && s.Call.Type == CallTypeREST {
-		for _, pat := range s.Call.AcceptedStatus {
+	if s.Action != nil && s.Action.Type == ActionTypeREST {
+		for _, pat := range s.Action.AcceptedStatus {
 			if !validAcceptedStatusPattern(pat) {
 				return fmt.Errorf("step %q: accepted_status %q must be \"2xx\"/\"3xx\"/\"4xx\"/\"5xx\" or a 3-digit code", s.ID, pat)
 			}
 		}
 	}
-	if s.Call != nil {
-		if err := checkSchemaDoc(fmt.Sprintf("step %q call.output_schema", s.ID), s.Call.OutputSchema); err != nil {
+	if s.Action != nil {
+		if err := checkSchemaDoc(fmt.Sprintf("step %q action.output_schema", s.ID), s.Action.OutputSchema); err != nil {
 			return err
 		}
-		if s.Call.Type == CallTypeChildParallel {
-			for key, entry := range s.Call.Children {
-				if err := checkSchemaDoc(fmt.Sprintf("step %q call.children[%q].output_schema", s.ID, key), entry.OutputSchema); err != nil {
+		if s.Action.Type == ActionTypeChildParallel {
+			for key, entry := range s.Action.Children {
+				if err := checkSchemaDoc(fmt.Sprintf("step %q action.children[%q].output_schema", s.ID, key), entry.OutputSchema); err != nil {
 					return err
 				}
 			}
@@ -571,7 +571,7 @@ func (d *ProcessDefinition) ValidateInput(input any) error {
 }
 
 // ValidateOutput checks output data against call.OutputSchema. No-op if unset.
-func (c *Call) ValidateOutput(output any) error {
+func (c *Action) ValidateOutput(output any) error {
 	return validateSchema(c.OutputSchema, output)
 }
 

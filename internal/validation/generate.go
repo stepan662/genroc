@@ -11,7 +11,7 @@ import (
 
 // TaskSchemas holds the schemas associated with a single task step.
 type TaskSchemas struct {
-	CallType model.CallType     `json:"call_type"`
+	ActionType model.ActionType     `json:"action_type"`
 	Input    *schema.SchemaNode `json:"input,omitempty"`
 	Output   *schema.SchemaNode `json:"output,omitempty"`
 }
@@ -114,10 +114,10 @@ func collectNamedOutputs(steps []*model.Step, named map[string]*schema.SchemaNod
 		if !stepHasOutput(s) {
 			continue
 		}
-		if s.Call.Type == model.CallTypeChildParallel {
+		if s.Action.Type == model.ActionTypeChildParallel {
 			named[s.ID+"_output"] = childParallelOutputSchema(s)
 		} else {
-			named[s.ID+"_output"] = s.Call.OutputSchema
+			named[s.ID+"_output"] = s.Action.OutputSchema
 		}
 	}
 }
@@ -125,15 +125,15 @@ func collectNamedOutputs(steps []*model.Step, named map[string]*schema.SchemaNod
 func collectTaskRefs(steps []*model.Step, out map[string]TaskSchemas) {
 	for _, s := range steps {
 		if stepHasOutput(s) {
-			out[s.ID] = TaskSchemas{CallType: s.Call.Type, Output: schemaRef(s.ID + "_output")}
+			out[s.ID] = TaskSchemas{ActionType: s.Action.Type, Output: schemaRef(s.ID + "_output")}
 		}
 	}
 }
 
 func childParallelOutputSchema(s *model.Step) *schema.SchemaNode {
-	props := make(map[string]*schema.SchemaNode, len(s.Call.Children))
+	props := make(map[string]*schema.SchemaNode, len(s.Action.Children))
 	var required []string
-	for key, entry := range s.Call.Children {
+	for key, entry := range s.Action.Children {
 		if entry.OutputSchema != nil {
 			props[key] = entry.OutputSchema
 			required = append(required, key)

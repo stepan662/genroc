@@ -54,12 +54,12 @@ func TestStress_MultiWorker_ExactlyOnce(t *testing.T) {
 	steps := []*model.Step{
 		{
 			ID:     "step-a",
-			Call:   &model.Call{Type: model.CallTypeREST, Endpoint: srv.URL},
+			Action:   &model.Action{Type: model.ActionTypeREST, Endpoint: srv.URL},
 			Switch: model.SwitchMap{{Goto: model.GotoNext}},
 		},
 		{
 			ID:     "step-b",
-			Call:   &model.Call{Type: model.CallTypeREST, Endpoint: srv.URL},
+			Action:   &model.Action{Type: model.ActionTypeREST, Endpoint: srv.URL},
 			Switch: model.SwitchMap{{Goto: model.GotoEnd}},
 		},
 	}
@@ -227,7 +227,7 @@ func TestStress_Chaos_CancelRetryRandomErrors(t *testing.T) {
 		}
 		return &model.Step{
 			ID:      id,
-			Call:    &model.Call{Type: model.CallTypeREST, Endpoint: srv.URL},
+			Action:    &model.Action{Type: model.ActionTypeREST, Endpoint: srv.URL},
 			OnError: []model.ErrorCase{{Code: []string{"http.%"}, Retries: 1}},
 			Switch:  model.SwitchMap{{Goto: gt}},
 		}
@@ -239,7 +239,7 @@ func TestStress_Chaos_CancelRetryRandomErrors(t *testing.T) {
 	midDef := &model.ProcessDefinition{Name: midName, Steps: []*model.Step{
 		{
 			ID: "fanout",
-			Call: &model.Call{Type: model.CallTypeChildParallel, Children: map[string]model.ChildEntry{
+			Action: &model.Action{Type: model.ActionTypeChildParallel, Children: map[string]model.ChildEntry{
 				"a": {Name: leafName},
 				"b": {Name: leafName},
 			}},
@@ -250,7 +250,7 @@ func TestStress_Chaos_CancelRetryRandomErrors(t *testing.T) {
 	rootDef := &model.ProcessDefinition{Name: rootName, Steps: []*model.Step{
 		{
 			ID:     "spawn-mid",
-			Call:   &model.Call{Type: model.CallTypeChild, Name: midName},
+			Action:   &model.Action{Type: model.ActionTypeChild, Name: midName},
 			Switch: model.SwitchMap{{Goto: model.GotoNext}},
 		},
 		restStep("root-work", true),
@@ -503,7 +503,7 @@ func TestGracefulShutdown_ReleasesLeases(t *testing.T) {
 	processName := fmt.Sprintf("graceful-%d", time.Now().UnixNano())
 	steps := []*model.Step{{
 		ID:     "work",
-		Call:   &model.Call{Type: model.CallTypeREST, Endpoint: srv.URL},
+		Action:   &model.Action{Type: model.ActionTypeREST, Endpoint: srv.URL},
 		Switch: model.SwitchMap{{Goto: model.GotoEnd}},
 	}}
 	if err := database.SaveDefinition(&model.ProcessDefinition{Name: processName, Steps: steps}, 1, nil, "graceful-hash", ""); err != nil {
@@ -586,7 +586,7 @@ func TestOverwhelm_GracefulExit(t *testing.T) {
 	name := fmt.Sprintf("overwhelm-%d", time.Now().UnixNano())
 	steps := []*model.Step{{
 		ID:     "slow",
-		Call:   &model.Call{Type: model.CallTypeREST, Endpoint: srv.URL},
+		Action:   &model.Action{Type: model.ActionTypeREST, Endpoint: srv.URL},
 		Switch: model.SwitchMap{{Goto: model.GotoEnd}},
 	}}
 	if err := database.SaveDefinition(&model.ProcessDefinition{Name: name, Steps: steps}, 1, nil, "overwhelm-hash", ""); err != nil {

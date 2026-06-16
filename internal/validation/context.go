@@ -15,13 +15,13 @@ type predEdge struct {
 }
 
 func stepHasOutput(s *model.Step) bool {
-	if s.Call == nil {
+	if s.Action == nil {
 		return false
 	}
-	if s.Call.Type == model.CallTypeChildParallel {
-		return len(s.Call.Children) > 0
+	if s.Action.Type == model.ActionTypeChildParallel {
+		return len(s.Action.Children) > 0
 	}
-	return s.Call.OutputSchema != nil
+	return s.Action.OutputSchema != nil
 }
 
 // outputContextSets returns which step outputs are required/optional at the

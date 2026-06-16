@@ -45,7 +45,7 @@ beforeAll(async () => {
   await ctx.env.define(workerName, [
     {
       id: "work",
-      call: {
+      action: {
         type: "rest" as const,
         endpoint: `http://localhost:${mockPort}/action`,
       },
@@ -57,7 +57,7 @@ beforeAll(async () => {
   await ctx.env.define(parentName, [
     {
       id: "run_children",
-      call: {
+      action: {
         type: "child_parallel" as const,
         children: { a: { name: workerName }, b: { name: workerName } },
       },
@@ -68,7 +68,7 @@ beforeAll(async () => {
   await ctx.env.define(gpName, [
     {
       id: "run_parent",
-      call: { type: "child" as const, name: parentName },
+      action: { type: "child" as const, name: parentName },
       switch: [{ goto: "end" }],
     },
   ]);

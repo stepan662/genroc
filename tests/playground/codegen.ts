@@ -49,7 +49,7 @@ if (result.status !== 0) {
 type TaskEntry = {
   input?: object;
   output?: { $ref: string };
-  call_type: string;
+  action_type: string;
 };
 type SchemaFile = {
   process_input?: { $ref: string };
@@ -121,7 +121,7 @@ function buildServerFile(): string {
   for (const id of taskIds) {
     const pascal = toPascalCase(id);
     const task = tasks[id];
-    if (task.call_type !== "rest") {
+    if (task.action_type !== "rest") {
       continue;
     }
     const inputType = task.input ? `${pascal}Input` : "Record<string, never>";

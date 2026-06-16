@@ -16,7 +16,7 @@ async function ensureDefinition() {
       steps: [
         {
           id: "s1",
-          call: { type: "rest" as const, endpoint: "http://localhost:19991/action" },
+          action: { type: "rest" as const, endpoint: "http://localhost:19991/action" },
           timeout_ms: 500,
           switch: [{ goto: "end" }],
         },
@@ -102,7 +102,7 @@ test("POST /instances — what happens when referencing types?", async () => {
       steps: [
         {
           id: "s1",
-          call: { type: "rest" as const, endpoint: "http://localhost:19991/action" },
+          action: { type: "rest" as const, endpoint: "http://localhost:19991/action" },
           timeout_ms: 500,
           switch: [{ goto: "end" }],
         },

@@ -29,7 +29,7 @@ func TestApplyBatch_VersionedSelfRefCreatesDep(t *testing.T) {
 	v1 := map[string]any{
 		"name": "recursive",
 		"steps": []any{
-			map[string]any{"id": "recurse", "call": map[string]any{
+			map[string]any{"id": "recurse", "action": map[string]any{
 				"type": "child",
 				"name": "recursive",
 			}, "switch": []any{map[string]any{"goto": "end"}}},
@@ -41,7 +41,7 @@ func TestApplyBatch_VersionedSelfRefCreatesDep(t *testing.T) {
 	v2 := map[string]any{
 		"name": "recursive",
 		"steps": []any{
-			map[string]any{"id": "recurse", "call": map[string]any{
+			map[string]any{"id": "recurse", "action": map[string]any{
 				"type": "child_parallel",
 				"children": map[string]any{
 					"pinned": map[string]any{"name": "recursive", "version": 1},

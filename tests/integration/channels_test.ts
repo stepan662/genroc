@@ -32,19 +32,19 @@ function switchDef(name: string) {
 function restDef(name: string, endpoint = "http://localhost/x") {
   return {
     name,
-    steps: [{ id: "s1", call: { type: "rest" as const, endpoint }, switch: [{ goto: "end" }] }],
+    steps: [{ id: "s1", action: { type: "rest" as const, endpoint }, switch: [{ goto: "end" }] }],
   };
 }
 
 function childDef(name: string, childName: string, childVersion = 0) {
-  const call: Record<string, unknown> = { type: "child" as const, name: childName };
-  if (childVersion !== 0) call.version = childVersion;
+  const action: Record<string, unknown> = { type: "child" as const, name: childName };
+  if (childVersion !== 0) action.version = childVersion;
   return {
     name,
     steps: [
       {
         id: "spawn",
-        call,
+        action,
         switch: [{ goto: "end" }],
       },
     ],
@@ -349,7 +349,7 @@ test("channels — re-applying a recursive (self-calling) process dedups", async
   const selfRef = {
     name,
     steps: [
-      { id: "recurse", call: { type: "child" as const, name }, switch: [{ goto: "end" }] },
+      { id: "recurse", action: { type: "child" as const, name }, switch: [{ goto: "end" }] },
     ],
   };
 

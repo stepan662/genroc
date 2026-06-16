@@ -33,13 +33,13 @@ test("retry failed instance — resumes from the failed step", async () => {
         steps: [
           {
             id: "step1",
-            call: { type: "rest" as const, endpoint: `http://localhost:${step1Mock.port}/action` },
+            action: { type: "rest" as const, endpoint: `http://localhost:${step1Mock.port}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "next" }],
           },
           {
             id: "step2",
-            call: { type: "rest" as const, endpoint: `http://localhost:${step2Port}/action` },
+            action: { type: "rest" as const, endpoint: `http://localhost:${step2Port}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "end" }],
           },
@@ -87,13 +87,13 @@ test("retry cancelled instance — resumes where the cancel interrupted", async 
         steps: [
           {
             id: "step1",
-            call: { type: "rest" as const, endpoint: `http://localhost:${step1Mock.port}/action` },
+            action: { type: "rest" as const, endpoint: `http://localhost:${step1Mock.port}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "next" }],
           },
           {
             id: "step2",
-            call: { type: "rest" as const, endpoint: `http://localhost:${step2Mock.port}/action` },
+            action: { type: "rest" as const, endpoint: `http://localhost:${step2Mock.port}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "end" }],
           },
@@ -149,13 +149,13 @@ test("retry during cancelling — rejected until the tree settles", async () => 
         steps: [
           {
             id: "step1",
-            call: { type: "rest" as const, endpoint: `http://localhost:${step1Mock.port}/action` },
+            action: { type: "rest" as const, endpoint: `http://localhost:${step1Mock.port}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "next" }],
           },
           {
             id: "step2",
-            call: { type: "rest" as const, endpoint: `http://localhost:${step2Mock.port}/action` },
+            action: { type: "rest" as const, endpoint: `http://localhost:${step2Mock.port}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "end" }],
           },
@@ -213,7 +213,7 @@ test("retry only_once step — rejected without force, allowed with force", asyn
           {
             id: "charge",
             only_once: true,
-            call: { type: "rest" as const, endpoint: `http://localhost:${chargePort}/action` },
+            action: { type: "rest" as const, endpoint: `http://localhost:${chargePort}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "end" }],
           },
@@ -260,7 +260,7 @@ test("retry and cancel on non-root instance — rejected naming the root", async
         steps: [
           {
             id: "work",
-            call: { type: "rest" as const, endpoint: `http://localhost:${failMock.port}/action` },
+            action: { type: "rest" as const, endpoint: `http://localhost:${failMock.port}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "end" }],
           },
@@ -273,7 +273,7 @@ test("retry and cancel on non-root instance — rejected naming the root", async
         steps: [
           {
             id: "spawn",
-            call: { type: "child" as const, name: leafName },
+            action: { type: "child" as const, name: leafName },
             switch: [{ goto: "end" }],
           },
         ],
@@ -325,7 +325,7 @@ test("retry with parallel children — only the failed child re-runs", async () 
         steps: [
           {
             id: "work",
-            call: { type: "rest" as const, endpoint: `http://localhost:${goodMock.port}/action` },
+            action: { type: "rest" as const, endpoint: `http://localhost:${goodMock.port}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "end" }],
           },
@@ -338,7 +338,7 @@ test("retry with parallel children — only the failed child re-runs", async () 
         steps: [
           {
             id: "work",
-            call: { type: "rest" as const, endpoint: `http://localhost:${badPort}/action` },
+            action: { type: "rest" as const, endpoint: `http://localhost:${badPort}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "end" }],
           },
@@ -351,7 +351,7 @@ test("retry with parallel children — only the failed child re-runs", async () 
         steps: [
           {
             id: "fanout",
-            call: {
+            action: {
               type: "child_parallel" as const,
               children: {
                 good: { name: goodName },

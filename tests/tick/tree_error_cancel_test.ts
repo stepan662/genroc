@@ -52,7 +52,7 @@ beforeAll(async () => {
   await ctx.env.define(failWorkerName, [
     {
       id: "work",
-      call: {
+      action: {
         type: "rest" as const,
         endpoint: `http://localhost:${failMockPort}/action`,
       },
@@ -64,7 +64,7 @@ beforeAll(async () => {
   await ctx.env.define(successWorkerName, [
     {
       id: "work",
-      call: {
+      action: {
         type: "rest" as const,
         endpoint: `http://localhost:${successMockPort}/action`,
       },
@@ -76,7 +76,7 @@ beforeAll(async () => {
   await ctx.env.define(parentName, [
     {
       id: "run_children",
-      call: {
+      action: {
         type: "child_parallel" as const,
         children: {
           a: { name: failWorkerName },
@@ -90,7 +90,7 @@ beforeAll(async () => {
   await ctx.env.define(gpName, [
     {
       id: "run_parent",
-      call: { type: "child" as const, name: parentName },
+      action: { type: "child" as const, name: parentName },
       switch: [{ goto: "end" }],
     },
   ]);
@@ -184,7 +184,7 @@ test("a fails while ancestors are cancelling — FailAncestors overrides 'cancel
     await ctx.env.define(holdWorker, [
       {
         id: "work",
-        call: {
+        action: {
           type: "rest" as const,
           endpoint: `http://localhost:${holdMock.port}/action`,
         },
@@ -196,7 +196,7 @@ test("a fails while ancestors are cancelling — FailAncestors overrides 'cancel
     await ctx.env.define(parent2Name, [
       {
         id: "run_children",
-        call: {
+        action: {
           type: "child_parallel" as const,
           children: {
             a: { name: holdWorker },
@@ -210,7 +210,7 @@ test("a fails while ancestors are cancelling — FailAncestors overrides 'cancel
     await ctx.env.define(gp2Name, [
       {
         id: "run_parent",
-        call: { type: "child" as const, name: parent2Name },
+        action: { type: "child" as const, name: parent2Name },
         switch: [{ goto: "end" }],
       },
     ]);

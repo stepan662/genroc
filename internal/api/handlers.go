@@ -675,12 +675,12 @@ func (h *Handlers) applyBatch(defs []model.ProcessDefinition, channel string, au
 func (h *Handlers) buildResolvedDeps(def *model.ProcessDefinition, selfVersion int, channel string, batchVersions map[string]int) ([]db.DependencyRow, error) {
 	var deps []db.DependencyRow
 	for _, step := range def.Steps {
-		if step.Call == nil {
+		if step.Action == nil {
 			continue
 		}
-		switch step.Call.Type {
-		case model.CallTypeChild:
-			entry := model.ChildEntry{Name: step.Call.Name, Version: step.Call.Version}
+		switch step.Action.Type {
+		case model.ActionTypeChild:
+			entry := model.ChildEntry{Name: step.Action.Name, Version: step.Action.Version}
 			if entry.Name == def.Name && (entry.Version == 0 || entry.Version == selfVersion) {
 				continue
 			}
@@ -696,8 +696,8 @@ func (h *Handlers) buildResolvedDeps(def *model.ProcessDefinition, selfVersion i
 				ChildName:     entry.Name,
 				ChildVersion:  version,
 			})
-		case model.CallTypeChildParallel:
-			for key, entry := range step.Call.Children {
+		case model.ActionTypeChildParallel:
+			for key, entry := range step.Action.Children {
 				if entry.Name == def.Name && (entry.Version == 0 || entry.Version == selfVersion) {
 					continue
 				}
@@ -978,15 +978,15 @@ func topoSort(defs []*model.ProcessDefinition) ([]*model.ProcessDefinition, erro
 		state[name] = visiting
 		d := byName[name]
 		for _, step := range d.Steps {
-			if step.Call == nil {
+			if step.Action == nil {
 				continue
 			}
 			var childNames []string
-			switch step.Call.Type {
-			case model.CallTypeChild:
-				childNames = []string{step.Call.Name}
-			case model.CallTypeChildParallel:
-				for _, entry := range step.Call.Children {
+			switch step.Action.Type {
+			case model.ActionTypeChild:
+				childNames = []string{step.Action.Name}
+			case model.ActionTypeChildParallel:
+				for _, entry := range step.Action.Children {
 					childNames = append(childNames, entry.Name)
 				}
 			}
@@ -1032,20 +1032,20 @@ func applyDepsToDefCopy(def *model.ProcessDefinition, deps []db.DependencyRow) *
 		lookup[stepChildKey{d.StepID, d.ChildKey}] = d.ChildVersion
 	}
 	for _, step := range copy.Steps {
-		if step.Call == nil {
+		if step.Action == nil {
 			continue
 		}
-		switch step.Call.Type {
-		case model.CallTypeChild:
+		switch step.Action.Type {
+		case model.ActionTypeChild:
 			if v, ok := lookup[stepChildKey{step.ID, ""}]; ok {
-				step.Call.Version = v
+				step.Action.Version = v
 			}
-		case model.CallTypeChildParallel:
-			for key := range step.Call.Children {
+		case model.ActionTypeChildParallel:
+			for key := range step.Action.Children {
 				if v, ok := lookup[stepChildKey{step.ID, key}]; ok {
-					entry := step.Call.Children[key]
+					entry := step.Action.Children[key]
 					entry.Version = v
-					step.Call.Children[key] = entry
+					step.Action.Children[key] = entry
 				}
 			}
 		}
@@ -1091,16 +1091,16 @@ func subtree(defs []db.VersionedDef, rootName string) ([]db.VersionedDef, error)
 		}
 		visited[name] = true
 		for _, step := range d.Steps {
-			if step.Call == nil {
+			if step.Action == nil {
 				continue
 			}
-			switch step.Call.Type {
-			case model.CallTypeChild:
-				if err := collect(step.Call.Name); err != nil {
+			switch step.Action.Type {
+			case model.ActionTypeChild:
+				if err := collect(step.Action.Name); err != nil {
 					return err
 				}
-			case model.CallTypeChildParallel:
-				for _, entry := range step.Call.Children {
+			case model.ActionTypeChildParallel:
+				for _, entry := range step.Action.Children {
 					if err := collect(entry.Name); err != nil {
 						return err
 					}

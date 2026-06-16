@@ -45,7 +45,7 @@ process:
           goto: $split
         - goto: $descend
     - id: split
-      call:
+      action:
         type: child_parallel
         children:
           first:
@@ -67,7 +67,7 @@ process:
       switch:
         - goto: end
     - id: descend
-      call:
+      action:
         type: child
         name: deep
         input: { ttl: "{{ input.ttl - 1 }}", c: "{{ input.c - 1 }}" }

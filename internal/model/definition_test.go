@@ -8,7 +8,7 @@ import (
 
 func TestProcessDefinition_Normalize(t *testing.T) {
 	validStep := func(id string) *Step {
-		return &Step{ID: id, Call: &Call{Type: CallTypeREST, Endpoint: "http://localhost/x"}}
+		return &Step{ID: id, Action: &Action{Type: ActionTypeREST, Endpoint: "http://localhost/x"}}
 	}
 
 	t.Run("no schemas is a no-op", func(t *testing.T) {
@@ -63,9 +63,9 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 		}
 	})
 
-	t.Run("step call.output_schema $defs are flattened to root", func(t *testing.T) {
+	t.Run("step action.output_schema $defs are flattened to root", func(t *testing.T) {
 		step := validStep("charge")
-		step.Call.OutputSchema = &schema.SchemaNode{
+		step.Action.OutputSchema = &schema.SchemaNode{
 			Type: schema.SchemaType{"object"},
 			Defs: map[string]*schema.SchemaNode{
 				"Result": {
@@ -81,14 +81,14 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 		if err := d.Normalize(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if step.Call.OutputSchema.Defs == nil || step.Call.OutputSchema.Defs["Result"] == nil {
-			t.Fatal("$defs/Result missing in call.output_schema after normalize")
+		if step.Action.OutputSchema.Defs == nil || step.Action.OutputSchema.Defs["Result"] == nil {
+			t.Fatal("$defs/Result missing in action.output_schema after normalize")
 		}
 	})
 
-	t.Run("all step call.output_schemas are normalized", func(t *testing.T) {
+	t.Run("all step action.output_schemas are normalized", func(t *testing.T) {
 		step1 := validStep("charge")
-		step1.Call.OutputSchema = &schema.SchemaNode{
+		step1.Action.OutputSchema = &schema.SchemaNode{
 			Type: schema.SchemaType{"object"},
 			Defs: map[string]*schema.SchemaNode{"Tracking": {Type: schema.SchemaType{"object"}}},
 			Properties: map[string]*schema.SchemaNode{
@@ -96,7 +96,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 			},
 		}
 		step2 := validStep("notify")
-		step2.Call.OutputSchema = &schema.SchemaNode{
+		step2.Action.OutputSchema = &schema.SchemaNode{
 			Type: schema.SchemaType{"object"},
 			Defs: map[string]*schema.SchemaNode{"Result": {Type: schema.SchemaType{"object"}}},
 			Properties: map[string]*schema.SchemaNode{
@@ -107,10 +107,10 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 		if err := d.Normalize(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if step1.Call.OutputSchema.Defs == nil || step1.Call.OutputSchema.Defs["Tracking"] == nil {
+		if step1.Action.OutputSchema.Defs == nil || step1.Action.OutputSchema.Defs["Tracking"] == nil {
 			t.Fatal("step1 $defs/Tracking missing after normalize")
 		}
-		if step2.Call.OutputSchema.Defs == nil || step2.Call.OutputSchema.Defs["Result"] == nil {
+		if step2.Action.OutputSchema.Defs == nil || step2.Action.OutputSchema.Defs["Result"] == nil {
 			t.Fatal("step2 $defs/Result missing after normalize")
 		}
 	})
@@ -128,9 +128,9 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 		}
 	})
 
-	t.Run("invalid $ref in step call.output_schema returns error with step ID", func(t *testing.T) {
+	t.Run("invalid $ref in step action.output_schema returns error with step ID", func(t *testing.T) {
 		step := validStep("charge")
-		step.Call.OutputSchema = &schema.SchemaNode{
+		step.Action.OutputSchema = &schema.SchemaNode{
 			Type:       schema.SchemaType{"object"},
 			Properties: map[string]*schema.SchemaNode{"x": {Ref: "#/$defs/Missing"}},
 		}
@@ -147,8 +147,8 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 	t.Run("child_parallel children output_schemas are normalized", func(t *testing.T) {
 		step := &Step{
 			ID: "spawn",
-			Call: &Call{
-				Type: CallTypeChildParallel,
+			Action: &Action{
+				Type: ActionTypeChildParallel,
 				Children: map[string]ChildEntry{
 					"a": {Name: "worker", OutputSchema: &schema.SchemaNode{
 						Type: schema.SchemaType{"object"},
@@ -165,7 +165,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 		if err := d.Normalize(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		entry := step.Call.Children["a"]
+		entry := step.Action.Children["a"]
 		if entry.OutputSchema == nil || entry.OutputSchema.Defs == nil || entry.OutputSchema.Defs["Result"] == nil {
 			t.Fatal("$defs/Result missing in children[a].output_schema after normalize")
 		}
@@ -199,7 +199,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 
 func TestProcessDefinition_Validate(t *testing.T) {
 	restStepEnd := func(id, endpoint string) *Step {
-		return &Step{ID: id, Call: &Call{Type: CallTypeREST, Endpoint: endpoint}, Switch: SwitchMap{{Goto: GotoEnd}}}
+		return &Step{ID: id, Action: &Action{Type: ActionTypeREST, Endpoint: endpoint}, Switch: SwitchMap{{Goto: GotoEnd}}}
 	}
 
 	tests := []struct {
@@ -215,7 +215,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		{
 			name: "valid script call step",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
-				{ID: "run", Call: &Call{Type: CallTypeScript, Exec: "python3 foo.py"}, Switch: SwitchMap{{Goto: GotoEnd}}},
+				{ID: "run", Action: &Action{Type: ActionTypeScript, Exec: "python3 foo.py"}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
 			wantErr: "",
 		},
@@ -234,7 +234,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "valid step with both call and switch",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
-					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
 						{Case: "self.ok == true", Goto: "$ship"},
 						{Goto: GotoEnd},
@@ -257,7 +257,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		{
 			name: "step without switch is rejected",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
-				{ID: "s", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"}},
+				{ID: "s", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"}},
 			}},
 			wantErr: "switch is required",
 		},
@@ -271,36 +271,36 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		{
 			name: "rest call missing endpoint",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
-				{ID: "s1", Call: &Call{Type: CallTypeREST}, Switch: SwitchMap{{Goto: GotoEnd}}},
+				{ID: "s1", Action: &Action{Type: ActionTypeREST}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
-			wantErr: "call.endpoint is required",
+			wantErr: "action.endpoint is required",
 		},
 		{
 			name: "script call missing exec",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
-				{ID: "s1", Call: &Call{Type: CallTypeScript}, Switch: SwitchMap{{Goto: GotoEnd}}},
+				{ID: "s1", Action: &Action{Type: ActionTypeScript}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
-			wantErr: "call.exec is required",
+			wantErr: "action.exec is required",
 		},
 		{
 			name: "valid child call",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
-				{ID: "spawn", Call: &Call{Type: CallTypeChild, Name: "worker"}, Switch: SwitchMap{{Goto: GotoEnd}}},
+				{ID: "spawn", Action: &Action{Type: ActionTypeChild, Name: "worker"}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
 			wantErr: "",
 		},
 		{
 			name: "child call missing name",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
-				{ID: "spawn", Call: &Call{Type: CallTypeChild}, Switch: SwitchMap{{Goto: GotoEnd}}},
+				{ID: "spawn", Action: &Action{Type: ActionTypeChild}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
-			wantErr: "call.name is required",
+			wantErr: "action.name is required",
 		},
 		{
 			name: "valid child_parallel call",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
-				{ID: "spawn", Call: &Call{
-					Type: CallTypeChildParallel,
+				{ID: "spawn", Action: &Action{
+					Type: ActionTypeChildParallel,
 					Children: map[string]ChildEntry{
 						"left":  {Name: "worker"},
 						"right": {Name: "worker"},
@@ -312,32 +312,32 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		{
 			name: "child_parallel call missing children",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
-				{ID: "spawn", Call: &Call{Type: CallTypeChildParallel}, Switch: SwitchMap{{Goto: GotoEnd}}},
+				{ID: "spawn", Action: &Action{Type: ActionTypeChildParallel}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
-			wantErr: "call.children is required",
+			wantErr: "action.children is required",
 		},
 		{
 			name: "child_parallel entry missing name",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
-				{ID: "spawn", Call: &Call{
-					Type:     CallTypeChildParallel,
+				{ID: "spawn", Action: &Action{
+					Type:     ActionTypeChildParallel,
 					Children: map[string]ChildEntry{"left": {Name: ""}},
 				}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
-			wantErr: `call.children["left"].name is required`,
+			wantErr: `action.children["left"].name is required`,
 		},
 		{
 			name: "unknown call type",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
-				{ID: "s1", Call: &Call{Type: "ftp", Endpoint: "ftp://x"}, Switch: SwitchMap{{Goto: GotoEnd}}},
+				{ID: "s1", Action: &Action{Type: "ftp", Endpoint: "ftp://x"}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
-			wantErr: "call.type must be one of: rest, script, child, child_parallel",
+			wantErr: "action.type must be one of: rest, script, child, child_parallel",
 		},
 		{
 			name: "switch missing catch-all is rejected",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
-					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
 						{Case: "self.ok == true", Goto: "$ship"},
 					},
@@ -350,7 +350,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "switch catch-all not last is rejected",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
-					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
 						{Goto: GotoEnd},
 						{Case: "self.ok == true", Goto: "$ship"},
@@ -364,7 +364,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "switch end in non-catch-all case is valid",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
-					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
 						{Case: "self.error == true", Goto: GotoEnd},
 						{Goto: "$ship"},
@@ -378,7 +378,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "switch goto references unknown step",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
-					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
 					Switch: SwitchMap{
 						{Case: "self.ok == true", Goto: "$nonexistent"},
 						{Goto: GotoEnd},
@@ -390,14 +390,14 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		{
 			name: "switch: next on last step is rejected",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
-				{ID: "only", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"}, Switch: SwitchMap{{Goto: GotoNext}}},
+				{ID: "only", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"}, Switch: SwitchMap{{Goto: GotoNext}}},
 			}},
 			wantErr: "'next' is not allowed on the last step",
 		},
 		{
 			name: "switch: next on non-last step is valid",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
-				{ID: "first", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"}, Switch: SwitchMap{{Goto: GotoNext}}},
+				{ID: "first", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"}, Switch: SwitchMap{{Goto: GotoNext}}},
 				restStepEnd("second", "http://x"),
 			}},
 			wantErr: "",
@@ -405,7 +405,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		{
 			name: "switch: scalar next on non-last step is valid",
 			def: func() ProcessDefinition {
-				s := &Step{ID: "first", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"}}
+				s := &Step{ID: "first", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"}}
 				if err := s.Switch.UnmarshalJSON([]byte(`"next"`)); err != nil {
 					panic(err)
 				}
@@ -416,14 +416,14 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		{
 			name: "step ID 'end' is reserved",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
-				{ID: "end", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"}, Switch: SwitchMap{{Goto: GotoEnd}}},
+				{ID: "end", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
 			wantErr: `step ID "end" is reserved`,
 		},
 		{
 			name: "step ID 'next' is reserved",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
-				{ID: "next", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"}, Switch: SwitchMap{{Goto: GotoEnd}}},
+				{ID: "next", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
 			wantErr: `step ID "next" is reserved`,
 		},
@@ -434,7 +434,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — retries on pre.% is valid",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
-					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Code: []string{"pre.%"}, Retries: 3}},
@@ -446,7 +446,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — retries on exact pre.* codes is valid",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
-					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Code: []string{"pre.error", "pre.timeout"}, Retries: 3}},
@@ -458,7 +458,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — retries:0 with http.% next is valid",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
-					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Code: []string{"http.%"}, Goto: "handler"}},
@@ -471,7 +471,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — not_reached:true overrides http.422 retry",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
-					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Code: []string{"http.422"}, NotReached: boolPtr(true), Retries: 2}},
@@ -483,7 +483,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — not_reached:true on catch-all retry is valid",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
-					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{NotReached: boolPtr(true), Retries: 2}},
@@ -495,7 +495,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — retries on http.% is rejected",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
-					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Code: []string{"http.%"}, Retries: 3}},
@@ -507,7 +507,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — retries on exact http.500 is rejected",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
-					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Code: []string{"http.500"}, Retries: 1}},
@@ -519,7 +519,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — retries on script.% is rejected",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
-					ID: "run", Call: &Call{Type: CallTypeScript, Exec: "echo ok"},
+					ID: "run", Action: &Action{Type: ActionTypeScript, Exec: "echo ok"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Code: []string{"script.%"}, Retries: 1}},
@@ -531,7 +531,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — catch-all with retries is rejected",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
-					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Retries: 2}},
@@ -543,7 +543,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — wildcard crossing namespaces is rejected",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
-					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Code: []string{"s%"}, Retries: 3}},
@@ -555,7 +555,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — mixed pre and non-pre patterns in one rule is rejected",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
-					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Code: []string{"pre.%", "http.%"}, Retries: 1}},
@@ -567,7 +567,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:false (explicit) — retries on http.% is valid",
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
-					ID: "charge", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(false),
 					OnError:  []ErrorCase{{Code: []string{"http.%"}, Retries: 3}},
@@ -580,7 +580,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			def: ProcessDefinition{Name: "p", Steps: []*Step{
 				{
 					ID:      "charge",
-					Call:    &Call{Type: CallTypeREST, Endpoint: "http://x"},
+					Action:    &Action{Type: ActionTypeREST, Endpoint: "http://x"},
 					Switch:  SwitchMap{{Goto: GotoEnd}},
 					OnError: []ErrorCase{{Code: []string{"http.%"}, Retries: 3}},
 				},
@@ -620,7 +620,7 @@ func TestProcessDefinition_ValidateInput_Nullable(t *testing.T) {
 				"comment": {Type: schema.SchemaType{"string", "null"}},
 			},
 		},
-		Steps: []*Step{{ID: "s", Call: &Call{Type: CallTypeREST, Endpoint: "http://x"}}},
+		Steps: []*Step{{ID: "s", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"}}},
 	}
 
 	tests := []struct {
@@ -673,8 +673,8 @@ func TestProcessDefinition_ValidateInput_Nullable(t *testing.T) {
 func TestStep_ValidateOutput_Nullable(t *testing.T) {
 	step := &Step{
 		ID: "charge",
-		Call: &Call{
-			Type:     CallTypeREST,
+		Action: &Action{
+			Type:     ActionTypeREST,
 			Endpoint: "http://x",
 			OutputSchema: &schema.SchemaNode{
 				Type:     schema.SchemaType{"object"},
@@ -723,7 +723,7 @@ func TestStep_ValidateOutput_Nullable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := step.Call.ValidateOutput(tt.output)
+			err := step.Action.ValidateOutput(tt.output)
 			if tt.wantErr && err == nil {
 				t.Error("expected error, got nil")
 			}

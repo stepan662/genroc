@@ -28,7 +28,7 @@ test("child — step without output_schema after a step with one does not fail",
       steps: [
         {
           id: "step_a",
-          call: {
+          action: {
             type: "child" as const,
             name: leafWithOutput,
             output_schema: {
@@ -41,7 +41,7 @@ test("child — step without output_schema after a step with one does not fail",
         },
         {
           id: "step_b",
-          call: { type: "child" as const, name: leafNoOutput },
+          action: { type: "child" as const, name: leafNoOutput },
           switch: [{ goto: "end" }],
         },
       ],
@@ -75,7 +75,7 @@ test("child — output validation failure error includes process name", async ()
       steps: [
         {
           id: "spawn",
-          call: {
+          action: {
             type: "child" as const,
             name: childName,
             output_schema: {
@@ -127,7 +127,7 @@ test("child — on_error with child.failed pattern is rejected at registration",
       steps: [
         {
           id: "spawn",
-          call: { type: "child" as const, name: childName },
+          action: { type: "child" as const, name: childName },
           on_error: [{ code: ["child.%"], goto: "$recovery" }],
           switch: [{ goto: "end" }],
         },
@@ -152,7 +152,7 @@ test("child — no on_error cascades to parent failure", async () => {
       steps: [
         {
           id: "action",
-          call: { type: "rest" as const, endpoint: `http://localhost:${failMock.port}/action` },
+          action: { type: "rest" as const, endpoint: `http://localhost:${failMock.port}/action` },
           timeout_ms: 2000,
           switch: [{ goto: "end" }],
         },
@@ -166,7 +166,7 @@ test("child — no on_error cascades to parent failure", async () => {
       steps: [
         {
           id: "spawn",
-          call: { type: "child" as const, name: childName },
+          action: { type: "child" as const, name: childName },
           switch: [{ goto: "end" }],
         },
       ],
@@ -193,7 +193,7 @@ test("child — failure propagates through the entire ancestor chain", async () 
       steps: [
         {
           id: "action",
-          call: { type: "rest" as const, endpoint: `http://localhost:${failMock.port}/action` },
+          action: { type: "rest" as const, endpoint: `http://localhost:${failMock.port}/action` },
           timeout_ms: 2000,
           switch: [{ goto: "end" }],
         },
@@ -207,7 +207,7 @@ test("child — failure propagates through the entire ancestor chain", async () 
       steps: [
         {
           id: "spawn",
-          call: { type: "child" as const, name: leafName },
+          action: { type: "child" as const, name: leafName },
           switch: [{ goto: "end" }],
         },
       ],
@@ -220,7 +220,7 @@ test("child — failure propagates through the entire ancestor chain", async () 
       steps: [
         {
           id: "spawn_middle",
-          call: { type: "child" as const, name: middleName },
+          action: { type: "child" as const, name: middleName },
           switch: [{ goto: "end" }],
         },
       ],
@@ -249,7 +249,7 @@ test("child — parent error contains child's error message when child fails", a
       steps: [
         {
           id: "action",
-          call: { type: "rest" as const, endpoint: `http://localhost:${failMock.port}/action` },
+          action: { type: "rest" as const, endpoint: `http://localhost:${failMock.port}/action` },
           timeout_ms: 2000,
           switch: [{ goto: "end" }],
         },
@@ -263,7 +263,7 @@ test("child — parent error contains child's error message when child fails", a
       steps: [
         {
           id: "spawn",
-          call: { type: "child" as const, name: childName },
+          action: { type: "child" as const, name: childName },
           switch: [{ goto: "end" }],
         },
       ],
@@ -300,7 +300,7 @@ test("child_parallel — recursive spawn completes with correct aggregated outpu
         },
         {
           id: "recursion",
-          call: {
+          action: {
             type: "child_parallel" as const,
             children: {
               first: {
@@ -374,7 +374,7 @@ test("child — two sequential child steps both spawn and collect", async () => 
         steps: [
           {
             id: "work",
-            call: { type: "rest" as const, endpoint: `http://localhost:${mock.port}/action` },
+            action: { type: "rest" as const, endpoint: `http://localhost:${mock.port}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "end" }],
           },
@@ -388,12 +388,12 @@ test("child — two sequential child steps both spawn and collect", async () => 
         steps: [
           {
             id: "first",
-            call: { type: "child" as const, name: leafName },
+            action: { type: "child" as const, name: leafName },
             switch: [{ goto: "next" }],
           },
           {
             id: "second",
-            call: { type: "child" as const, name: leafName },
+            action: { type: "child" as const, name: leafName },
             switch: [{ goto: "end" }],
           },
         ],

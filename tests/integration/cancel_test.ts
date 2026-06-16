@@ -37,7 +37,7 @@ test("cancel between steps — status transitions and step2 never executed", asy
         steps: [
           {
             id: "step1",
-            call: {
+            action: {
               type: "rest" as const,
               endpoint: `http://localhost:${step1Mock.port}/action`,
             },
@@ -46,7 +46,7 @@ test("cancel between steps — status transitions and step2 never executed", asy
           },
           {
             id: "step2",
-            call: {
+            action: {
               type: "rest" as const,
               endpoint: `http://localhost:${step2Mock.port}/action`,
             },

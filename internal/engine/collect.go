@@ -34,8 +34,8 @@ func (e *Engine) collectChildOutputs(ctx context.Context, inst *model.ProcessIns
 		inst.ContextData["outputs"] = map[string]any{}
 	}
 	var mergeErr string
-	switch step.Call.Type {
-	case model.CallTypeChild:
+	switch step.Action.Type {
+	case model.ActionTypeChild:
 		mergeErr = buildSingleChildOutput(inst.ContextData, step.ID, siblings)
 	default:
 		mergeErr = buildParallelChildOutput(inst.ContextData, step.ID, siblings)

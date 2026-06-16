@@ -117,7 +117,7 @@ func TestIsRetryAllowed(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			step := &model.Step{ID: "s", OnlyOnce: tt.onlyOnce,
-				Call: &model.Call{Type: model.CallTypeREST, Endpoint: "http://x"}}
+				Action: &model.Action{Type: model.ActionTypeREST, Endpoint: "http://x"}}
 			got := isRetryAllowed(step, tt.errCode, tt.matched)
 			if got != tt.want {
 				t.Errorf("isRetryAllowed(%q) = %v, want %v", tt.errCode, got, tt.want)

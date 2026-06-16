@@ -40,7 +40,7 @@ beforeAll(async () => {
   await ctx.env.define(withRetriesName, [
     {
       id: "work",
-      call: {
+      action: {
         type: "rest" as const,
         endpoint: `http://localhost:${failMockPort}/action`,
       },
@@ -54,7 +54,7 @@ beforeAll(async () => {
   await ctx.env.define(exhaustedName, [
     {
       id: "work",
-      call: {
+      action: {
         type: "rest" as const,
         endpoint: `http://localhost:${failMockPort}/action`,
       },

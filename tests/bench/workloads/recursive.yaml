@@ -35,7 +35,7 @@ process:
           goto: $recursion
         - goto: end
     - id: recursion
-      call:
+      action:
         type: child_parallel
         children:
           first:

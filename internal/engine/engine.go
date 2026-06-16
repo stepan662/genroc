@@ -350,7 +350,7 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) error
 			"id", inst.ID, "process", inst.ProcessName, "step", stepID)
 		if len(inst.StepQueue) > 0 {
 			s := inst.StepQueue[0]
-			if s.Call != nil && s.OnlyOnce != nil && *s.OnlyOnce {
+			if s.Action != nil && s.OnlyOnce != nil && *s.OnlyOnce {
 				return e.failInstance(inst, fmt.Sprintf(
 					"step %q is only_once and was interrupted by a lease takeover; cannot re-execute", s.ID))
 			}
@@ -384,11 +384,11 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) error
 		}
 
 		step := inst.StepQueue[0]
-		hasCall := step.Call != nil
+		hasCall := step.Action != nil
 		var selfOutput any
 
 		if hasCall {
-			if step.Call.Type == model.CallTypeChild || step.Call.Type == model.CallTypeChildParallel {
+			if step.Action.Type == model.ActionTypeChild || step.Action.Type == model.ActionTypeChildParallel {
 				out, done, err := e.runChildProcesses(ctx, inst, step)
 				if done || err != nil {
 					return err
@@ -475,22 +475,22 @@ func (e *Engine) executeAction(ctx context.Context, inst *model.ProcessInstance,
 		Data:       data,
 	}
 
-	e.log.Debug("executing step", "id", inst.ID, "step", step.ID, "call_type", step.Call.Type)
-	startDetail := map[string]any{"call_type": string(step.Call.Type)}
+	e.log.Debug("executing step", "id", inst.ID, "step", step.ID, "action_type", step.Action.Type)
+	startDetail := map[string]any{"action_type": string(step.Action.Type)}
 	if req := e.snippet(data); req != "" {
 		startDetail["request"] = req
 	}
 	e.audit(inst, model.LogDebug, model.EventStepStarted, step.ID, "", "", startDetail)
 
-	resolvedHeaders, err := e.resolveHeaders(inst, step.Call)
+	resolvedHeaders, err := e.resolveHeaders(inst, step.Action)
 	if err != nil {
 		return nil, true, e.failInstance(inst, fmt.Sprintf("step %q headers: %v", step.ID, err))
 	}
 
-	resp, err := transport.Send(taskCtx, step.Call, resolvedHeaders, req)
+	resp, err := transport.Send(taskCtx, step.Action, resolvedHeaders, req)
 	if err != nil {
 		code := transport.ClassifyGoError(err)
-		if step.Call.Type == model.CallTypeScript {
+		if step.Action.Type == model.ActionTypeScript {
 			code = transport.ClassifyScriptError(err)
 		}
 		return nil, true, e.handleCallError(inst, step, err.Error(), code)
@@ -503,13 +503,13 @@ func (e *Engine) executeAction(ctx context.Context, inst *model.ProcessInstance,
 		return nil, true, e.handleCallError(inst, step, msg, resp.ErrorCode)
 	}
 
-	if err := step.Call.ValidateOutput(resp.Body); err != nil {
+	if err := step.Action.ValidateOutput(resp.Body); err != nil {
 		return nil, true, e.handleCallError(inst, step, err.Error(), "output.invalid")
 	}
 
 	// Only persist output to context when output_schema is declared.
 	// Without it the output is only available as "self" within this step's switch.
-	if step.Call.OutputSchema != nil {
+	if step.Action.OutputSchema != nil {
 		if inst.ContextData["outputs"] == nil {
 			inst.ContextData["outputs"] = map[string]any{}
 		}
@@ -802,15 +802,15 @@ func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInsta
 	}
 
 	var children []*model.ProcessInstance
-	switch step.Call.Type {
-	case model.CallTypeChild:
+	switch step.Action.Type {
+	case model.ActionTypeChild:
 		child, err := e.buildSingleChild(ctx, inst, step, childCallStack)
 		if err != nil {
 			return nil, true, err
 		}
 		inst.ContextData["outputs"].(map[string]any)[step.ID] = child.ID
 		children = []*model.ProcessInstance{child}
-	case model.CallTypeChildParallel:
+	case model.ActionTypeChildParallel:
 		parallel, err := e.buildParallelChildren(ctx, inst, step, childCallStack)
 		if err != nil {
 			return nil, true, err
@@ -852,8 +852,8 @@ func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInsta
 // buildSingleChild resolves the child definition, evaluates input, and constructs
 // a ProcessInstance ready to be saved. It does not persist anything.
 func (e *Engine) buildSingleChild(ctx context.Context, inst *model.ProcessInstance, step *model.Step, callStack []string) (*model.ProcessInstance, error) {
-	name := step.Call.Name
-	version := step.Call.Version
+	name := step.Action.Name
+	version := step.Action.Version
 	if version == 0 {
 		if name == inst.ProcessName {
 			version = inst.ProcessVersion
@@ -872,7 +872,7 @@ func (e *Engine) buildSingleChild(ctx context.Context, inst *model.ProcessInstan
 	if err != nil {
 		return nil, e.failInstance(inst, fmt.Sprintf("step %q child: %v", step.ID, err))
 	}
-	input, err := e.evalChildInput(inst, step.ID, "child", step.Call.Input)
+	input, err := e.evalChildInput(inst, step.ID, "child", step.Action.Input)
 	if err != nil {
 		return nil, e.failInstance(inst, err.Error())
 	}
@@ -884,10 +884,10 @@ func (e *Engine) buildSingleChild(ctx context.Context, inst *model.ProcessInstan
 		"outputs":          map[string]any{},
 		"output_order":     []string{},
 		"error":            nil,
-		"_spawn_call_type": string(model.CallTypeChild),
+		"_spawn_action_type": string(model.ActionTypeChild),
 	}
-	if step.Call.OutputSchema != nil {
-		if b, err := json.Marshal(step.Call.OutputSchema); err == nil {
+	if step.Action.OutputSchema != nil {
+		if b, err := json.Marshal(step.Action.OutputSchema); err == nil {
 			childCtx["_spawn_output_schema"] = string(b)
 		}
 	}
@@ -907,8 +907,8 @@ func (e *Engine) buildSingleChild(ctx context.Context, inst *model.ProcessInstan
 // buildParallelChildren resolves definitions, evaluates inputs, and constructs
 // ProcessInstances for all parallel children. Does not persist anything.
 func (e *Engine) buildParallelChildren(ctx context.Context, inst *model.ProcessInstance, step *model.Step, callStack []string) ([]*model.ProcessInstance, error) {
-	keys := make([]string, 0, len(step.Call.Children))
-	for key := range step.Call.Children {
+	keys := make([]string, 0, len(step.Action.Children))
+	for key := range step.Action.Children {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
@@ -918,9 +918,9 @@ func (e *Engine) buildParallelChildren(ctx context.Context, inst *model.ProcessI
 	// itself in spawn order.
 	base := idgen.ChildBase(inst.ID)
 
-	children := make([]*model.ProcessInstance, 0, len(step.Call.Children))
+	children := make([]*model.ProcessInstance, 0, len(step.Action.Children))
 	for i, key := range keys {
-		entry := step.Call.Children[key]
+		entry := step.Action.Children[key]
 		version := entry.Version
 		if version == 0 {
 			if entry.Name == inst.ProcessName {
@@ -952,7 +952,7 @@ func (e *Engine) buildParallelChildren(ctx context.Context, inst *model.ProcessI
 			"outputs":          map[string]any{},
 			"output_order":     []string{},
 			"error":            nil,
-			"_spawn_call_type": string(model.CallTypeChildParallel),
+			"_spawn_action_type": string(model.ActionTypeChildParallel),
 			"_spawn_child_key": key,
 		}
 		if entry.OutputSchema != nil {
@@ -1012,7 +1012,7 @@ func (e *Engine) computeOutput(inst *model.ProcessInstance) error {
 
 // resolveHeaders evaluates each header value expression against the instance
 // context and coerces the result to a string. Returns nil for calls without headers.
-func (e *Engine) resolveHeaders(inst *model.ProcessInstance, call *model.Call) (map[string]string, error) {
+func (e *Engine) resolveHeaders(inst *model.ProcessInstance, call *model.Action) (map[string]string, error) {
 	if len(call.Headers) == 0 {
 		return nil, nil
 	}

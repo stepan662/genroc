@@ -8,7 +8,7 @@ import (
 func TestGenerate_NoSchemas(t *testing.T) {
 	out := runGenerate(t, `{
 		"name": "p",
-		"steps": [{"id":"s1","call":{"type":"rest","endpoint":"http://x"}}]
+		"steps": [{"id":"s1","action":{"type":"rest","endpoint":"http://x"}}]
 	}`)
 	if out.Process != "p" {
 		t.Errorf("metadata: got process=%q", out.Process)
@@ -27,7 +27,7 @@ func TestGenerate_NoSchemas(t *testing.T) {
 func TestGenerate_ProcessInput(t *testing.T) {
 	out := runGenerate(t, `{
 		"name": "order",
-		"steps": [{"id":"s1","call":{"type":"rest","endpoint":"http://x"}}],
+		"steps": [{"id":"s1","action":{"type":"rest","endpoint":"http://x"}}],
 		"input_schema": {
 			"type": "object",
 			"properties": { "order_id": { "type": "integer" } },
@@ -48,13 +48,13 @@ func TestGenerate_TaskOutput(t *testing.T) {
 		"steps": [
 			{
 				"id": "charge",
-				"call": {"type": "rest", "endpoint": "http://x", "output_schema": {
+				"action": {"type": "rest", "endpoint": "http://x", "output_schema": {
 					"type": "object",
 					"properties": { "charged": { "type": "boolean" } }
 				}},
 				"switch": "next"
 			},
-			{ "id": "notify", "call": {"type": "rest", "endpoint": "http://x"}, "switch": "end" }
+			{ "id": "notify", "action": {"type": "rest", "endpoint": "http://x"}, "switch": "end" }
 		]
 	}`)
 	assertJSON(t, out.Tasks["charge"].Output, `{"$ref": "#/$defs/charge_output"}`)
@@ -73,17 +73,17 @@ func TestGenerate_FlatStepsWithOutputs(t *testing.T) {
 		"steps": [
 			{
 				"id": "charge",
-				"call": {"type": "rest", "endpoint": "http://x", "output_schema": { "type": "object", "properties": { "charged": { "type": "boolean" } } }},
+				"action": {"type": "rest", "endpoint": "http://x", "output_schema": { "type": "object", "properties": { "charged": { "type": "boolean" } } }},
 				"switch": [{"case": "self.charged == true", "goto": "$ship"}, {"goto": "$refund"}]
 			},
 			{
 				"id": "ship",
-				"call": {"type": "rest", "endpoint": "http://x", "output_schema": { "type": "object", "properties": { "tracking": { "type": "string" } } }},
+				"action": {"type": "rest", "endpoint": "http://x", "output_schema": { "type": "object", "properties": { "tracking": { "type": "string" } } }},
 				"switch": "end"
 			},
 			{
 				"id": "refund",
-				"call": {"type": "rest", "endpoint": "http://x", "output_schema": { "type": "object", "properties": { "refunded": { "type": "boolean" } } }},
+				"action": {"type": "rest", "endpoint": "http://x", "output_schema": { "type": "object", "properties": { "refunded": { "type": "boolean" } } }},
 				"switch": "end"
 			}
 		]
@@ -96,7 +96,7 @@ func TestGenerate_FlatStepsWithOutputs(t *testing.T) {
 func TestGenerate_InnerDefsPromotedToRoot(t *testing.T) {
 	out := runGenerate(t, `{
 		"name": "p",
-		"steps": [{"id":"s1","call":{"type":"rest","endpoint":"http://x"}}],
+		"steps": [{"id":"s1","action":{"type":"rest","endpoint":"http://x"}}],
 		"input_schema": {
 			"type": "object",
 			"$defs": {
@@ -131,7 +131,7 @@ func TestGenerate_InnerDefsConflictRenamed(t *testing.T) {
 		},
 		"steps": [{
 			"id": "charge",
-			"call": {"type": "rest", "endpoint": "http://x", "output_schema": {
+			"action": {"type": "rest", "endpoint": "http://x", "output_schema": {
 				"type": "object",
 				"$defs": { "Item": { "type": "integer" } },
 				"properties": { "y": { "$ref": "#/$defs/Item" } }
@@ -154,7 +154,7 @@ func TestGenerate_Child_WithOutputSchema_ExposesTypedOutput(t *testing.T) {
 		"name": "p",
 		"steps": [{
 			"id": "spawn",
-			"call": {
+			"action": {
 				"type": "child",
 				"name": "worker",
 				"output_schema": {
@@ -182,7 +182,7 @@ func TestGenerate_Child_WithoutOutputSchema_NoOutput(t *testing.T) {
 		"name": "p",
 		"steps": [{
 			"id": "spawn",
-			"call": { "type": "child", "name": "worker" },
+			"action": { "type": "child", "name": "worker" },
 			"switch": "end"
 		}]
 	}`)
@@ -201,7 +201,7 @@ func TestGenerate_Child_OutputAvailableInDownstreamStep(t *testing.T) {
 		"steps": [
 			{
 				"id": "spawn",
-				"call": {
+				"action": {
 					"type": "child",
 					"name": "worker",
 					"output_schema": {
@@ -214,7 +214,7 @@ func TestGenerate_Child_OutputAvailableInDownstreamStep(t *testing.T) {
 			},
 			{
 				"id": "report",
-				"call": { "type": "rest", "endpoint": "http://x" },
+				"action": { "type": "rest", "endpoint": "http://x" },
 				"params": { "n": "{{outputs.spawn.count}}" }
 			}
 		]
@@ -231,7 +231,7 @@ func TestGenerate_ChildParallel_WithOutputSchemas_ExposesKeyedOutput(t *testing.
 		"name": "p",
 		"steps": [{
 			"id": "spawn",
-			"call": {
+			"action": {
 				"type": "child_parallel",
 				"children": {
 					"left":  { "name": "worker", "output_schema": { "type": "object", "properties": { "num": { "type": "integer" } }, "required": ["num"] } },
@@ -268,7 +268,7 @@ func TestGenerate_ChildParallel_KeyedOutputAvailableInDownstreamStep(t *testing.
 		"steps": [
 			{
 				"id": "spawn",
-				"call": {
+				"action": {
 					"type": "child_parallel",
 					"children": {
 						"left":  { "name": "worker", "output_schema": { "type": "object", "properties": { "num": { "type": "integer" } }, "required": ["num"] } },
@@ -279,7 +279,7 @@ func TestGenerate_ChildParallel_KeyedOutputAvailableInDownstreamStep(t *testing.
 			},
 			{
 				"id": "aggregate",
-				"call": { "type": "rest", "endpoint": "http://x" },
+				"action": { "type": "rest", "endpoint": "http://x" },
 				"params": {
 					"a": "{{outputs.spawn.left.num}}",
 					"b": "{{outputs.spawn.right.num}}"
@@ -301,7 +301,7 @@ func TestGenerate_ChildParallel_MixedOutputSchemas_UntypedKeyIsObject(t *testing
 		"name": "p",
 		"steps": [{
 			"id": "spawn",
-			"call": {
+			"action": {
 				"type": "child_parallel",
 				"children": {
 					"typed":   { "name": "worker", "output_schema": { "type": "object", "properties": { "ok": { "type": "boolean" } }, "required": ["ok"] } },
@@ -328,7 +328,7 @@ func TestGenerate_UnusedDefsRemoved(t *testing.T) {
 		"name": "p",
 		"steps": [{
 			"id": "charge",
-			"call": {"type": "rest", "endpoint": "http://x", "output_schema": {
+			"action": {"type": "rest", "endpoint": "http://x", "output_schema": {
 				"type": "object",
 				"$defs": {
 					"Used":   { "type": "string" },

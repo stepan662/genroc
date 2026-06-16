@@ -2,7 +2,7 @@
 name: child
 steps:
   - id: child
-    call:
+    action:
       type: rest
       endpoint: http://localhost:3001/child
       output_schema:
