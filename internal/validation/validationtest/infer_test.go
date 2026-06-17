@@ -261,6 +261,26 @@ func TestGenerate_Switch_SelfExpressionTypeChecked(t *testing.T) {
 	assertJSON(t, out.Tasks["charge"].Output, `{"$ref": "#/$defs/charge_output"}`)
 }
 
+func TestGenerate_SelfReferenceRequiresLoop(t *testing.T) {
+	// A step that references its own output but never loops back to itself has no
+	// prior iteration (it is not its own predecessor), so the self-reference — by
+	// outputs.<id> or by self.previous — must be rejected.
+	for _, expr := range []string{
+		"{{ (outputs.loop.num ?? 0) + 1 }}",
+		"{{ (self.previous.num ?? 0) + 1 }}",
+	} {
+		def := `{
+			"name": "p",
+			"steps": [
+				{"id":"loop","output":{"num":"` + expr + `"},"switch":[{"goto":"end"}]}
+			]
+		}`
+		if err := runGenerateErr(t, def); err == nil {
+			t.Errorf("expected error for non-looping self-reference %q", expr)
+		}
+	}
+}
+
 func TestGenerate_CrossStepMutualRecursion(t *testing.T) {
 	// start and loop reference each other's output through a goto loop — a
 	// cross-step (mutual) recursion. The joint SCC fixpoint resolves both: loop's

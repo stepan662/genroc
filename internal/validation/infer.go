@@ -201,30 +201,28 @@ func actionResultType(s *model.Step) *schema.SchemaNode {
 }
 
 // outputMapContext builds the context for inferring a step's output map: the base
-// context plus self.result (the raw action result), self.previous, and
-// outputs.<id> — the latter two both $refs to $defs[<id>_output], the recursive
-// placeholder the fixpoint drives.
-func outputMapContext(base *schema.SchemaNode, resultType *schema.SchemaNode, stepID string) *schema.SchemaNode {
-	selfRef := schemaRef(stepID + "_output")
-
-	outProps := map[string]*schema.SchemaNode{}
-	var outReq []string
-	if outs := base.Properties["outputs"]; outs != nil {
-		for k, v := range outs.Properties {
-			outProps[k] = v
-		}
-		outReq = outs.Required
+// context plus self.result (the raw action result), and — only when the step
+// actually loops back to itself — self.previous (its own prior output).
+//
+// The self-reference is meaningful only for a looping step, which alone has a
+// prior iteration. When loops is true, both self.previous and outputs.<id> (the
+// latter supplied by the base context via reachability) resolve through
+// $defs[<id>_output], the recursive placeholder the fixpoint drives. When the
+// step does not loop, neither is available — referencing one's own output without
+// looping is an error, since the step is not its own predecessor.
+func outputMapContext(base *schema.SchemaNode, resultType *schema.SchemaNode, stepID string, loops bool) *schema.SchemaNode {
+	selfProps := map[string]*schema.SchemaNode{"result": resultType}
+	if loops {
+		selfProps["previous"] = schemaRef(stepID + "_output")
 	}
-	outProps[stepID] = selfRef // the prior iteration's value (nullable), so not required
 
 	newProps := make(map[string]*schema.SchemaNode, len(base.Properties)+1)
 	for k, v := range base.Properties {
 		newProps[k] = v
 	}
-	newProps["outputs"] = &schema.SchemaNode{Type: schema.SchemaType{"object"}, Properties: outProps, Required: outReq}
 	newProps["self"] = &schema.SchemaNode{
 		Type:       schema.SchemaType{"object"},
-		Properties: map[string]*schema.SchemaNode{"result": resultType, "previous": selfRef},
+		Properties: selfProps,
 		Required:   []string{"result"},
 	}
 

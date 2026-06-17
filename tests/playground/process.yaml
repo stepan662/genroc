@@ -14,6 +14,8 @@ steps:
     output:
       num: "{{ (self.previous.num ?? 0) + 1 }}"
     switch:
+      - case: "self.output.num < input.ttl"
+        goto: $start
       - goto: end
 
 output:

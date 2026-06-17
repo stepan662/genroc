@@ -2,6 +2,7 @@ package validation
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 
 	"gent/internal/model"
@@ -64,7 +65,10 @@ func inferOutputs(steps []*model.Step, tasks map[string]TaskSchemas, processInpu
 			if len(defs) > 0 {
 				base = withDefs(base, defs)
 			}
-			ctx := outputMapContext(base, actionResultType(stepByID[id]), id)
+			// The step loops iff it is its own predecessor: computeContextSets then
+			// lists its own output among its available (optional) outputs.
+			loops := slices.Contains(optional[id], id) || slices.Contains(required[id], id)
+			ctx := outputMapContext(base, actionResultType(stepByID[id]), id, loops)
 			members = append(members, sccMember{defName: id + "_output", exprs: stepByID[id].Output, ctx: ctx})
 		}
 		if err := inferOutputFixpoint(members, defs); err != nil {
