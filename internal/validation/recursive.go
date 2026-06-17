@@ -9,6 +9,13 @@ import (
 // diverging type into an error instead of an infinite loop.
 const maxRecursivePasses = 16
 
+// maxOutputTypeBytes is a widening bound on the canonical size of an inferred
+// output type. A non-converging recursion (e.g. `result: self.previous ?? input`)
+// grows the type exponentially per pass, so the pass cap alone would still build
+// a multi-megabyte schema before giving up. This bound — far larger than any
+// realistic output type — catches the divergence within a few passes instead.
+const maxOutputTypeBytes = 64 * 1024
+
 // InferRecursiveOutput infers the type of a single self-referential output map.
 // In ctx, both outputs.<id> and self.previous resolve via $ref to selfDef (the
 // recursive placeholder in ctx.$defs). It is the one-member case of the joint

@@ -75,6 +75,14 @@ function refDefName(ref: { $ref: string }): string {
   return ref.$ref.replace("#/$defs/", "");
 }
 
+// Each named schema is compiled on its own, but its body may contain
+// `$ref: #/$defs/...` pointers into sibling defs (e.g. a recursive type the
+// engine hoisted to the shared $defs). Re-attach the shared $defs so those
+// refs resolve during compilation.
+function withDefs(s: object): object {
+  return { ...s, $defs: defs };
+}
+
 // ─── generate types.ts ────────────────────────────────────────────────────
 
 const typeSections: string[] = [
@@ -86,7 +94,7 @@ const typeSections: string[] = [
 if (processInput) {
   const inputDef = defs[refDefName(processInput)];
   if (inputDef)
-    typeSections.push(await compile(inputDef, "ProcessInput", opts));
+    typeSections.push(await compile(withDefs(inputDef), "ProcessInput", opts));
 }
 
 for (const [id, task] of Object.entries(tasks)) {
@@ -97,13 +105,13 @@ for (const [id, task] of Object.entries(tasks)) {
     const inputSchema = inputRef.$ref
       ? (defs[refDefName(inputRef as { $ref: string })] ?? task.input)
       : task.input;
-    typeSections.push(await compile(inputSchema, `${pascal}Input`, opts));
+    typeSections.push(await compile(withDefs(inputSchema), `${pascal}Input`, opts));
   }
 
   if (task.output) {
     const defSchema = defs[refDefName(task.output)];
     if (defSchema) {
-      typeSections.push(await compile(defSchema, `${pascal}Output`, opts));
+      typeSections.push(await compile(withDefs(defSchema), `${pascal}Output`, opts));
     }
   }
 }

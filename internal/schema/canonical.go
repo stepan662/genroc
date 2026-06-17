@@ -193,3 +193,10 @@ func nodeCanonJSON(s *SchemaNode) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
+
+// Size is the byte length of s's canonical JSON — a cheap proxy for type
+// complexity, used to bound the recursive-inference fixpoint against a
+// non-converging type that grows without limit.
+func Size(s *SchemaNode) int {
+	return len(nodeCanonJSON(Canonicalize(s)))
+}

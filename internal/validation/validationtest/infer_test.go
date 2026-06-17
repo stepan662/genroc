@@ -3,6 +3,7 @@ package validationtest
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGenerate_Input_FirstTaskNoInput(t *testing.T) {
@@ -298,6 +299,42 @@ func TestGenerate_CrossStepMutualRecursion(t *testing.T) {
 	}`)
 	assertJSON(t, out.Defs["loop_output"], `{"type":"object","properties":{"num":{"type":"integer"}},"required":["num"]}`)
 	assertJSON(t, out.Defs["start_output"], `{"type":"object","properties":{"num":{"type":["integer","null"]}},"required":["num"]}`)
+}
+
+func TestGenerate_UnboundedRecursionFailsFast(t *testing.T) {
+	// `result: self.previous ?? input` has no base case: each pass nests the prior
+	// output one level deeper, so the type grows without bound (exponentially, as
+	// the joined accumulator references the prior estimate). The widening size bound
+	// must reject it — and cheaply, before building a multi-megabyte schema.
+	done := make(chan error, 1)
+	go func() {
+		done <- runGenerateErr(t, `{
+			"name": "p",
+			"input_schema": {
+				"type": "object",
+				"properties": {"ttl": {"type": "integer"}, "rec": {"$ref": "#/$defs/recursive"}},
+				"required": ["ttl"],
+				"$defs": {"recursive": {"type": "object","properties": {"num": {"type": "number"},"rec": {"$ref": "#/$defs/recursive"}}}}
+			},
+			"steps": [
+				{"id":"start","switch":"next"},
+				{"id":"loop","output":{"result":"{{ self.previous ?? input }}"},
+				 "switch":[{"case":"self.output.result != null","goto":"$start"},{"goto":"end"}]}
+			],
+			"output":{"num":"{{ outputs.loop }}"}
+		}`)
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected non-convergence error, got nil")
+		}
+		if !strings.Contains(err.Error(), "without converging") {
+			t.Errorf("expected a non-convergence error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("inference did not fail fast: still running after 5s (widening bound not applied)")
+	}
 }
 
 func TestGenerate_SelfNamespaceScoping(t *testing.T) {

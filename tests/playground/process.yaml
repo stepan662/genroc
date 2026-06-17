@@ -5,18 +5,29 @@ input_schema:
   properties:
     ttl:
       type: integer
-  required: [ ttl ]
+    rec:
+      $ref: "#/$defs/recursive"
+  required: [ttl]
+  $defs:
+    recursive:
+      type: object
+      properties:
+        num:
+          type: number
+        rec:
+          $ref: "#/$defs/recursive"
+
 steps:
   - id: start
     switch: next
 
   - id: loop
     output:
-      num: "{{ (self.previous.num ?? 0) + 1 }}"
+      result: "{{ self.previous.result ?? input }}"
     switch:
-      - case: "self.output.num < input.ttl"
+      - case: "self.output.result != null"
         goto: $start
       - goto: end
 
 output:
-  num: "{{ outputs.loop.num }}"
+  num: "{{ outputs.loop }}"

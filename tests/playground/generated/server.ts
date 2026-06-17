@@ -21,12 +21,23 @@ const stepSchemas: Record<string, object> = {
   "loop": {
     "type": "object",
     "properties": {
-      "num": {
-        "type": "integer"
+      "result": {
+        "type": "object",
+        "properties": {
+          "rec": {
+            "$ref": "#/$defs/recursive"
+          },
+          "ttl": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ttl"
+        ]
       }
     },
     "required": [
-      "num"
+      "result"
     ]
   }
 }

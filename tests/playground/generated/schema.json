@@ -18,6 +18,9 @@
     "input": {
       "type": "object",
       "properties": {
+        "rec": {
+          "$ref": "#/$defs/recursive"
+        },
         "ttl": {
           "type": "integer"
         }
@@ -29,24 +32,65 @@
     "loop_output": {
       "type": "object",
       "properties": {
-        "num": {
-          "type": "integer"
+        "result": {
+          "type": "object",
+          "properties": {
+            "rec": {
+              "$ref": "#/$defs/recursive"
+            },
+            "ttl": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "ttl"
+          ]
         }
       },
       "required": [
-        "num"
+        "result"
       ]
     },
     "output": {
       "type": "object",
       "properties": {
         "num": {
-          "type": "integer"
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "object",
+              "properties": {
+                "rec": {
+                  "$ref": "#/$defs/recursive"
+                },
+                "ttl": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "ttl"
+              ]
+            }
+          },
+          "required": [
+            "result"
+          ]
         }
       },
       "required": [
         "num"
       ]
+    },
+    "recursive": {
+      "type": "object",
+      "properties": {
+        "num": {
+          "type": "number"
+        },
+        "rec": {
+          "$ref": "#/$defs/recursive"
+        }
+      }
     }
   }
 }

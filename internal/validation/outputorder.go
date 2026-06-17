@@ -108,6 +108,9 @@ func inferOutputFixpoint(members []sccMember, defs map[string]*schema.SchemaNode
 				return err
 			}
 			cur = schema.Canonicalize(cur)
+			if schema.Size(cur) > maxOutputTypeBytes {
+				return fmt.Errorf("output type for %q grew past %d bytes without converging — likely an unbounded recursion (e.g. accumulating self.previous without a base case)", m.defName, maxOutputTypeBytes)
+			}
 			next := cur
 			if prev := est[m.defName]; prev != nil {
 				next = schema.Join(prev, cur)
