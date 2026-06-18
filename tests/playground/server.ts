@@ -9,8 +9,8 @@ import { StartInput, StartOutput } from "./generated/types.ts";
 const PORT = 3001;
 
 const handlers: Handlers = {
-  start: function (ctx: StartInput): Promise<StartOutput> {
-    throw new Error("Function not implemented.");
+  start: async function (ctx: StartInput): Promise<StartOutput> {
+    return { num: ctx, str: "tst" };
   },
 };
 

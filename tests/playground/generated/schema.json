@@ -3,6 +3,9 @@
   "process_input": {
     "$ref": "#/$defs/input"
   },
+  "process_output": {
+    "$ref": "#/$defs/output"
+  },
   "tasks": {
     "finish": {
       "action_type": "",
@@ -13,7 +16,7 @@
     "start": {
       "action_type": "rest",
       "input": {
-        "type": "object"
+        "type": "integer"
       },
       "output": {
         "$ref": "#/$defs/start_output"
@@ -33,6 +36,29 @@
       },
       "required": [
         "ttl"
+      ]
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "start": {
+          "type": "object",
+          "properties": {
+            "num": {
+              "type": "number"
+            },
+            "str": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "num",
+            "str"
+          ]
+        }
+      },
+      "required": [
+        "start"
       ]
     },
     "start_output": {

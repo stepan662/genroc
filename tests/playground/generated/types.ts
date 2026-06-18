@@ -7,7 +7,7 @@ export interface ProcessInput {
 
 export type FinishOutput = number;
 
-export interface StartInput {}
+export type StartInput = number;
 
 export interface StartOutput {
   num: number;

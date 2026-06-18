@@ -31,10 +31,10 @@ func TestGenerate_ContextSets_LinearChain_RequiredOutputNonNullable(t *testing.T
       "id": "B",
       "action": {
         "type": "rest",
-        "endpoint": "http://x"
-      },
-      "params": {
-        "flag": "{{outputs.A.ok}}"
+        "endpoint": "http://x",
+        "input": {
+          "flag": "{{outputs.A.ok}}"
+        }
       }
     }
   ]
@@ -104,10 +104,10 @@ func TestGenerate_ContextSets_ExclusiveBranch_SkippedStepOutputNullable(t *testi
       "id": "merge",
       "action": {
         "type": "rest",
-        "endpoint": "http://x"
-      },
-      "params": {
-        "s": "{{outputs.fast.speed}}"
+        "endpoint": "http://x",
+        "input": {
+          "s": "{{outputs.fast.speed}}"
+        }
       }
     }
   ]
@@ -173,10 +173,10 @@ func TestGenerate_ContextSets_PreBranchStepRequiredAtAllMergePoints(t *testing.T
       "id": "post",
       "action": {
         "type": "rest",
-        "endpoint": "http://x"
-      },
-      "params": {
-        "pre_id": "{{outputs.pre.id}}"
+        "endpoint": "http://x",
+        "input": {
+          "pre_id": "{{outputs.pre.id}}"
+        }
       }
     }
   ]
@@ -225,10 +225,10 @@ func TestGenerate_ContextSets_DefaultEndSwitch_SuccessorRequiredNotOptional(t *t
       "id": "work",
       "action": {
         "type": "rest",
-        "endpoint": "http://x"
-      },
-      "params": {
-        "flag": "{{outputs.decide.ok}}"
+        "endpoint": "http://x",
+        "input": {
+          "flag": "{{outputs.decide.ok}}"
+        }
       }
     }
   ]
@@ -274,11 +274,11 @@ func TestGenerate_OnError_MixedPath_FailingStepOutputNullable(t *testing.T) {
       "id": "finale",
       "action": {
         "type": "rest",
-        "endpoint": "http://x"
-      },
-      "params": {
-        "val": "{{outputs.start.ok}}",
-        "errCode": "{{error.code}}"
+        "endpoint": "http://x",
+        "input": {
+          "val": "{{outputs.start.ok}}",
+          "errCode": "{{error.code}}"
+        }
       },
       "switch": "end"
     }
@@ -331,10 +331,10 @@ func TestGenerate_OnError_ExclusivePath_ErrorRequiredOutputAbsent(t *testing.T) 
       "id": "handler",
       "action": {
         "type": "rest",
-        "endpoint": "http://x"
-      },
-      "params": {
-        "code": "{{error.code}}"
+        "endpoint": "http://x",
+        "input": {
+          "code": "{{error.code}}"
+        }
       },
       "switch": "end"
     }
@@ -378,10 +378,10 @@ func TestGenerate_Switch_ScalarNext_CreatesSequentialEdge(t *testing.T) {
       "id": "b",
       "action": {
         "type": "rest",
-        "endpoint": "http://x"
-      },
-      "params": {
-        "flag": "{{outputs.a.ok}}"
+        "endpoint": "http://x",
+        "input": {
+          "flag": "{{outputs.a.ok}}"
+        }
       },
       "switch": "end"
     }
@@ -430,10 +430,10 @@ func TestGenerate_Switch_ScalarStepRef_CreatesJumpEdge(t *testing.T) {
       "id": "merge",
       "action": {
         "type": "rest",
-        "endpoint": "http://x"
-      },
-      "params": {
-        "s": "{{outputs.fast.speed}}"
+        "endpoint": "http://x",
+        "input": {
+          "s": "{{outputs.fast.speed}}"
+        }
       },
       "switch": "end"
     }

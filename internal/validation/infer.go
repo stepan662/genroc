@@ -24,11 +24,11 @@ func buildInputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proces
 		return err
 	}
 
-	// Phase 2: action inputs (params) and switch type-checks.
+	// Phase 2: action inputs and switch type-checks.
 	for _, s := range tasks {
 		if s.Action != nil {
 			ts, inMap := taskSchemas[s.ID]
-			if inMap || s.Params.Present() {
+			if inMap || s.Action.Input.Present() {
 				ctx := contextSchema(required[s.ID], optional[s.ID], taskSchemas, processInput, mustErr[s.ID], mayErr[s.ID])
 				if len(defs) > 0 {
 					ctx = withDefs(ctx, defs)
@@ -72,13 +72,13 @@ func buildInputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proces
 }
 
 func inferInput(s *model.Task, ctx *schema.SchemaNode, defs map[string]*schema.SchemaNode) (*schema.SchemaNode, error) {
-	if !s.Params.Present() {
+	if !s.Action.Input.Present() {
 		return &schema.SchemaNode{Type: schema.SchemaType{"object"}}, nil
 	}
 	if len(defs) > 0 {
 		ctx = withDefs(ctx, defs)
 	}
-	return inferShape(s.Params.Raw, ctx, fmt.Sprintf("task %q params", s.ID))
+	return inferShape(s.Action.Input.Raw, ctx, fmt.Sprintf("task %q input", s.ID))
 }
 
 // inferShape infers the JSON Schema of a model.Shape value: a string leaf yields

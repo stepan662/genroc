@@ -559,7 +559,7 @@ func (e *Engine) executeAction(ctx context.Context, inst *model.ProcessInstance,
 
 	data, err := e.buildTaskData(inst, task)
 	if err != nil {
-		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q params: %v", task.ID, err)))
+		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q input: %v", task.ID, err)))
 	}
 
 	req := transport.Request{
@@ -785,10 +785,10 @@ func (e *Engine) handleCallError(inst *model.ProcessInstance, task *model.Task, 
 }
 
 func (e *Engine) buildTaskData(inst *model.ProcessInstance, task *model.Task) (any, error) {
-	if !task.Params.Present() {
+	if !task.Action.Input.Present() {
 		return map[string]any{}, nil
 	}
-	return evalShape(task.Params.Raw, evalEnv(inst.ContextData, nil))
+	return evalShape(task.Action.Input.Raw, evalEnv(inst.ContextData, nil))
 }
 
 // runDelay implements the delay action. On first entry — WakeAt is nil

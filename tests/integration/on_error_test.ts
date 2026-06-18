@@ -57,7 +57,7 @@ test("on_error — HTTP failure routes to recovery task", async () => {
   recoveryMock.stop();
 });
 
-test("on_error — error context available in recovery task params", async () => {
+test("on_error — error context available in recovery task input", async () => {
   const failMock = await startMockService(0, { statusCode: 503 });
   const recoveryMock = await startMockService(0, {
     response: { done: true },
@@ -80,10 +80,10 @@ test("on_error — error context available in recovery task params", async () =>
         },
         {
           id: "recovery",
-          params: { error_code: "{{error.code}}" },
           action: {
             type: "rest" as const,
             endpoint: `http://localhost:${recoveryMock.port}/action`,
+            input: { error_code: "{{error.code}}" },
             result_schema: {
               type: "object",
               properties: { done: { type: "boolean" } },

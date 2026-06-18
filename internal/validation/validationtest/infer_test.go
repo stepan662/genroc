@@ -232,11 +232,11 @@ func TestGenerate_Input_Params(t *testing.T) {
               "type": "boolean"
             }
           }
+        },
+        "input": {
+          "id": "{{input.order_id}}",
+          "sum": "{{input.amount}}"
         }
-      },
-      "params": {
-        "id": "{{input.order_id}}",
-        "sum": "{{input.amount}}"
       },
       "output": "{{ self.result }}"
     }
@@ -254,18 +254,17 @@ func TestGenerate_Input_Params(t *testing.T) {
 	assertJSON(t, input.Properties["sum"], `{"type": "number"}`)
 }
 
-func TestGenerate_Input_ParamsOnlyTask(t *testing.T) {
+func TestGenerate_Input_InputOnlyTask(t *testing.T) {
 	out := runGenerate(t, `{
 		"name": "p",
 		"input_schema": { "type": "object", "properties": { "user_id": { "type": "string" } }, "required": ["user_id"] },
 		"tasks": [{
 			"id": "log",
-			"action": {"type": "rest", "endpoint": "http://x"},
-			"params": { "uid": "{{input.user_id}}" }
+			"action": {"type": "rest", "endpoint": "http://x", "input": { "uid": "{{input.user_id}}" }}
 		}]
 	}`)
 	if _, ok := out.Tasks["log"]; !ok {
-		t.Fatal("task with params but no result_schema should appear in tasks")
+		t.Fatal("task with action input but no result_schema should appear in tasks")
 	}
 	assertJSON(t, out.Tasks["log"].Input, `{"$ref": "#/$defs/log_input"}`)
 	assertJSON(t, out.Defs["log_input"], `{
@@ -275,7 +274,7 @@ func TestGenerate_Input_ParamsOnlyTask(t *testing.T) {
 	}`)
 }
 
-func TestGenerate_Input_Params_OneOfOutputPropertyAccess(t *testing.T) {
+func TestGenerate_Input_OneOfOutputPropertyAccess(t *testing.T) {
 	out := runGenerate(t, `{
   "name": "p",
   "tasks": [
@@ -307,10 +306,10 @@ func TestGenerate_Input_Params_OneOfOutputPropertyAccess(t *testing.T) {
       "id": "check_fraud",
       "action": {
         "type": "rest",
-        "endpoint": "http://x"
-      },
-      "params": {
-        "result": "{{outputs.save_order.valid}}"
+        "endpoint": "http://x",
+        "input": {
+          "result": "{{outputs.save_order.valid}}"
+        }
       },
       "switch": "end"
     }
@@ -338,8 +337,7 @@ func TestGenerate_MixedTemplate_NullableExpressionRejected(t *testing.T) {
 			},
 			{
 				"id": "finale",
-				"action": {"type": "rest", "endpoint": "http://x"},
-				"params": {"msg": "{{error.code}}_{{error.message}}"},
+				"action": {"type": "rest", "endpoint": "http://x", "input": {"msg": "{{error.code}}_{{error.message}}"}},
 				"switch": "end"
 			}
 		]
@@ -365,8 +363,7 @@ func TestGenerate_MixedTemplate_NonNullableExpressionAccepted(t *testing.T) {
 			},
 			{
 				"id": "handler",
-				"action": {"type": "rest", "endpoint": "http://x"},
-				"params": {"msg": "{{error.code}}_{{error.message}}"},
+				"action": {"type": "rest", "endpoint": "http://x", "input": {"msg": "{{error.code}}_{{error.message}}"}},
 				"switch": "end"
 			}
 		]
@@ -698,11 +695,11 @@ func TestGenerate_RecursiveStep_OwnOutputOptionalInParams(t *testing.T) {
             "finished_index",
             "done"
           ]
+        },
+        "input": {
+          "tasks": "{{input.tasks}}",
+          "task_index": "{{outputs.loop.finished_index ? outputs.loop.finished_index : 0}}"
         }
-      },
-      "params": {
-        "tasks": "{{input.tasks}}",
-        "task_index": "{{outputs.loop.finished_index ? outputs.loop.finished_index : 0}}"
       },
       "switch": [
         {
@@ -723,10 +720,10 @@ func TestGenerate_RecursiveStep_OwnOutputOptionalInParams(t *testing.T) {
 		t.Fatal("loop input should have properties")
 	}
 	if loopInput.Properties["task_index"] == nil {
-		t.Error("task_index param should be inferred")
+		t.Error("task_index input field should be inferred")
 	}
 	if loopInput.Properties["tasks"] == nil {
-		t.Error("tasks param should be inferred")
+		t.Error("tasks input field should be inferred")
 	}
 }
 
@@ -774,10 +771,10 @@ func TestGenerate_SwitchStep_NextStepNotReachableViaFallthrough(t *testing.T) {
               "type": "boolean"
             }
           }
+        },
+        "input": {
+          "flag": "{{outputs.decide.ok}}"
         }
-      },
-      "params": {
-        "flag": "{{outputs.decide.ok}}"
       },
       "output": "{{ self.result }}"
     }

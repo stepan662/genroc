@@ -294,7 +294,7 @@ func TestGenerate_Child_WithoutOutputSchema_NoOutput(t *testing.T) {
 }
 
 func TestGenerate_Child_OutputAvailableInDownstreamStep(t *testing.T) {
-	// outputs.spawn.count should be typed as integer in a subsequent step's params.
+	// outputs.spawn.count should be typed as integer in a subsequent step's input.
 	out := runGenerate(t, `{
   "name": "p",
   "tasks": [
@@ -322,10 +322,10 @@ func TestGenerate_Child_OutputAvailableInDownstreamStep(t *testing.T) {
       "id": "report",
       "action": {
         "type": "rest",
-        "endpoint": "http://x"
-      },
-      "params": {
-        "n": "{{outputs.spawn.count}}"
+        "endpoint": "http://x",
+        "input": {
+          "n": "{{outputs.spawn.count}}"
+        }
       }
     }
   ]
@@ -448,11 +448,11 @@ func TestGenerate_ChildParallel_KeyedOutputAvailableInDownstreamStep(t *testing.
       "id": "aggregate",
       "action": {
         "type": "rest",
-        "endpoint": "http://x"
-      },
-      "params": {
-        "a": "{{outputs.spawn.left.num}}",
-        "b": "{{outputs.spawn.right.num}}"
+        "endpoint": "http://x",
+        "input": {
+          "a": "{{outputs.spawn.left.num}}",
+          "b": "{{outputs.spawn.right.num}}"
+        }
       }
     }
   ]

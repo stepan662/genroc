@@ -41,11 +41,14 @@ type ChildEntry struct {
 }
 
 // Action describes how to invoke a task's action. It is a discriminated union on Type.
-//   - "rest":           Endpoint (required), Headers (optional), AcceptedStatus (optional), ResultSchema (optional)
-//   - "script":         Exec (required), ResultSchema (optional)
+//   - "rest":           Endpoint (required), Headers (optional), AcceptedStatus (optional), Input (optional), ResultSchema (optional)
+//   - "script":         Exec (required), Input (optional), ResultSchema (optional)
 //   - "child":          Name (required), Input (optional), ResultSchema (optional) — single child process
 //   - "child_parallel": Children (required, keyed map) — concurrent named child processes
 //   - "delay":          Ms (required) — pauses the instance for a duration without holding a worker, then routes via switch
+//
+// Input (rest/script/child): templated value evaluated against the current context to build the
+// action's input — the request body (rest), script input (script), or child's input payload (child).
 //
 // ResultSchema (rest/script/child): when set, the response body is validated and stored in
 // context as outputs.taskID. Without it the body is available only as "self" in this task's switch.
@@ -60,7 +63,7 @@ type Action struct {
 	ResultSchema   *schema.SchemaNode     `json:"result_schema,omitempty"`   // rest/script/child: validate & persist output
 	Name           string                 `json:"name,omitempty"`            // child
 	Version        int                    `json:"version,omitempty"`         // child
-	Input          *Shape                 `json:"input,omitempty"`           // child
+	Input          *Shape                 `json:"input,omitempty"`           // rest/script/child: templated input payload
 	Children       map[string]ChildEntry  `json:"children,omitempty"`        // child_parallel
 	Ms             string                 `json:"ms,omitempty"`              // delay: milliseconds to pause, as an expression
 }
@@ -78,6 +81,7 @@ func (Action) JSONSchemaBytes() ([]byte, error) {
 					"endpoint":        {"type": "string", "description": "URL of the HTTP endpoint to call."},
 					"headers":         {"type": "object", "additionalProperties": {"type": "string"}, "description": "HTTP headers to include. Values are expressions evaluated against the current context."},
 					"accepted_status": {"type": "array", "items": {"type": "string"}, "description": "HTTP status patterns accepted as non-errors, e.g. \"2xx\" or \"404\". Defaults to any 2xx."},
+					"input":           {"$ref": "#/$defs/ModelShape", "description": "Templated value (string expression or nested object) evaluated against the current context to build the request body."},
 					"result_schema":   {"type": "object", "additionalProperties": true, "description": "JSON Schema to validate and persist the response body. Without it the response is available only as 'self' in this task's switch."}
 				},
 				"required": ["type", "endpoint"],
@@ -89,6 +93,7 @@ func (Action) JSONSchemaBytes() ([]byte, error) {
 				"properties": {
 					"type":          {"type": "string", "const": "script"},
 					"exec":          {"type": "string", "description": "Shell command or script body to execute."},
+					"input":         {"$ref": "#/$defs/ModelShape", "description": "Templated value (string expression or nested object) evaluated against the current context to build the script's input payload."},
 					"result_schema": {"type": "object", "additionalProperties": true, "description": "JSON Schema to validate and persist stdout. Without it the output is available only as 'self' in this task's switch."}
 				},
 				"required": ["type", "exec"],
@@ -243,8 +248,8 @@ func (SwitchMap) JSONSchemaBytes() ([]byte, error) {
 	}`), nil
 }
 
-// Shape is a templated value used by the data-shaping fields (params, output,
-// process output, child input). It is recursively either a string expression
+// Shape is a templated value used by the data-shaping fields (action input, output,
+// process output). It is recursively either a string expression
 // (a {{ }} template — literal text, a single expression preserving type, or a
 // mixed string) or an object whose values are themselves Shapes:
 //
@@ -410,7 +415,6 @@ type Task struct {
 	TimeoutMs int               `json:"timeout_ms,omitempty"                  description:"Maximum execution time in milliseconds. 0 means no timeout."`
 	OnlyOnce  *bool             `json:"only_once,omitempty"                   description:"When true, the engine guarantees at-most-once execution: retries are only allowed for pre.* errors (remote never reached) or on_error rules with not_reached:true. Defaults to false (retryable)."`
 	OnError   []ErrorCase       `json:"on_error,omitempty"                    description:"Ordered error-routing rules evaluated when the call fails. First match wins."`
-	Params    *Shape            `json:"params,omitempty"                      description:"Templated value (a string expression or nested object of expressions) evaluated against the current context to build the call's input."`
 	Output    *Shape            `json:"output,omitempty"                      description:"Templated value that remaps this task's output. Evaluated against the context plus self.result (the action's raw result) and self.previous (this task's prior output). When set, this value is stored as outputs.taskID and seen by the switch as self.output; the raw result is not exported."`
 	Switch    SwitchMap         `json:"switch"                                description:"Required. Routing declaration: scalar shorthand (\"next\", \"end\", \"$task-id\") or an ordered list of conditional cases. The last case must be a catch-all (omit 'case')."`
 }

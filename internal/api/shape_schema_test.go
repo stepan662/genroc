@@ -8,8 +8,8 @@ import (
 
 // TestProcessSchemaShape guards the served process-schema.json wiring for the
 // recursive Shape type: the def must exist as oneOf(string, object), recurse via
-// a self $ref, and be referenced by params/output. Breaking this silently breaks
-// editor autocomplete in the playground.
+// a self $ref, and be referenced by the task output and the action input. Breaking
+// this silently breaks editor autocomplete in the playground.
 func TestProcessSchemaShape(t *testing.T) {
 	b := buildProcessDefinitionSchema()
 	var root map[string]any
@@ -30,14 +30,18 @@ func TestProcessSchemaShape(t *testing.T) {
 	if !strings.Contains(string(raw), `"$ref":"#/$defs/ModelShape"`) {
 		t.Errorf("ModelShape must recurse via #/$defs/ModelShape; got %s", raw)
 	}
-	// params and output must reference the Shape def.
+	// Task.output must reference the Shape def.
 	task, _ := defs["ModelTask"].(map[string]any)
 	props, _ := task["properties"].(map[string]any)
-	for _, f := range []string{"params", "output"} {
-		fb, _ := json.Marshal(props[f])
-		if !strings.Contains(string(fb), "ModelShape") {
-			t.Errorf("Task.%s should reference ModelShape, got %s", f, fb)
-		}
+	if ob, _ := json.Marshal(props["output"]); !strings.Contains(string(ob), "ModelShape") {
+		t.Errorf("Task.output should reference ModelShape, got %s", ob)
+	}
+	// The action's input (now on the action union, shared by rest/script/child)
+	// must reference the Shape def.
+	action, _ := defs["ModelAction"].(map[string]any)
+	ab, _ := json.Marshal(action)
+	if !strings.Contains(string(ab), "ModelShape") {
+		t.Errorf("Action.input should reference ModelShape, got %s", ab)
 	}
 }
 

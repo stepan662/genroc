@@ -11,6 +11,7 @@ tasks:
   - id: start
     action:
       type: rest
+      input: "{{ input.ttl }}"
       endpoint: "http://localhost:3001/start"
       result_schema:
         type: object
@@ -29,3 +30,6 @@ tasks:
   - id: finish
     output: "{{outputs.start.num}}"
     switch: end
+
+output:
+  start: "{{ outputs.start }}"
