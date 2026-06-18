@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781770054733,
+  "lastUpdate": 1781780124475,
   "repoUrl": "https://github.com/stepan662/gent-go",
   "entries": {
     "gent throughput": [
@@ -328,6 +328,54 @@ window.BENCHMARK_DATA = {
           {
             "name": "spawn recursive postgres",
             "value": 518,
+            "unit": "inst/s",
+            "extra": "AMD EPYC 9V74 80-Core Processor · 4 cores · 16GB · linux x64 6.17.0-1018-azure"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "granat.stepan@gmail.com",
+            "name": "Štěpán Granát",
+            "username": "stepan662"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "701a8ae88f1c506a8c9fb971d4729b94d278b08e",
+          "message": "feat: updated process interface\n\n* feat: cannonical + recursive inferrence\n\n* feat: recusive infer\n\n* feat: multi step recursion solved\n\n* fix: check if previous output is accessible (only when there is a loop)\n\n* chore: more tests\n\n* fix: recursive exponentional non-stabalizing case fixed\n\n* feat: params, output more flexible\n\n* feat: renaming steps -> tasks + output field required",
+          "timestamp": "2026-06-18T12:52:52+02:00",
+          "tree_id": "6975fb83bd88a5582cdbcb3752210f131d20c9c5",
+          "url": "https://github.com/stepan662/gent-go/commit/701a8ae88f1c506a8c9fb971d4729b94d278b08e"
+        },
+        "date": 1781780123806,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "spawn deep sqlite",
+            "value": 84,
+            "unit": "inst/s",
+            "extra": "AMD EPYC 9V74 80-Core Processor · 4 cores · 16GB · linux x64 6.17.0-1018-azure"
+          },
+          {
+            "name": "spawn deep postgres",
+            "value": 317,
+            "unit": "inst/s",
+            "extra": "AMD EPYC 9V74 80-Core Processor · 4 cores · 16GB · linux x64 6.17.0-1018-azure"
+          },
+          {
+            "name": "spawn recursive sqlite",
+            "value": 95,
+            "unit": "inst/s",
+            "extra": "AMD EPYC 9V74 80-Core Processor · 4 cores · 16GB · linux x64 6.17.0-1018-azure"
+          },
+          {
+            "name": "spawn recursive postgres",
+            "value": 468,
             "unit": "inst/s",
             "extra": "AMD EPYC 9V74 80-Core Processor · 4 cores · 16GB · linux x64 6.17.0-1018-azure"
           }
