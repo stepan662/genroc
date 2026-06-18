@@ -37,6 +37,10 @@ export default defineConfig({
           name: "stress",
           include: ["stress/**/*_test.ts"],
           testTimeout: 120_000,
+          // Run stress files one at a time: each saturates a worker fleet against the
+          // single Postgres, so running two concurrently starves the other's workers
+          // (connection/CPU contention) and flakes their startup.
+          fileParallelism: false,
           env: process.env.POSTGRES_DSN
             ? { POSTGRES_DSN: process.env.POSTGRES_DSN }
             : {},

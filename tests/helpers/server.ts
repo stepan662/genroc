@@ -81,6 +81,79 @@ export async function startGent(
   };
 }
 
+// ── Supervised worker (auto-restart on the overwhelm exit) ────────────────────
+
+export interface WorkerOpts {
+  pgDSN: string;
+  pollMs: number;
+  maxConcurrent: number;
+  leaseDurationMs?: number;
+  leaseRenewMs?: number;
+  immediateRetries?: boolean;
+  pgMaxOpenConns?: number;
+}
+
+export interface SupervisedWorker {
+  restarts: () => number; // times the process exited and was brought back (overwhelm evidence)
+  stop: () => Promise<void>;
+}
+
+function workerArgs(port: number, o: WorkerOpts): string[] {
+  return [
+    "--pg", o.pgDSN,
+    "--http", `:${port}`,
+    "--log", "error",
+    "--poll", String(o.pollMs),
+    "--max-concurrent", String(o.maxConcurrent),
+    ...(o.leaseDurationMs !== undefined ? ["--lease-duration", `${o.leaseDurationMs}ms`] : []),
+    ...(o.leaseRenewMs !== undefined ? ["--lease-renew-interval", `${o.leaseRenewMs}ms`] : []),
+    ...(o.immediateRetries ? ["--immediate-retries"] : []),
+    ...(o.pgMaxOpenConns !== undefined
+      ? ["--pg-max-open-conns", String(o.pgMaxOpenConns)]
+      : process.env.GENT_PG_MAX_OPEN_CONNS
+        ? ["--pg-max-open-conns", process.env.GENT_PG_MAX_OPEN_CONNS]
+        : []),
+  ];
+}
+
+// startSupervisedWorker runs one gent worker process and restarts it whenever it
+// exits — exactly what a process supervisor (systemd, k8s) does for a worker fleet.
+// A worker that overwhelms its lease renewer exits non-zero; the supervisor brings
+// it back with a fresh pid (so its abandoned leases expire and are reclaimed). This
+// is how overwhelm recovery actually works in production, modelled honestly with
+// real processes rather than emulated in-process.
+export async function startSupervisedWorker(
+  bin: string,
+  port: number,
+  o: WorkerOpts,
+): Promise<SupervisedWorker> {
+  let stopped = false;
+  let restarts = 0;
+  let proc: ChildProcess = spawn(bin, workerArgs(port, o), { stdio: "ignore" });
+  const onExit = () => {
+    if (stopped) return;
+    restarts++;
+    // Brief pause so the OS frees the port before the supervisor relaunches.
+    setTimeout(() => {
+      if (stopped) return;
+      proc = spawn(bin, workerArgs(port, o), { stdio: "ignore" });
+      proc.on("exit", onExit);
+    }, 100);
+  };
+  proc.on("exit", onExit);
+  await waitUntilReady(port);
+  return {
+    restarts: () => restarts,
+    stop: () =>
+      new Promise<void>((resolve) => {
+        stopped = true;
+        if (proc.exitCode !== null || proc.signalCode !== null) return resolve();
+        proc.once("exit", () => resolve());
+        proc.kill("SIGTERM");
+      }),
+  };
+}
+
 // ── Global shared server for vitest's globalSetup ─────────────────────────────
 
 let sharedServer: GentProcess | null = null;
