@@ -468,7 +468,7 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 				}
 				// Timer fired: fall through to the switch with no action result.
 			case model.ActionTypeExternal:
-				out, done := e.runExternal(inst, task)
+				out, done := e.runExternal(ctx, inst, task)
 				if done != nil {
 					return *done
 				}
@@ -836,8 +836,9 @@ func (e *Engine) runDelay(inst *model.ProcessInstance, task *model.Task) *advanc
 //     on that code re-arm the wait with a fresh token.
 //
 // Returns (result, nil) to continue advancing, or (nil, outcome) to stop and persist.
-func (e *Engine) runExternal(inst *model.ProcessInstance, task *model.Task) (any, *advanceOutcome) {
-	// Phase 2: a result was submitted (the resolve API already un-parked us).
+func (e *Engine) runExternal(ctx context.Context, inst *model.ProcessInstance, task *model.Task) (any, *advanceOutcome) {
+	// Phase 2: a result was submitted (the resolve API or a direct signal already un-parked
+	// us by storing _external_result).
 	if res, ok := inst.ContextData[model.CtxExternalResult]; ok {
 		delete(inst.ContextData, model.CtxExternalResult)
 		delete(inst.ContextData, model.CtxExternal)
@@ -856,33 +857,42 @@ func (e *Engine) runExternal(inst *model.ProcessInstance, task *model.Task) (any
 		return nil, stop(e.handleCallError(inst, task, "external task timed out", "external.timeout"))
 	}
 
-	// Phase 1: first arrival — snapshot input, mint a per-occurrence token, and park.
-	// RetryCount is intentionally left untouched: a re-arm after an external.timeout
-	// retry must keep its counter so on_error retry budgeting terminates.
+	// Phase 1: first arrival. Atomically either consume a signal already buffered for this
+	// task (the push/webhook case — it raced ahead of the process reaching the task) or
+	// park and wait. RetryCount is intentionally left untouched so a re-arm after an
+	// external.timeout retry keeps its counter and on_error budgeting terminates.
 	input, err := e.buildTaskData(inst, task)
 	if err != nil {
 		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q input: %v", task.ID, err)))
 	}
 	token := inst.ID + "." + idgen.New()
-	inst.ContextData[model.CtxExternal] = map[string]any{
-		"task_id": task.ID,
-		"token":   token,
-		"input":   input,
-	}
-	inst.WaitState = model.WaitStateExternal
+	var wakeAt *time.Time
 	if task.TimeoutMs > 0 {
 		wake := db.Now().Add(time.Duration(task.TimeoutMs) * time.Millisecond)
-		inst.WakeAt = &wake
-	} else {
-		inst.WakeAt = nil
+		wakeAt = &wake
 	}
+	consumed, payload, err := e.db.ArmExternalOrConsumeSignal(ctx, inst, task.ID, token, input, wakeAt)
+	if err != nil {
+		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q arm: %v", task.ID, err)))
+	}
+	if consumed {
+		// A buffered signal fed the task immediately. Continue advancing with it as the
+		// result; ArmExternalOrConsumeSignal kept this worker's lease, so the normal
+		// progress/terminal write at the end of advance releases it — the instance never
+		// sits claimable while still in flight.
+		e.log.Info("external task resolved from buffered signal", "id", inst.ID, "task", task.ID)
+		e.audit(inst, model.LogInfo, model.EventExternalResolved, task.ID, "", "", map[string]any{"buffered": true})
+		return payload, nil
+	}
+	// Parked. ArmExternalOrConsumeSignal persisted the parked state and released the lease,
+	// so (like a child spawn) advance returns noop and writes nothing further.
 	e.log.Info("external task armed", "id", inst.ID, "task", task.ID, "timeout_ms", task.TimeoutMs)
 	detail := map[string]any{"token": token}
 	if task.TimeoutMs > 0 {
 		detail["timeout_ms"] = task.TimeoutMs
 	}
 	e.audit(inst, model.LogInfo, model.EventExternalArmed, task.ID, "", "", detail)
-	return nil, stop(advanceOutcome{kind: outcomeProgress})
+	return nil, stop(advanceOutcome{kind: outcomeNoop})
 }
 
 // evalDurationMs evaluates a delay expression to a non-negative millisecond

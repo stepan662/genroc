@@ -29,6 +29,23 @@ func (q *Queries) CountActiveSiblings(ctx context.Context, arg CountActiveSiblin
 	return count, err
 }
 
+const countBufferedSignals = `-- name: CountBufferedSignals :one
+SELECT COUNT(*) FROM process_signals
+WHERE instance_id = ?1 AND task_id = ?2
+`
+
+type CountBufferedSignalsParams struct {
+	InstanceID string
+	TaskID     string
+}
+
+func (q *Queries) CountBufferedSignals(ctx context.Context, arg CountBufferedSignalsParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countBufferedSignals, arg.InstanceID, arg.TaskID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteChannel = `-- name: DeleteChannel :exec
 DELETE FROM process_channels WHERE name = ?1 AND channel = ?2
 `
@@ -514,6 +531,30 @@ func (q *Queries) InsertLog(ctx context.Context, arg InsertLogParams) error {
 	return err
 }
 
+const insertSignal = `-- name: InsertSignal :exec
+INSERT INTO process_signals (id, instance_id, task_id, payload, created_at)
+VALUES (?1, ?2, ?3, ?4, ?5)
+`
+
+type InsertSignalParams struct {
+	ID         string
+	InstanceID string
+	TaskID     string
+	Payload    string
+	CreatedAt  int64
+}
+
+func (q *Queries) InsertSignal(ctx context.Context, arg InsertSignalParams) error {
+	_, err := q.db.ExecContext(ctx, insertSignal,
+		arg.ID,
+		arg.InstanceID,
+		arg.TaskID,
+		arg.Payload,
+		arg.CreatedAt,
+	)
+	return err
+}
+
 const latestVersion = `-- name: LatestVersion :one
 SELECT MAX(version) FROM process_definitions WHERE name = ?1
 `
@@ -808,6 +849,30 @@ func (q *Queries) LoadDefinitionsOnChannel(ctx context.Context, channel string) 
 	return items, nil
 }
 
+const popOldestSignal = `-- name: PopOldestSignal :one
+DELETE FROM process_signals
+WHERE id = (
+    SELECT s.id FROM process_signals s
+    WHERE s.instance_id = ?1 AND s.task_id = ?2
+    ORDER BY s.created_at, s.id LIMIT 1
+)
+RETURNING payload
+`
+
+type PopOldestSignalParams struct {
+	InstanceID string
+	TaskID     string
+}
+
+// Deletes and returns the oldest buffered signal for (instance, task), giving FIFO
+// delivery. Run inside the arm transaction, which already holds the instance row lock.
+func (q *Queries) PopOldestSignal(ctx context.Context, arg PopOldestSignalParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, popOldestSignal, arg.InstanceID, arg.TaskID)
+	var payload string
+	err := row.Scan(&payload)
+	return payload, err
+}
+
 const renewWorkerLeasesChunk = `-- name: RenewWorkerLeasesChunk :execrows
 UPDATE process_instances
 SET lease_expires_at = ?1
@@ -837,6 +902,30 @@ func (q *Queries) RenewWorkerLeasesChunk(ctx context.Context, arg RenewWorkerLea
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const setExternalResult = `-- name: SetExternalResult :exec
+UPDATE process_instances
+SET context_data = ?1,
+    wait_state   = '',
+    wake_at      = NULL,
+    updated_at   = ?2
+WHERE id = ?3
+`
+
+type SetExternalResultParams struct {
+	ContextData string
+	UpdatedAt   int64
+	ID          string
+}
+
+// Un-parks an external task by storing the submitted/buffered result under
+// _external_result and clearing the wait. It does NOT touch worker_id/lease: callers
+// run it under the instance row lock and either the instance is parked (lease already
+// NULL) or the engine is mid-arm and must keep its lease until it finishes advancing.
+func (q *Queries) SetExternalResult(ctx context.Context, arg SetExternalResultParams) error {
+	_, err := q.db.ExecContext(ctx, setExternalResult, arg.ContextData, arg.UpdatedAt, arg.ID)
+	return err
 }
 
 const updateInstance = `-- name: UpdateInstance :exec

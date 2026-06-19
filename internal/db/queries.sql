@@ -126,6 +126,37 @@ WHERE wait_state = 'external'
 ORDER BY updated_at ASC, id ASC
 LIMIT sqlc.arg(lim);
 
+-- name: InsertSignal :exec
+INSERT INTO process_signals (id, instance_id, task_id, payload, created_at)
+VALUES (sqlc.arg(id), sqlc.arg(instance_id), sqlc.arg(task_id), sqlc.arg(payload), sqlc.arg(created_at));
+
+-- name: PopOldestSignal :one
+-- Deletes and returns the oldest buffered signal for (instance, task), giving FIFO
+-- delivery. Run inside the arm transaction, which already holds the instance row lock.
+DELETE FROM process_signals
+WHERE id = (
+    SELECT s.id FROM process_signals s
+    WHERE s.instance_id = sqlc.arg(instance_id) AND s.task_id = sqlc.arg(task_id)
+    ORDER BY s.created_at, s.id LIMIT 1
+)
+RETURNING payload;
+
+-- name: SetExternalResult :exec
+-- Un-parks an external task by storing the submitted/buffered result under
+-- _external_result and clearing the wait. It does NOT touch worker_id/lease: callers
+-- run it under the instance row lock and either the instance is parked (lease already
+-- NULL) or the engine is mid-arm and must keep its lease until it finishes advancing.
+UPDATE process_instances
+SET context_data = sqlc.arg(context_data),
+    wait_state   = '',
+    wake_at      = NULL,
+    updated_at   = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id);
+
+-- name: CountBufferedSignals :one
+SELECT COUNT(*) FROM process_signals
+WHERE instance_id = sqlc.arg(instance_id) AND task_id = sqlc.arg(task_id);
+
 -- name: RenewWorkerLeasesChunk :execrows
 -- Renews up to chunk_size of this worker's leases, soonest-to-expire first, that
 -- are not already stamped to new_expiry. Called in a loop (one small transaction

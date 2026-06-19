@@ -63,3 +63,11 @@ type ProcessLog struct {
 	Detail     string
 	CreatedAt  int64
 }
+
+type ProcessSignal struct {
+	ID         string
+	InstanceID string
+	TaskID     string
+	Payload    string
+	CreatedAt  int64
+}

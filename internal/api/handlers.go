@@ -138,6 +138,11 @@ type ResolveExternalTaskReq struct {
 	Result any    `json:"result"` // the result payload, validated against the task's result_schema
 }
 
+type SignalInstanceReq struct {
+	TaskID  string `json:"task_id"` // the external task to deliver to (addressed, not by token)
+	Payload any    `json:"payload"` // the result payload, validated against the task's result_schema
+}
+
 type ListLogsReq struct {
 	Level   string `json:"level"`    // optional filter: debug, info, warn, error
 	Since   int64  `json:"since"`    // optional: only logs at/after this unix-millis timestamp
@@ -496,6 +501,54 @@ func (h *Handlers) resolveExternalTask(raw json.RawMessage) Reply {
 		return errReply(err)
 	}
 	return okReply(map[string]any{"resolved": true})
+}
+
+func (h *Handlers) signalInstance(id string, raw json.RawMessage) Reply {
+	if id == "" {
+		return errReply(fmt.Errorf("id is required"))
+	}
+	var req SignalInstanceReq
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return errReply(fmt.Errorf("decode: %w", err))
+	}
+	if req.TaskID == "" {
+		return errReply(fmt.Errorf("task_id is required"))
+	}
+	inst, err := h.db.GetInstance(id)
+	if err != nil {
+		return errReply(err)
+	}
+	if inst.Status != model.StatusRunning {
+		return errReply(fmt.Errorf("instance is not running (status %s)", inst.Status))
+	}
+	// Resolve the target external task from the pinned definition — it may be a wait point
+	// reached later, not the current front task. The definition (and its result_schema) is
+	// immutable for this version, so validating against it before the atomic deliver is safe.
+	def, err := h.db.GetDefinition(inst.ProcessName, inst.ProcessVersion)
+	if err != nil {
+		return errReply(err)
+	}
+	var target *model.Task
+	for _, t := range def.Tasks {
+		if t.ID == req.TaskID {
+			target = t
+			break
+		}
+	}
+	if target == nil {
+		return errReply(fmt.Errorf("no task %q in %s v%d", req.TaskID, inst.ProcessName, inst.ProcessVersion))
+	}
+	if target.Action == nil || target.Action.Type != model.ActionTypeExternal {
+		return errReply(fmt.Errorf("task %q is not an external task", req.TaskID))
+	}
+	if err := target.Action.ValidateOutput(req.Payload); err != nil {
+		return errReply(fmt.Errorf("payload validation: %w", err))
+	}
+	delivered, err := h.db.DeliverSignal(context.Background(), id, req.TaskID, idgen.New(), req.Payload)
+	if err != nil {
+		return errReply(err)
+	}
+	return okReply(map[string]any{"delivered": delivered, "buffered": !delivered})
 }
 
 func (h *Handlers) tick(raw json.RawMessage) Reply {

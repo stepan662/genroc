@@ -407,6 +407,30 @@ var registry = func() []actionDef {
 			},
 		},
 		{
+			Name:    "signal_instance",
+			Method:  http.MethodPost,
+			Path:    "/instances/{id}/signal",
+			Summary: "Deliver a signal (result) to an external task by id: resolves it if armed now, else buffers FIFO until the task next arms",
+			Tags:    []string{"External Tasks"},
+			PathQuery: struct {
+				ID string `path:"id" format:"uuid"`
+			}{},
+			Req:  SignalInstanceReq{TaskID: "approval", Payload: map[string]any{"approved": true}},
+			Resp: map[string]any{"delivered": true, "buffered": false},
+			fromHTTP: func(r *http.Request) (Envelope, error) {
+				var payload json.RawMessage
+				if r.ContentLength != 0 {
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						return Envelope{}, err
+					}
+				}
+				return Envelope{Action: "signal_instance", ID: r.PathValue("id"), Payload: payload}, nil
+			},
+			handle: func(h *Handlers, env Envelope) Reply {
+				return h.signalInstance(env.ID, env.Payload)
+			},
+		},
+		{
 			Name:    "tick",
 			Method:  http.MethodPost,
 			Path:    "/tick",

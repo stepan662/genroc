@@ -50,7 +50,7 @@ func (db *DB) ListExternalTasks(processName string, processVersion, limit int) (
 // The result is stored under _external_result; the engine consumes it on the next claim
 // (runExternal phase 2). Returns a descriptive error when the task is no longer waiting.
 func (db *DB) ResolveExternalTask(ctx context.Context, instanceID, token string, result any) error {
-	tx, _, raw, err := db.beginTx(ctx, nil)
+	tx, qtx, raw, err := db.beginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -99,20 +99,14 @@ func (db *DB) ResolveExternalTask(ctx context.Context, instanceID, token string,
 	if err != nil {
 		return fmt.Errorf("marshal context: %w", err)
 	}
-
-	// The conditional WHERE re-asserts the parked state under the lock; with FOR UPDATE
-	// held nothing can have changed, so 0 rows is purely defensive.
-	res, err := raw.ExecContext(ctx,
-		`UPDATE process_instances
-		    SET context_data = ?, wait_state = '', wake_at = NULL, updated_at = ?
-		  WHERE id = ? AND status = 'running' AND wait_state = 'external'`,
-		string(newCtx), nowMillis(), instanceID)
-	if err != nil {
+	// The status/wait_state/token/lease checks above ran under the row lock, so the
+	// un-park is unconditional here.
+	if err := qtx.SetExternalResult(ctx, dbgen.SetExternalResultParams{
+		ContextData: string(newCtx),
+		UpdatedAt:   nowMillis(),
+		ID:          instanceID,
+	}); err != nil {
 		return fmt.Errorf("resolve external task: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("task is not waiting for an external result")
-	}
-
 	return tx.Commit()
 }
