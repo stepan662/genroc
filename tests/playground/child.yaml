@@ -11,3 +11,4 @@ tasks:
           ok:
             type: boolean
         required: [ok]
+    switch: end
