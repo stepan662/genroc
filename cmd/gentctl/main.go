@@ -9,7 +9,7 @@
 //	gentctl run      <process> [--channel C | --version N] [--input <json|@file|->] [--set k=v ...]
 //	gentctl instances [--status <status>] [--sort updated|created] [--limit <n>] [--all]
 //	gentctl get      <instance-id> [--json]
-//	gentctl logs     [--level <level>] [--since <ms>] [--limit <n>] [--tree] [--mode basic|detail|json] <instance-id>
+//	gentctl logs     [--level <level>] [--since <ms>] [--limit <n>] [--recursive] [--mode basic|detail|json] <instance-id>
 //	gentctl cancel   <instance-id>
 //	gentctl retry    [--force] <instance-id>
 //	gentctl channel list   <process>
@@ -475,11 +475,11 @@ func runLogsCmd(server string, args []string) {
 	levelFlag := fs.String("level", "", "filter by level (debug, info, warn, error); empty = all")
 	sinceFlag := fs.Int64("since", 0, "only logs at/after this unix-millis timestamp")
 	limitFlag := fs.Int("limit", 200, "max entries to return")
-	treeFlag := fs.Bool("tree", false, "include the whole process subtree (root instance id)")
+	recursiveFlag := fs.Bool("recursive", false, "include the whole process subtree (root instance id)")
 	modeFlag := fs.String("mode", "detail", "output: basic (no data body), detail (+ data), or json (one JSON object per line, untruncated)")
 	fs.Parse(args)
 	if fs.NArg() != 1 {
-		fatal("usage: gentctl logs [--level L] [--since MS] [--limit N] [--tree] [--mode basic|detail|json] <instance-id>")
+		fatal("usage: gentctl logs [--level L] [--since MS] [--limit N] [--recursive] [--mode basic|detail|json] <instance-id>")
 	}
 	id := fs.Arg(0)
 	mode, err := logview.ParseMode(*modeFlag)
@@ -497,8 +497,8 @@ func runLogsCmd(server string, args []string) {
 	if *limitFlag > 0 {
 		q.Set("limit", strconv.Itoa(*limitFlag))
 	}
-	if *treeFlag {
-		q.Set("tree", "true")
+	if *recursiveFlag {
+		q.Set("recursive", "true")
 	}
 	u := *serverFlag + "/instances/" + url.PathEscape(id) + "/logs"
 	if enc := q.Encode(); enc != "" {
@@ -545,17 +545,17 @@ func runLogsCmd(server string, args []string) {
 
 	// Render via the shared logview column layout — the same one the server console
 	// uses, so a row reads identically in either place. The CLI adds a header (it has
-	// the whole page) and shows the ID column only with --tree (a single-instance view
+	// the whole page) and shows the ID column only with --recursive (a single-instance view
 	// repeats one id). The data body is shown only in detail mode.
-	fmt.Println(logview.Header(*treeFlag))
+	fmt.Println(logview.Header(*recursiveFlag))
 	for _, l := range resp.Items {
 		t, _ := parseTime(l.Time)
 		rec := logview.Record{Event: l.Event, Task: l.Task, Msg: l.Message, Code: l.Code, Data: l.Data, Meta: l.Meta}
 		idTag := ""
-		if *treeFlag {
+		if *recursiveFlag {
 			idTag = shortID(l.Instance)
 		}
-		fmt.Println(logview.RenderEvent(t, l.Level, idTag, l.Event, l.Task, rec.Detail(mode), *treeFlag))
+		fmt.Println(logview.RenderEvent(t, l.Level, idTag, l.Event, l.Task, rec.Detail(mode), *recursiveFlag))
 	}
 }
 
@@ -756,7 +756,6 @@ func longTime(rfc string) string {
 	}
 	return fmt.Sprintf("%s  (%s)", t.Format("2006-01-02 15:04:05"), relAge(t))
 }
-
 
 func runCancelCmd(server string, args []string) {
 	fs := flag.NewFlagSet("cancel", flag.ExitOnError)
@@ -1049,7 +1048,7 @@ func usage() {
   gentctl run      <process> [--channel C | --version N] [--input <json|@file|->] [--set k=v ...]
   gentctl instances [--status <status>] [--sort updated|created] [--limit <n>] [--all]
   gentctl get      <instance-id> [--json]
-  gentctl logs     [--level <level>] [--since <ms>] [--limit <n>] [--tree] [--mode basic|detail|json] <instance-id>
+  gentctl logs     [--level <level>] [--since <ms>] [--limit <n>] [--recursive] [--mode basic|detail|json] <instance-id>
   gentctl cancel   <instance-id>
   gentctl retry    [--force] <instance-id>
   gentctl channel list   <process>

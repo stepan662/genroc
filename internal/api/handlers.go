@@ -167,7 +167,7 @@ type ListExternalTasksReq struct {
 // snapshotted input + the result_schema the resolver must satisfy, plus the resolve
 // token — never the process context.
 type ExternalTaskResp struct {
-	Token        string             `json:"token"`                   // pass back to /external-tasks/resolve
+	Token        string             `json:"token"` // pass back to /external-tasks/resolve
 	Process      string             `json:"process"`
 	Version      int                `json:"version"`
 	TaskID       string             `json:"task_id"`
@@ -187,9 +187,9 @@ type SignalInstanceReq struct {
 }
 
 type ListLogsReq struct {
-	Level string `json:"level"` // optional filter: debug, info, warn, error
-	Since int64  `json:"since"` // optional: only logs at/after this unix-millis timestamp
-	Tree  bool   `json:"tree"`  // include the whole process subtree, keyed on the root instance
+	Level     string `json:"level"`     // optional filter: debug, info, warn, error
+	Since     int64  `json:"since"`     // optional: only logs at/after this unix-millis timestamp
+	Recursive bool   `json:"recursive"` // include the whole process subtree, keyed on the root instance
 	Pagination
 }
 
@@ -425,7 +425,7 @@ func (h *Handlers) listInstanceLogs(id string, raw json.RawMessage) Reply {
 		info db.PageInfo
 		err  error
 	)
-	if req.Tree {
+	if req.Recursive {
 		logs, info, err = h.db.ListTreeLogs(id, opts)
 	} else {
 		logs, info, err = h.db.ListLogs(id, opts)

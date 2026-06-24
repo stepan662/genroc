@@ -1,18 +1,14 @@
 # yaml-language-server: $schema=http://localhost:8888/process-schema.json
 name: order-pipeline
 input_schema:
-  type: object
-  properties:
-    sleep:
-      type: integer
-  required: [sleep]
+  type: number
 
 tasks:
   - id: first
     action:
       type: rest
       input:
-        sleep: "{{ input.sleep }}"
+        sleep: "{{ input }}"
       endpoint: "http://localhost:3001/first"
       result_schema:
         type: object
@@ -27,7 +23,7 @@ tasks:
     action:
       type: rest
       input:
-        sleep: "{{ input.sleep }}"
+        sleep: "{{ input }}"
       endpoint: "http://localhost:3001/second"
       result_schema:
         type: object
@@ -42,7 +38,7 @@ tasks:
     action:
       type: rest
       input:
-        sleep: "{{ input.sleep }}"
+        sleep: "{{ input }}"
       endpoint: "http://localhost:3001/third"
       result_schema:
         type: object
@@ -57,7 +53,7 @@ tasks:
     action:
       type: child
       input:
-        sleep: "{{ input.sleep }}"
+        sleep: "{{ input }}"
       name: "child"
       result_schema:
         type: object

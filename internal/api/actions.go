@@ -114,13 +114,13 @@ var registry = func() []actionDef {
 					},
 					{
 						ID:        "ship",
-						Action:      &model.Action{Type: model.ActionTypeREST, Endpoint: "http://localhost:9002/ship"},
+						Action:    &model.Action{Type: model.ActionTypeREST, Endpoint: "http://localhost:9002/ship"},
 						Switch:    model.SwitchMap{{Goto: model.GotoEnd}},
 						TimeoutMs: 3000, OnError: []model.ErrorCase{{Retries: 2}},
 					},
 					{
 						ID:        "refund",
-						Action:      &model.Action{Type: model.ActionTypeREST, Endpoint: "http://localhost:9003/refund"},
+						Action:    &model.Action{Type: model.ActionTypeREST, Endpoint: "http://localhost:9003/refund"},
 						Switch:    model.SwitchMap{{Goto: model.GotoEnd}},
 						TimeoutMs: 3000, OnError: []model.ErrorCase{{Retries: 1}},
 					},
@@ -323,21 +323,21 @@ var registry = func() []actionDef {
 			Summary: "Get the execution audit trail for a process instance (oldest first)",
 			Tags:    []string{"Instances"},
 			PathQuery: struct {
-				ID    string `path:"id" format:"uuid"`
-				Level string `query:"level" enum:"debug,info,warn,error" description:"Filter by log level"`
-				Since int64  `query:"since" description:"Only logs at/after this unix-millis timestamp"`
-				Tree  bool   `query:"tree" description:"Include the whole process subtree, keyed on the root instance"`
+				ID        string `path:"id" format:"uuid"`
+				Level     string `query:"level" enum:"debug,info,warn,error" description:"Filter by log level"`
+				Since     int64  `query:"since" description:"Only logs at/after this unix-millis timestamp"`
+				Recursive bool   `query:"recursive" description:"Include the whole process subtree, keyed on the root instance"`
 				pageQuery
 			}{},
 			Resp: PageResp[LogEntryResp]{},
 			fromHTTP: func(r *http.Request) (Envelope, error) {
 				q := r.URL.Query()
 				since, _ := strconv.ParseInt(q.Get("since"), 10, 64)
-				tree, _ := strconv.ParseBool(q.Get("tree"))
+				recursive, _ := strconv.ParseBool(q.Get("recursive"))
 				b, _ := json.Marshal(ListLogsReq{
 					Level:      q.Get("level"),
 					Since:      since,
-					Tree:       tree,
+					Recursive:  recursive,
 					Pagination: paginationFrom(r),
 				})
 				return Envelope{Action: "list_instance_logs", ID: r.PathValue("id"), Payload: b}, nil

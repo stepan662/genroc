@@ -89,7 +89,7 @@ afterAll(async () => {
 
 async function getLogs(
   id: string,
-  query?: { level?: "debug" | "info" | "warn" | "error"; tree?: boolean },
+  query?: { level?: "debug" | "info" | "warn" | "error"; recursive?: boolean },
 ) {
   const { data, error } = await ctx.env.client.GET("/instances/{id}/logs", {
     params: { path: { id }, query },

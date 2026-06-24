@@ -4,7 +4,7 @@ input_schema:
   type: object
   properties:
     sleep:
-      type: integer
+      type: number
   required: [sleep]
 tasks:
   - id: fourth
