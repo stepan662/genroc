@@ -175,7 +175,7 @@ var registry = func() []actionDef {
 				Status string `query:"status" enum:"running,completed,failing,failed,cancelling,cancelled" description:"Filter by status"`
 				pageQuery
 			}{},
-			Resp: PageResp[InstanceStatusResp]{},
+			Resp: PageResp[InstanceSummaryResp]{},
 			fromHTTP: func(r *http.Request) (Envelope, error) {
 				b, _ := json.Marshal(ListInstancesReq{
 					Status:     r.URL.Query().Get("status"),

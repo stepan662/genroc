@@ -10,25 +10,31 @@ import (
 	"gent/internal/model"
 )
 
-// instancePaginator is the pagination policy for ListInstances. Only index-backed
-// sorts are offered: created keys on (created_at, id) — backed by
-// idx_instances_status_created_at and the UUIDv7 PK tiebreaker. Add more sort keys
-// here (with a matching index) to extend.
+// instancePaginator is the pagination policy for ListInstances. It selects only
+// the summary columns (no context_data/task_queue/call_stack — see
+// instanceSummaryColumns) so listing many instances never fetches a potentially
+// huge context. Two index-backed sorts: created keys on (created_at, id) and
+// updated on (updated_at, id) — backed by idx_instances_updated_at — each with the
+// UUIDv7 PK tiebreaker. The default is created: it is immutable, so a cursor walk
+// stays stable even as the engine mutates rows; the CLI's "recent activity" view
+// opts into updated explicitly. Add more sort keys here (with a matching index).
 var instancePaginator = paginator{
 	table:   "process_instances",
-	columns: instanceColumns,
+	columns: instanceSummaryColumns,
 	sorts: map[string]sortMode{
 		"created": {{"created_at", kindInt}, {"id", kindText}},
+		"updated": {{"updated_at", kindInt}, {"id", kindText}},
 	},
 	filterCols: []string{"status"},
 	defSort:    "created",
-	defDesc:    true, // newest first, preserving the previous fixed order
+	defDesc:    true, // newest first
 	defLimit:   20,
 	maxLimit:   100,
 }
 
 // instanceCursorVals returns the active sort mode's key-column values for inst,
-// matching instancePaginator's column order for that mode.
+// matching externalPaginator's column order for that mode (the external-task queue
+// keys on park time, updated_at).
 func instanceCursorVals(sort string, inst *model.ProcessInstance) []any {
 	switch sort {
 	case "updated": // external-task queue
@@ -38,12 +44,53 @@ func instanceCursorVals(sort string, inst *model.ProcessInstance) []any {
 	}
 }
 
+// instanceSummaryCursorVals is instanceCursorVals for the summary list path,
+// matching instancePaginator's sort modes (updated / created).
+func instanceSummaryCursorVals(sort string, s *model.InstanceSummary) []any {
+	switch sort {
+	case "created":
+		return []any{s.CreatedAt.UnixMilli(), s.ID}
+	default: // updated (default)
+		return []any{s.UpdatedAt.UnixMilli(), s.ID}
+	}
+}
+
 // instanceColumns is the full process_instances column list, in the order
 // scanInstance reads them. Shared by the hand-written ClaimInstances and
 // RetryProcess queries so adding a column touches one place.
 const instanceColumns = `id, process_name, process_version, task_queue, context_data, parent_id,
 	call_stack, retry_count, wake_at, status, error,
 	created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_task_id`
+
+// instanceSummaryColumns is the lightweight projection used by ListInstances: no
+// context_data/task_queue/call_stack, so a list never reads or unmarshals a
+// potentially huge context blob. Order matches scanInstanceSummary.
+const instanceSummaryColumns = `id, process_name, process_version, retry_count,
+	status, wait_state, error, created_at, updated_at`
+
+// scanInstanceSummary reads one process_instances row (in instanceSummaryColumns
+// order) into a model.InstanceSummary.
+func scanInstanceSummary(s interface{ Scan(...any) error }) (*model.InstanceSummary, error) {
+	var (
+		r                          model.InstanceSummary
+		processVersion, retryCount int64
+		status, waitState          string
+		createdAt, updatedAt       int64
+	)
+	if err := s.Scan(
+		&r.ID, &r.ProcessName, &processVersion, &retryCount,
+		&status, &waitState, &r.Error, &createdAt, &updatedAt,
+	); err != nil {
+		return nil, err
+	}
+	r.ProcessVersion = int(processVersion)
+	r.RetryCount = int(retryCount)
+	r.Status = model.Status(status)
+	r.WaitState = model.WaitState(waitState)
+	r.CreatedAt = toTime(createdAt)
+	r.UpdatedAt = toTime(updatedAt)
+	return &r, nil
+}
 
 // scanInstance reads one process_instances row (in instanceColumns order) from a
 // *sql.Row or *sql.Rows.
@@ -175,15 +222,37 @@ func (db *DB) GetInstance(id string) (*model.ProcessInstance, error) {
 	return toInstance(r)
 }
 
-// ListInstances returns a page of instances, optionally filtered by status
-// (empty = all), sorted and paged per req. It returns the page items and the
-// navigation metadata (before/after counts and cursors).
-func (db *DB) ListInstances(status string, req PageReq) ([]*model.ProcessInstance, PageInfo, error) {
+// ListInstances returns a page of instance summaries, optionally filtered by
+// status (empty = all), sorted and paged per req. Summaries omit the context blob
+// (use GetInstance for full detail). It returns the page items and the navigation
+// metadata (before/after counts and cursors).
+func (db *DB) ListInstances(status string, req PageReq) ([]*model.InstanceSummary, PageInfo, error) {
 	b, err := instancePaginator.query(req).EqIf("status", status, status != "").build()
 	if err != nil {
 		return nil, PageInfo{}, err
 	}
-	return db.queryInstancePage(b)
+	rows, err := db.exec.QueryContext(context.Background(), b.pageSQL, b.pageArgs...)
+	if err != nil {
+		return nil, PageInfo{}, err
+	}
+	defer rows.Close()
+	var out []*model.InstanceSummary
+	for rows.Next() {
+		s, err := scanInstanceSummary(rows)
+		if err != nil {
+			return nil, PageInfo{}, err
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, PageInfo{}, err
+	}
+	items, first, last := orient(b, out, instanceSummaryCursorVals)
+	info, err := db.pageInfo(b, first, last)
+	if err != nil {
+		return nil, PageInfo{}, err
+	}
+	return items, info, nil
 }
 
 // queryInstancePage runs a built instance-listing query (page + count) and returns

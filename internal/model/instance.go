@@ -84,3 +84,19 @@ type ProcessInstance struct {
 	// the current task may have been interrupted mid-execution on the previous owner.
 	ReclaimedExpired bool
 }
+
+// InstanceSummary is the lightweight projection of a ProcessInstance used by list
+// endpoints. It deliberately omits the heavy JSON blobs (context_data, task_queue,
+// call_stack) so listing many instances never fetches or unmarshals a potentially
+// huge context — those are only loaded for single-instance detail (GetInstance).
+type InstanceSummary struct {
+	ID             string
+	ProcessName    string
+	ProcessVersion int
+	RetryCount     int
+	Status         Status
+	WaitState      WaitState
+	Error          string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}

@@ -50,7 +50,7 @@ func TestKeysetPredicate(t *testing.T) {
 }
 
 func TestBuildSQL(t *testing.T) {
-	cols := instanceColumns
+	cols := instanceSummaryColumns
 
 	// First page, defaults (created desc): page query + exact LIMIT (no look-ahead).
 	b, err := instancePaginator.query(PageReq{}).build()

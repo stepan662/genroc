@@ -3,7 +3,7 @@
 
 import { createServer } from 'node:http'
 import Ajv from 'ajv'
-import type { StartInput, StartOutput } from './types.ts'
+import type { FirstInput, FourthInput, SecondInput, ThirdInput } from './types.ts'
 
 // Transport envelope — mirrors internal/transport/transport.go
 interface TaskRequest {
@@ -14,29 +14,15 @@ interface TaskRequest {
 
 // Implement this in server.ts and pass it to startServer().
 export interface Handlers {
-  start: (ctx: StartInput) => Promise<StartOutput>
+  first: (ctx: FirstInput) => Promise<Record<string, unknown>>
+  fourth: (ctx: FourthInput) => Promise<Record<string, unknown>>
+  second: (ctx: SecondInput) => Promise<Record<string, unknown>>
+  third: (ctx: ThirdInput) => Promise<Record<string, unknown>>
 }
 
 // Output schemas baked in for runtime validation via AJV.
 const taskSchemas: Record<string, object> = {
-  "finish": {
-    "type": "number"
-  },
-  "start": {
-    "type": "object",
-    "properties": {
-      "num": {
-        "type": "number"
-      },
-      "str": {
-        "type": "string"
-      }
-    },
-    "required": [
-      "num",
-      "str"
-    ]
-  }
+
 }
 
 const ajv = new Ajv()

@@ -3,77 +3,86 @@
   "process_input": {
     "$ref": "#/$defs/input"
   },
-  "process_output": {
-    "$ref": "#/$defs/output"
-  },
   "tasks": {
-    "finish": {
-      "action_type": "",
-      "output": {
-        "$ref": "#/$defs/finish_output"
-      }
-    },
-    "start": {
+    "first": {
       "action_type": "rest",
       "input": {
-        "type": "integer"
-      },
-      "output": {
-        "$ref": "#/$defs/start_output"
+        "$ref": "#/$defs/first_input"
+      }
+    },
+    "fourth": {
+      "action_type": "rest",
+      "input": {
+        "$ref": "#/$defs/fourth_input"
+      }
+    },
+    "second": {
+      "action_type": "rest",
+      "input": {
+        "$ref": "#/$defs/second_input"
+      }
+    },
+    "third": {
+      "action_type": "rest",
+      "input": {
+        "$ref": "#/$defs/third_input"
       }
     }
   },
   "$defs": {
-    "finish_output": {
-      "type": "number"
-    },
-    "input": {
+    "first_input": {
       "type": "object",
       "properties": {
-        "ttl": {
+        "sleep": {
           "type": "integer"
         }
       },
       "required": [
-        "ttl"
+        "sleep"
       ]
     },
-    "output": {
+    "fourth_input": {
       "type": "object",
       "properties": {
-        "start": {
-          "type": "object",
-          "properties": {
-            "num": {
-              "type": "number"
-            },
-            "str": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "num",
-            "str"
-          ]
+        "sleep": {
+          "type": "integer"
         }
       },
       "required": [
-        "start"
+        "sleep"
       ]
     },
-    "start_output": {
+    "input": {
       "type": "object",
       "properties": {
-        "num": {
-          "type": "number"
-        },
-        "str": {
-          "type": "string"
+        "sleep": {
+          "type": "integer"
         }
       },
       "required": [
-        "num",
-        "str"
+        "sleep"
+      ]
+    },
+    "second_input": {
+      "type": "object",
+      "properties": {
+        "sleep": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sleep"
+      ]
+    },
+    "third_input": {
+      "type": "object",
+      "properties": {
+        "sleep": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sleep"
       ]
     }
   }

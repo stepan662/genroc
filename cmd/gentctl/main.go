@@ -6,15 +6,17 @@
 //
 //	gentctl apply    -f file.yaml [-f file2.yaml ...] [--channel latest] [--auto-update-parents]
 //	gentctl validate -f file.yaml [-f file2.yaml ...]
+//	gentctl run      <process> [--channel C | --version N] [--input <json|@file|->] [--set k=v ...]
+//	gentctl instances [--status <status>] [--sort updated|created] [--limit <n>] [--all]
+//	gentctl get      <instance-id> [--json]
+//	gentctl logs     [--level <level>] [--since <ms>] [--limit <n>] [--tree] <instance-id>
+//	gentctl cancel   <instance-id>
+//	gentctl retry    [--force] <instance-id>
 //	gentctl channel list   <process>
 //	gentctl channel set    <process> <channel> <version>
 //	gentctl channel delete <process> <channel>
 //	gentctl promote  --from <channel> --to <channel> [--process <name>]
 //	gentctl status   --channel <channel>
-//	gentctl instances [--status <status>]
-//	gentctl logs     [--level <level>] [--since <ms>] [--limit <n>] [--tree] <instance-id>
-//	gentctl cancel   <instance-id>
-//	gentctl retry    [--force] <instance-id>
 //
 // Environment:
 //
@@ -33,6 +35,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"text/tabwriter"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -60,6 +64,10 @@ func main() {
 		runApplyCmd(server, args)
 	case "validate":
 		runValidateCmd(server, args)
+	case "run":
+		runRunCmd(server, args)
+	case "get":
+		runGetCmd(server, args)
 	case "channel":
 		runChannelCmd(server, args)
 	case "promote":
@@ -279,38 +287,185 @@ func runStatusCmd(server string, args []string) {
 	}
 }
 
-func runInstancesCmd(server string, args []string) {
-	fs := flag.NewFlagSet("instances", flag.ExitOnError)
-	serverFlag := fs.String("server", server, "gent server base URL ($GENT_SERVER)")
-	statusFlag := fs.String("status", "", "filter by status (running, completed, failing, failed, cancelling, cancelled)")
-	fs.Parse(args)
-
-	u := *serverFlag + "/instances"
-	if *statusFlag != "" {
-		u += "?status=" + url.QueryEscape(*statusFlag)
+// runRunCmd starts a new process instance. The process name is the first
+// argument; flags follow it (e.g. `gentctl run greeter --set name=Sam`). Input is
+// assembled from --input (a JSON/YAML literal, @file, or - for stdin) and any
+// number of --set key=value overrides; see buildInput.
+func runRunCmd(server string, args []string) {
+	if len(args) == 0 {
+		fatal("usage: gentctl run <process> [--channel C | --version N] [--input <json|@file|->] [--set k=v ...]")
 	}
-	type instanceRow struct {
+	process := args[0]
+
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	serverFlag := fs.String("server", server, "gent server base URL ($GENT_SERVER)")
+	channelFlag := fs.String("channel", "", "resolve the version via this channel")
+	versionFlag := fs.Int("version", 0, "pin an explicit process version")
+	inputFlag := fs.String("input", "", "input as a JSON/YAML literal, @file, or - for stdin")
+	var sets multiFlag
+	fs.Var(&sets, "set", "set an input field: key=value (repeatable; dotted keys nest, values are type-inferred)")
+	fs.Parse(args[1:])
+
+	input, hasInput, err := buildInput(*inputFlag, sets)
+	if err != nil {
+		fatal("%v", err)
+	}
+
+	body := map[string]any{"process": process}
+	switch {
+	case *versionFlag > 0:
+		body["version"] = *versionFlag
+	case *channelFlag != "":
+		body["channel"] = *channelFlag
+	}
+	if hasInput {
+		body["input"] = input
+	}
+
+	var resp struct {
 		ID      string `json:"id"`
 		Process string `json:"process"`
 		Version int    `json:"version"`
 		Status  string `json:"status"`
-		Error   string `json:"error"`
 	}
-	resp, err := listAll[instanceRow](u)
+	if err := call(*serverFlag+"/instances", http.MethodPost, body, &resp); err != nil {
+		// Surface an input-schema mismatch as a clear, dedicated message instead of
+		// the generic "server: ..." wrapper.
+		if detail, ok := inputValidationError(err); ok {
+			fatal("input is not valid for %s:\n  %s", process, detail)
+		}
+		fatal("%v", err)
+	}
+	fmt.Printf("started: %s  %s@v%d  (%s)\n", resp.ID, resp.Process, resp.Version, resp.Status)
+}
+
+// runGetCmd prints a single instance's details, including its full context. The
+// instance id is the first argument; pass --json for the raw response.
+func runGetCmd(server string, args []string) {
+	if len(args) == 0 {
+		fatal("usage: gentctl get <instance-id> [--json]")
+	}
+	id := args[0]
+
+	fs := flag.NewFlagSet("get", flag.ExitOnError)
+	serverFlag := fs.String("server", server, "gent server base URL ($GENT_SERVER)")
+	jsonFlag := fs.Bool("json", false, "print the raw JSON response")
+	fs.Parse(args[1:])
+
+	u := *serverFlag + "/instances/" + url.PathEscape(id)
+	if *jsonFlag {
+		var raw json.RawMessage
+		if err := callGet(u, &raw); err != nil {
+			fatal("%v", err)
+		}
+		var buf bytes.Buffer
+		json.Indent(&buf, raw, "", "  ")
+		os.Stdout.Write(buf.Bytes())
+		os.Stdout.Write([]byte("\n"))
+		return
+	}
+
+	var inst struct {
+		ID         string         `json:"id"`
+		Process    string         `json:"process"`
+		Version    int            `json:"version"`
+		Status     string         `json:"status"`
+		WaitState  string         `json:"wait_state"`
+		RetryCount int            `json:"retry_count"`
+		Error      string         `json:"error"`
+		CreatedAt  string         `json:"created_at"`
+		UpdatedAt  string         `json:"updated_at"`
+		Context    map[string]any `json:"context"`
+	}
+	if err := callGet(u, &inst); err != nil {
+		fatal("%v", err)
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(w, "ID:\t%s\n", inst.ID)
+	fmt.Fprintf(w, "Process:\t%s@v%d\n", inst.Process, inst.Version)
+	fmt.Fprintf(w, "Status:\t%s\n", inst.Status)
+	if inst.WaitState != "" {
+		fmt.Fprintf(w, "Wait:\t%s\n", inst.WaitState)
+	}
+	if inst.RetryCount > 0 {
+		fmt.Fprintf(w, "Retries:\t%d\n", inst.RetryCount)
+	}
+	fmt.Fprintf(w, "Created:\t%s\n", longTime(inst.CreatedAt))
+	fmt.Fprintf(w, "Updated:\t%s\n", longTime(inst.UpdatedAt))
+	if inst.Error != "" {
+		fmt.Fprintf(w, "Error:\t%s\n", inst.Error)
+	}
+	w.Flush()
+
+	if len(inst.Context) > 0 {
+		fmt.Println("\nContext:")
+		b, _ := json.MarshalIndent(inst.Context, "", "  ")
+		os.Stdout.Write(b)
+		os.Stdout.Write([]byte("\n"))
+	}
+}
+
+func runInstancesCmd(server string, args []string) {
+	fs := flag.NewFlagSet("instances", flag.ExitOnError)
+	serverFlag := fs.String("server", server, "gent server base URL ($GENT_SERVER)")
+	statusFlag := fs.String("status", "", "filter by status (running, completed, failing, failed, cancelling, cancelled)")
+	sortFlag := fs.String("sort", "created", "sort key: created (newest first) or updated (most recently active)")
+	limitFlag := fs.Int("limit", 20, "max instances to show (server caps a page at 100; use --all for more)")
+	allFlag := fs.Bool("all", false, "list every instance (follow all pages)")
+	fs.Parse(args)
+
+	q := url.Values{}
+	if *statusFlag != "" {
+		q.Set("status", *statusFlag)
+	}
+	q.Set("sort", *sortFlag)
+	q.Set("order", "desc")
+	if !*allFlag {
+		q.Set("limit", strconv.Itoa(*limitFlag))
+	}
+	u := *serverFlag + "/instances?" + q.Encode()
+
+	type instanceRow struct {
+		ID        string `json:"id"`
+		Process   string `json:"process"`
+		Version   int    `json:"version"`
+		Status    string `json:"status"`
+		Error     string `json:"error"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+	}
+
+	var rows []instanceRow
+	var err error
+	if *allFlag {
+		rows, err = listAll[instanceRow](u)
+	} else {
+		var p page[instanceRow]
+		if err = callGet(u, &p); err == nil {
+			rows = p.Items
+		}
+	}
 	if err != nil {
 		fatal("%v", err)
 	}
-	for _, inst := range resp {
-		line := fmt.Sprintf("%s  %-10s  %s@v%d", inst.ID, inst.Status, inst.Process, inst.Version)
-		if inst.Error != "" {
-			errMsg := inst.Error
-			if len(errMsg) > 60 {
-				errMsg = errMsg[:57] + "..."
-			}
-			line += "  " + errMsg
-		}
-		fmt.Println(line)
+	if len(rows) == 0 {
+		fmt.Println("no instances")
+		return
 	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tSTATUS\tPROCESS\tUPDATED\tCREATED\tERROR")
+	for _, r := range rows {
+		errMsg := r.Error
+		if len(errMsg) > 50 {
+			errMsg = errMsg[:47] + "..."
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s@v%d\t%s\t%s\t%s\n",
+			r.ID, r.Status, r.Process, r.Version,
+			shortTime(r.UpdatedAt), shortTime(r.CreatedAt), errMsg)
+	}
+	w.Flush()
 }
 
 func runLogsCmd(server string, args []string) {
@@ -373,7 +528,7 @@ func runLogsCmd(server string, args []string) {
 			}
 			indent = strings.Repeat("  ", depth)
 		}
-		line := fmt.Sprintf("%s%s  %-5s  %-24s", indent, l.Time, strings.ToUpper(l.Level), l.Event)
+		line := fmt.Sprintf("%s%s  %-5s  %-24s", indent, logTime(l.Time), strings.ToUpper(l.Level), l.Event)
 		if l.Task != "" {
 			line += "  task=" + l.Task
 		}
@@ -396,6 +551,208 @@ func shortID(id string) string {
 		return id[:8]
 	}
 	return id
+}
+
+// ── input assembly (gentctl run) ────────────────────────────────────────────────
+
+// buildInput assembles the process input from --input and any --set overrides. The
+// --input value (a JSON/YAML literal, @file, or - for stdin) is the base; each
+// --set key=value is then applied on top (requiring the base to be an object).
+// Returns (value, present, error): present is false when neither flag was given,
+// so the input is omitted entirely for processes that take none.
+func buildInput(inputFlag string, sets []string) (any, bool, error) {
+	var base any
+	present := false
+	if inputFlag != "" {
+		data, err := readInputSource(inputFlag)
+		if err != nil {
+			return nil, false, err
+		}
+		v, err := parseRelaxed(data)
+		if err != nil {
+			return nil, false, fmt.Errorf("parse --input: %w", err)
+		}
+		base = v
+		present = true
+	}
+	if len(sets) > 0 {
+		m, ok := base.(map[string]any)
+		if base == nil {
+			m, ok = map[string]any{}, true
+		}
+		if !ok {
+			return nil, false, fmt.Errorf("--set needs the input to be an object, but --input is %T", base)
+		}
+		for _, s := range sets {
+			if err := applySet(m, s); err != nil {
+				return nil, false, err
+			}
+		}
+		base, present = m, true
+	}
+	return base, present, nil
+}
+
+// readInputSource resolves an --input value: "-" reads stdin, "@path" reads a file,
+// anything else is the literal string.
+func readInputSource(val string) ([]byte, error) {
+	switch {
+	case val == "-":
+		return io.ReadAll(os.Stdin)
+	case strings.HasPrefix(val, "@"):
+		return os.ReadFile(val[1:])
+	default:
+		return []byte(val), nil
+	}
+}
+
+// parseRelaxed parses data as YAML — a superset of JSON, so strict JSON works while
+// also allowing the shell-friendly relaxed forms (unquoted keys, single quotes,
+// trailing commas), e.g. {name: Sam, count: 3}. The result is round-tripped through
+// JSON so the value contains only JSON-native types.
+func parseRelaxed(data []byte) (any, error) {
+	var doc any
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, err
+	}
+	jsonBytes, err := json.Marshal(doc)
+	if err != nil {
+		return nil, err
+	}
+	var out any
+	if err := json.Unmarshal(jsonBytes, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// applySet applies one "key=value" (or "a.b.c=value") override onto m, inferring
+// the value's type and creating nested objects for dotted keys.
+func applySet(m map[string]any, kv string) error {
+	eq := strings.IndexByte(kv, '=')
+	if eq < 0 {
+		return fmt.Errorf("--set %q must be key=value", kv)
+	}
+	key, val := kv[:eq], kv[eq+1:]
+	if key == "" {
+		return fmt.Errorf("--set %q has an empty key", kv)
+	}
+	return setPath(m, strings.Split(key, "."), inferScalar(val))
+}
+
+// setPath walks/creates the nested objects named by path and sets the final key.
+func setPath(m map[string]any, path []string, val any) error {
+	for i := 0; i < len(path)-1; i++ {
+		child, ok := m[path[i]]
+		if !ok {
+			next := map[string]any{}
+			m[path[i]], m = next, next
+			continue
+		}
+		next, ok := child.(map[string]any)
+		if !ok {
+			return fmt.Errorf("--set: %q is already set to a non-object", strings.Join(path[:i+1], "."))
+		}
+		m = next
+	}
+	m[path[len(path)-1]] = val
+	return nil
+}
+
+// inferScalar maps a --set value string to a JSON-native scalar: true/false/null,
+// then integer, then float, else the string unchanged. Use --input for values that
+// must stay strings (e.g. "007") or for arrays / deep structures.
+func inferScalar(s string) any {
+	switch s {
+	case "true":
+		return true
+	case "false":
+		return false
+	case "null":
+		return nil
+	}
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return i
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return f
+	}
+	return s
+}
+
+// inputValidationError extracts the detail of a server-side input-schema rejection
+// ("input validation: <detail>") so run can present it as its own message.
+func inputValidationError(err error) (string, bool) {
+	const marker = "input validation: "
+	s := err.Error()
+	if i := strings.Index(s, marker); i >= 0 {
+		return s[i+len(marker):], true
+	}
+	return "", false
+}
+
+// ── time formatting ─────────────────────────────────────────────────────────────
+
+// parseTime parses an RFC3339(/Nano) timestamp and converts it to local time.
+func parseTime(rfc string) (time.Time, bool) {
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if t, err := time.Parse(layout, rfc); err == nil {
+			return t.Local(), true
+		}
+	}
+	return time.Time{}, false
+}
+
+// shortTime renders a timestamp compactly for list columns: a relative age for
+// recent times ("just now", "5m ago", "3h ago", "2d ago"), or a short absolute
+// "YY-MM-DD HH:MM" beyond a week. Unparseable input is returned unchanged.
+func shortTime(rfc string) string {
+	t, ok := parseTime(rfc)
+	if !ok {
+		return rfc
+	}
+	return relAge(t)
+}
+
+func relAge(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < 0, d >= 7*24*time.Hour:
+		return t.Format("06-01-02 15:04")
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+}
+
+// longTime renders a full local timestamp with its relative age, for detail views:
+// "2006-01-02 15:04:05  (5m ago)".
+func longTime(rfc string) string {
+	t, ok := parseTime(rfc)
+	if !ok {
+		return rfc
+	}
+	return fmt.Sprintf("%s  (%s)", t.Format("2006-01-02 15:04:05"), relAge(t))
+}
+
+// logTime renders a log timestamp as a clock time ("15:04:05"), prefixing the date
+// ("01-02 15:04:05") when the entry is not from today, so a chronological stream
+// stays compact but still unambiguous across days.
+func logTime(rfc string) string {
+	t, ok := parseTime(rfc)
+	if !ok {
+		return rfc
+	}
+	now := time.Now()
+	if t.Year() == now.Year() && t.YearDay() == now.YearDay() {
+		return t.Format("15:04:05")
+	}
+	return t.Format("01-02 15:04:05")
 }
 
 func runCancelCmd(server string, args []string) {
@@ -686,20 +1043,24 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `Usage:
   gentctl apply    -f file.yaml [-f file2.yaml ...] [--channel latest] [--auto-update-parents]
   gentctl validate -f file.yaml [-f file2.yaml ...]
+  gentctl run      <process> [--channel C | --version N] [--input <json|@file|->] [--set k=v ...]
+  gentctl instances [--status <status>] [--sort updated|created] [--limit <n>] [--all]
+  gentctl get      <instance-id> [--json]
+  gentctl logs     [--level <level>] [--since <ms>] [--limit <n>] [--tree] <instance-id>
+  gentctl cancel   <instance-id>
+  gentctl retry    [--force] <instance-id>
   gentctl channel list   <process>
   gentctl channel set    <process> <channel> <version>
   gentctl channel delete <process> <channel>
   gentctl promote  --from <channel> --to <channel> [--process <name>]
   gentctl status   --channel <channel>
-  gentctl instances [--status <status>]
-  gentctl logs     [--level <level>] [--since <ms>] [--limit <n>] [--tree] <instance-id>
-  gentctl cancel   <instance-id>
-  gentctl retry    [--force] <instance-id>
   gentctl config   get <key>
   gentctl config   set <key> <value>
 
 Flags:
   -f        definition file (YAML or JSON, multi-doc --- supported)
+  --input   process input: a JSON/YAML literal, @file, or - for stdin
+  --set     input field key=value (repeatable; dotted keys nest, values type-inferred)
   --server  gent server URL (overrides $GENT_SERVER and config file)
 
 Config keys:

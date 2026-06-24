@@ -3,14 +3,27 @@
 //
 // Usage: bun run playground:server
 
+import { sleep } from "bun";
 import { startServer, type Handlers } from "./generated/server.ts";
-import { StartInput, StartOutput } from "./generated/types.ts";
 
 const PORT = 3001;
 
 const handlers: Handlers = {
-  start: async function (ctx: StartInput): Promise<StartOutput> {
-    return { num: ctx, str: "tst" };
+  async first(input) {
+    await sleep(input.sleep);
+    return { slept: input.sleep };
+  },
+  async second(input) {
+    await sleep(input.sleep);
+    return { slept: input.sleep };
+  },
+  async third(input) {
+    await sleep(input.sleep);
+    return { slept: input.sleep };
+  },
+  async fourth(input) {
+    await sleep(input.sleep);
+    return { slept: input.sleep };
   },
 };
 

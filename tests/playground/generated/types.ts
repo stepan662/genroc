@@ -2,14 +2,21 @@
 // Re-run `bun run playground:generate` after changing process.yaml.
 
 export interface ProcessInput {
-  ttl: number;
+  sleep: number;
 }
 
-export type FinishOutput = number;
+export interface FirstInput {
+  sleep: number;
+}
 
-export type StartInput = number;
+export interface FourthInput {
+  sleep: number;
+}
 
-export interface StartOutput {
-  num: number;
-  str: string;
+export interface SecondInput {
+  sleep: number;
+}
+
+export interface ThirdInput {
+  sleep: number;
 }

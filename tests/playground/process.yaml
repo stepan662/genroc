@@ -3,33 +3,67 @@ name: order-pipeline
 input_schema:
   type: object
   properties:
-    ttl:
+    sleep:
       type: integer
-  required: [ttl]
+  required: [sleep]
 
 tasks:
-  - id: start
+  - id: first
     action:
       type: rest
-      input: "{{ input.ttl }}"
-      endpoint: "http://localhost:3001/start"
+      input:
+        sleep: "{{ input.sleep }}"
+      endpoint: "http://localhost:3001/first"
       result_schema:
         type: object
         properties:
-          num:
+          slept:
             type: number
-          str:
-            type: string
-        required: [num, str]
+        required: [slept]
     output: "{{ self.result }}"
-    switch:
-      - case: "self.result.num < input.ttl"
-        goto: next
-      - goto: end
+    switch: next
 
-  - id: finish
-    output: "{{outputs.start.num}}"
+  - id: second
+    action:
+      type: rest
+      input:
+        sleep: "{{ input.sleep }}"
+      endpoint: "http://localhost:3001/second"
+      result_schema:
+        type: object
+        properties:
+          slept:
+            type: number
+        required: [slept]
+    output: "{{ self.result }}"
+    switch: next
+
+  - id: third
+    action:
+      type: rest
+      input:
+        sleep: "{{ input.sleep }}"
+      endpoint: "http://localhost:3001/third"
+      result_schema:
+        type: object
+        properties:
+          slept:
+            type: number
+        required: [slept]
+    output: "{{ self.result }}"
+    switch: next
+
+  - id: fourth
+    action:
+      type: rest
+      input:
+        sleep: "{{ input.sleep }}"
+      endpoint: "http://localhost:3001/fourth"
+      result_schema:
+        type: object
+        properties:
+          slept:
+            type: number
+        required: [slept]
+    output: "{{ self.result }}"
     switch: end
-
-output:
-  start: "{{ outputs.start }}"

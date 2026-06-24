@@ -20,8 +20,8 @@ type InstanceQuery = NonNullable<paths["/instances"]["get"]["parameters"]["query
 export async function listAllInstances(
   apiClient: ApiClient = client,
   query: Pick<InstanceQuery, "status"> = {},
-): Promise<components["schemas"]["ApiInstanceStatusResp"][]> {
-  const all: components["schemas"]["ApiInstanceStatusResp"][] = [];
+): Promise<components["schemas"]["ApiInstanceSummaryResp"][]> {
+  const all: components["schemas"]["ApiInstanceSummaryResp"][] = [];
   let after: string | undefined;
   for (;;) {
     const { data, error } = await apiClient.GET("/instances", {

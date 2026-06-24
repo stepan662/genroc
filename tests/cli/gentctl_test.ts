@@ -32,6 +32,25 @@ function childDef(name: string, childName: string) {
   };
 }
 
+function inputDef(name: string) {
+  return {
+    name,
+    input_schema: {
+      type: "object",
+      properties: { count: { type: "number" }, name: { type: "string" } },
+      required: ["count"],
+    },
+    tasks: [{ id: "s1", switch: [{ goto: "end" }] }],
+  };
+}
+
+// Pull the instance id out of a `started: <id>  proc@vN  (status)` line.
+function startedID(stdout: string): string {
+  const m = stdout.match(/started:\s+(\S+)/);
+  if (!m) throw new Error(`no started id in: ${stdout}`);
+  return m[1];
+}
+
 // ── apply ─────────────────────────────────────────────────────────────────────
 
 test("apply — saves definition and prints saved line", () => {
@@ -219,6 +238,75 @@ test("promote --process — only touches the named process subtree", () => {
 test("promote — fails when --from or --to is missing", () => {
   const r = runCli(bin, ["promote", "--from", "staging"]);
   expect(r.ok).toBe(false);
+});
+
+// ── run / get / instances ──────────────────────────────────────────────────────
+
+test("run --set — starts an instance and prints its id", () => {
+  const name = uid("proc");
+  runCli(bin, ["apply", "-f", writeDefs([inputDef(name)])]);
+
+  const r = runCli(bin, ["run", name, "--set", "count=3", "--set", "name=Sam"]);
+
+  expect(r.ok).toBe(true);
+  expect(r.stdout).toContain(`started:`);
+  expect(r.stdout).toContain(`${name}@v1`);
+  expect(startedID(r.stdout)).toMatch(/[0-9a-f-]{36}/);
+});
+
+test("run --input — accepts relaxed JSON", () => {
+  const name = uid("proc");
+  runCli(bin, ["apply", "-f", writeDefs([inputDef(name)])]);
+
+  const r = runCli(bin, ["run", name, "--input", "{count: 7, name: Sam}"]);
+
+  expect(r.ok).toBe(true);
+  expect(r.stdout).toContain(`${name}@v1`);
+});
+
+test("run — prints a friendly error when input does not match the schema", () => {
+  const name = uid("proc");
+  runCli(bin, ["apply", "-f", writeDefs([inputDef(name)])]);
+
+  const r = runCli(bin, ["run", name, "--set", "count=not-a-number"]);
+
+  expect(r.ok).toBe(false);
+  expect(r.stderr).toContain("input is not valid for");
+});
+
+test("get — shows a started instance's details and context", () => {
+  const name = uid("proc");
+  runCli(bin, ["apply", "-f", writeDefs([inputDef(name)])]);
+  const id = startedID(runCli(bin, ["run", name, "--set", "count=42"]).stdout);
+
+  const r = runCli(bin, ["get", id]);
+
+  expect(r.ok).toBe(true);
+  expect(r.stdout).toContain(id);
+  expect(r.stdout).toContain(`${name}@v1`);
+  expect(r.stdout).toContain("Context:");
+  expect(r.stdout).toContain("42"); // the input value lives in the context
+
+  // --json dumps the raw response, which carries the context object.
+  const j = runCli(bin, ["get", id, "--json"]);
+  expect(j.ok).toBe(true);
+  expect(j.stdout).toContain(`"context"`);
+});
+
+test("instances — lists a freshly started instance", () => {
+  const name = uid("proc");
+  runCli(bin, ["apply", "-f", writeDefs([inputDef(name)])]);
+  const id = startedID(runCli(bin, ["run", name, "--set", "count=1"]).stdout);
+
+  const r = runCli(bin, ["instances"]);
+
+  expect(r.ok).toBe(true);
+  expect(r.stdout).toContain("STATUS");
+  expect(r.stdout).toContain(id);
+
+  // --sort updated is accepted too.
+  const u = runCli(bin, ["instances", "--sort", "updated"]);
+  expect(u.ok).toBe(true);
 });
 
 // ── status ────────────────────────────────────────────────────────────────────

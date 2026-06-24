@@ -218,6 +218,21 @@ type InstanceStatusResp struct {
 	UpdatedAt  string          `json:"updated_at"`
 }
 
+// InstanceSummaryResp is the per-row shape returned by the instance list. It is
+// InstanceStatusResp without the (potentially large) context — listing many
+// instances should stay light; fetch a single instance for its full context.
+type InstanceSummaryResp struct {
+	ID         string          `json:"id"`
+	Process    string          `json:"process"`
+	Version    int             `json:"version"`
+	Status     model.Status    `json:"status"`
+	WaitState  model.WaitState `json:"wait_state,omitempty"`
+	RetryCount int             `json:"retry_count"`
+	Error      string          `json:"error,omitempty"`
+	CreatedAt  string          `json:"created_at"`
+	UpdatedAt  string          `json:"updated_at"`
+}
+
 type LogEntryResp struct {
 	Time     string         `json:"time"`
 	Instance string         `json:"instance"`
@@ -367,11 +382,11 @@ func (h *Handlers) listInstances(raw json.RawMessage) Reply {
 	if err != nil {
 		return errReply(err)
 	}
-	resp := make([]InstanceStatusResp, len(instances))
+	resp := make([]InstanceSummaryResp, len(instances))
 	for i, inst := range instances {
-		resp[i] = instanceToResp(inst)
+		resp[i] = instanceSummaryToResp(inst)
 	}
-	return okReply(PageResp[InstanceStatusResp]{Items: resp, Page: info})
+	return okReply(PageResp[InstanceSummaryResp]{Items: resp, Page: info})
 }
 
 func (h *Handlers) getInstance(id string) Reply {
@@ -621,6 +636,20 @@ func instanceToResp(inst *model.ProcessInstance) InstanceStatusResp {
 		Error:      inst.Error,
 		CreatedAt:  inst.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:  inst.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
+func instanceSummaryToResp(s *model.InstanceSummary) InstanceSummaryResp {
+	return InstanceSummaryResp{
+		ID:         s.ID,
+		Process:    s.ProcessName,
+		Version:    s.ProcessVersion,
+		Status:     s.Status,
+		WaitState:  s.WaitState,
+		RetryCount: s.RetryCount,
+		Error:      s.Error,
+		CreatedAt:  s.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:  s.UpdatedAt.Format(time.RFC3339),
 	}
 }
 
