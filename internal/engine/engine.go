@@ -407,7 +407,7 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 			taskID = inst.TaskQueue[0].ID
 		}
 		e.logOnly(logEvent{Level: model.LogWarn, ID: inst.ID,
-			Msg: "reclaimed expired lease; previous owner crashed or stalled mid-task",
+			Msg:  "reclaimed expired lease; previous owner crashed or stalled mid-task",
 			Meta: map[string]any{"task": taskID, "process": inst.ProcessName}})
 		if len(inst.TaskQueue) > 0 {
 			s := inst.TaskQueue[0]
@@ -418,11 +418,11 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 		}
 	}
 
-	// task_started: a worker has picked this instance up and is about to work its
+	// work_started: a worker has picked this instance up and is about to work its
 	// current task. One per work session (a resume after parking emits it again),
 	// tagged with the worker so the unified log shows who is doing what.
 	if len(inst.TaskQueue) > 0 {
-		e.audit(inst, logEvent{Level: model.LogInfo, Event: model.EventTaskStarted, Task: inst.TaskQueue[0].ID, Meta: map[string]any{"worker": e.workerID}})
+		e.audit(inst, logEvent{Level: model.LogInfo, Event: model.EventWorkStarted, Task: inst.TaskQueue[0].ID, Meta: map[string]any{"worker": e.workerID}})
 	}
 
 	// Process tasks in a loop. A call-less task (pure switch/routing) has no
@@ -1262,10 +1262,10 @@ func (e *Engine) buildSingleChild(ctx context.Context, inst *model.ProcessInstan
 		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child input validation: %v", task.ID, err)))
 	}
 	childCtx := map[string]any{
-		"input":            input,
-		"outputs":          map[string]any{},
-		"output_order":     []string{},
-		"error":            nil,
+		"input":              input,
+		"outputs":            map[string]any{},
+		"output_order":       []string{},
+		"error":              nil,
 		"_spawn_action_type": string(model.ActionTypeChild),
 	}
 	if task.Action.ResultSchema != nil {
@@ -1331,12 +1331,12 @@ func (e *Engine) buildParallelChildren(ctx context.Context, inst *model.ProcessI
 			return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_parallel[%q] input validation: %v", task.ID, key, err)))
 		}
 		childCtx := map[string]any{
-			"input":            input,
-			"outputs":          map[string]any{},
-			"output_order":     []string{},
-			"error":            nil,
+			"input":              input,
+			"outputs":            map[string]any{},
+			"output_order":       []string{},
+			"error":              nil,
 			"_spawn_action_type": string(model.ActionTypeChildParallel),
-			"_spawn_child_key": key,
+			"_spawn_child_key":   key,
 		}
 		if entry.ResultSchema != nil {
 			if b, err := json.Marshal(entry.ResultSchema); err == nil {
