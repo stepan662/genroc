@@ -56,7 +56,7 @@ func testBackends(t *testing.T) []backend {
 		t.Fatal(err)
 	}
 	f.Close()
-	sqlite, err := dbpkg.OpenSQLite(f.Name())
+	sqlite, err := dbpkg.OpenSQLite(f.Name(), "")
 	if err != nil {
 		os.Remove(f.Name())
 		t.Fatal(err)

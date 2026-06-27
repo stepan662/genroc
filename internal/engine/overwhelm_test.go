@@ -190,7 +190,7 @@ func openTestDB(t *testing.T) *db.DB {
 	f.Close()
 	path := f.Name()
 	t.Cleanup(func() { os.Remove(path) })
-	database, err := db.OpenSQLite(path)
+	database, err := db.OpenSQLite(path, "")
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}

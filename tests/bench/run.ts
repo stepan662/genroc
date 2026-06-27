@@ -6,26 +6,34 @@
 //
 //   bun run bench/run.ts recursive                              # SQLite only
 //   POSTGRES_DSN=postgres://… bun run bench/run.ts recursive    # + Postgres compare
-//   make bench-recursive | bench-deep                           # via Makefile
+//   make bench-recursive | bench-deep | bench-drain            # via Makefile
+//
+// Every workload runs the SAME two-phase way: (1) load — a tick-only server (--poll 0)
+// preloads `roots` root instances that nothing advances, so they pile up as a backlog;
+// (2) drain — the server is restarted with the real poll loop and the time to work the
+// whole backlog off (no instance left running) is measured. recursive/deep preload one
+// root that fans out into a big tree; drain preloads thousands of independent roots.
+// Only the drain phase is timed; the load phase is setup.
 //
 // Workloads (workloads/<name>.yaml):
-//   recursive — full binary tree (wide); concurrent throughput ceiling.
-//   deep      — narrow/tall tree; per-spawn depth cost.
-// Their defaults are sized to roughly the same instance count (~8k) so the two shapes
-// are directly comparable.
+//   recursive — one root, full binary tree (wide); concurrent throughput ceiling.
+//   deep      — one root, narrow/tall tree; per-spawn depth cost.
+//   drain     — many independent roots; steady-state queue-drain throughput.
 //
-// A workload's instance count is SELF-REPORTED: the runner reads each root's
-// output[count_field] after completion (recursive/deep sum their subtree size).
+// Instances processed are counted from each root's SELF-REPORTED subtree size
+// (output[count_field], summed) when the process defines one (recursive/deep); a
+// process with no count_field is a single childless instance, so the count is just the
+// number of roots (drain).
 //
 // Each YAML's `bench` section is the single source of truth for the run: input, roots,
-// count_field, poll_ms, runs, and per-engine concurrency (under `sqlite:`/`postgres:`).
-// Concurrency is per engine — SQLite's single writer overwhelms at high concurrency
-// while Postgres' concurrent workers thrive on it. The runner reads NO numeric env
-// overrides, so there is exactly one place to look for a knob.
+// count_field, load_concurrency, poll_ms, runs, and per-engine concurrency (under
+// `sqlite:`/`postgres:`). Concurrency is per engine — SQLite's single writer overwhelms
+// at high concurrency while Postgres' concurrent workers thrive on it. The runner reads
+// NO numeric env overrides, so there is exactly one place to look for a knob.
 //
 // Env is only for invocation, never workload numbers: BENCH_WORKLOAD (or argv[2])
 // selects the workload, BENCH_ENGINES filters which engines run, BENCH_JSON sets the
-// results output path.
+// results output path, GENT_SQLITE_SYNCHRONOUS sets SQLite durability (default FULL).
 
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -40,8 +48,9 @@ import {
 // bundler resolve them; adding a workload = a new YAML + one line here.
 import recursive from "./workloads/recursive.yaml";
 import deep from "./workloads/deep.yaml";
+import drain from "./workloads/drain.yaml";
 
-const WORKLOADS: Record<string, Workload> = { recursive, deep };
+const WORKLOADS: Record<string, Workload> = { recursive, deep, drain };
 
 // Per-engine knobs (under bench.sqlite / bench.postgres).
 interface EngineConfig {
@@ -50,12 +59,13 @@ interface EngineConfig {
 
 // A workload file: a `bench` section (the whole run config) plus the gent definition(s).
 interface BenchConfig {
-  input?: Record<string, unknown>; // root input
-  roots?: number; // root count (default 1)
-  count_field: string; // output field holding each root's instance count
+  input?: Record<string, unknown>; // per-instance (root) input
+  roots?: number; // number of root instances to preload (default 1)
+  count_field?: string; // output field holding each root's subtree size (omit ⇒ 1 per root)
+  load_concurrency?: number; // parallel inserts during the load phase (default 64)
   poll_ms?: number; // server + client poll interval (default 10)
   runs?: number; // repeats per engine (default 1)
-  timeout_ms?: number; // per-root completion timeout (default 180000)
+  timeout_ms?: number; // whole-backlog drain timeout (default 180000)
   concurrency?: number; // shared fallback when an engine omits its own (default 20)
   sqlite?: EngineConfig;
   postgres?: EngineConfig;
@@ -71,6 +81,7 @@ const DEFAULT_POLL_MS = 10;
 const DEFAULT_RUNS = 1;
 const DEFAULT_TIMEOUT_MS = 180_000;
 const DEFAULT_CONCURRENCY = 20;
+const DEFAULT_LOAD_CONCURRENCY = 64; // parallel inserts during the load phase
 const BENCH_PORT = 8890; // distinct from the test servers (8888 sqlite, 8889 pg)
 const BENCH_ENGINES = process.env.BENCH_ENGINES ?? "sqlite,postgres";
 
@@ -101,6 +112,9 @@ if (!bench) throw new Error(`workload "${NAME}" has no bench section`);
 
 const INPUT: Record<string, unknown> = { ...(bench.input ?? {}) };
 const ROOTS = bench.roots ?? 1;
+const LOAD_CONCURRENCY = bench.load_concurrency ?? DEFAULT_LOAD_CONCURRENCY;
+// Optional: each root self-reports its subtree size here (recursive/deep). Without it,
+// every root is a single childless instance and the count is just the root count.
 const COUNT_FIELD = bench.count_field;
 const POLL_MS = bench.poll_ms ?? DEFAULT_POLL_MS;
 const RUNS = bench.runs ?? DEFAULT_RUNS;
@@ -119,63 +133,32 @@ function concurrencyFor(engine: string): number {
   return perEngine?.concurrency ?? bench.concurrency ?? DEFAULT_CONCURRENCY;
 }
 
-// Poll until terminal; returns the final instance status payload.
-async function waitDone(client: Client, id: string) {
-  const deadline = Date.now() + TIMEOUT_MS;
-  while (Date.now() < deadline) {
+// countInstances returns how many process instances the run actually worked off. With
+// a count_field, each root self-reports its subtree size (recursive/deep), so the total
+// is those summed; without one, every root is a single childless instance (drain), so
+// the total is just the number of roots. waitDrained has already returned, so every
+// root is terminal — a non-completed root here is a genuine failure.
+async function countInstances(client: Client, rootIds: string[]): Promise<number> {
+  if (!COUNT_FIELD) return rootIds.length;
+  let total = 0;
+  for (const id of rootIds) {
     const { data, error } = await client.GET("/instances/{id}", {
       params: { path: { id } },
     });
     if (error) throw new Error(`get_instance failed: ${JSON.stringify(error)}`);
-    const status = data?.status;
-    if (
-      status === "completed" ||
-      status === "failed" ||
-      status === "cancelled"
-    ) {
-      return data!;
+    if (data!.status !== "completed") {
+      throw new Error(`root ${id} ended ${data!.status}: ${data!.error ?? ""}`);
     }
-    await sleep(POLL_MS);
-  }
-  throw new Error(`instance ${id} did not finish within ${TIMEOUT_MS}ms`);
-}
-
-interface RunResult {
-  elapsed: number;
-  instances: number;
-}
-
-// Run the workload once against an already-running, already-applied server.
-async function runOnce(client: Client): Promise<RunResult> {
-  const start = Date.now();
-  const ids: string[] = [];
-  for (let i = 0; i < ROOTS; i++) {
-    const { data, error } = await client.POST("/instances", {
-      body: { process: DEFS_NAME, input: INPUT } as never,
-    });
-    if (error) throw new Error(`start failed: ${JSON.stringify(error)}`);
-    ids.push(data!.id);
-  }
-
-  const finals = await Promise.all(ids.map((id) => waitDone(client, id)));
-  const elapsed = Date.now() - start;
-
-  // Sum each root's self-reported instance count (its subtree size).
-  let instances = 0;
-  for (const f of finals) {
-    if (f.status !== "completed") {
-      throw new Error(`root ${f.id} ended ${f.status}: ${f.error ?? ""}`);
-    }
-    const out = f.context?.output as Record<string, number> | undefined;
+    const out = data!.context?.output as Record<string, number> | undefined;
     const n = out?.[COUNT_FIELD];
     if (typeof n !== "number") {
       throw new Error(
-        `root ${f.id}: expected numeric output.${COUNT_FIELD}, got ${JSON.stringify(n)}`,
+        `root ${id}: expected numeric output.${COUNT_FIELD}, got ${JSON.stringify(n)}`,
       );
     }
-    instances += n;
+    total += n;
   }
-  return { elapsed, instances };
+  return total;
 }
 
 interface EngineResult {
@@ -185,6 +168,69 @@ interface EngineResult {
   concurrency: number;
 }
 
+// preload inserts `roots` root instances as fast as the API allows (a fixed pool of
+// `conc` concurrent POSTs) and returns their ids. The target server is tick-only, so
+// the instances pile up as a backlog instead of being advanced.
+async function preload(
+  client: Client,
+  roots: number,
+  conc: number,
+): Promise<string[]> {
+  const ids = new Array<string>(roots);
+  let next = 0;
+  async function worker() {
+    for (;;) {
+      const i = next++;
+      if (i >= roots) return;
+      const { data, error } = await client.POST("/instances", {
+        body: { process: DEFS_NAME, input: INPUT } as never,
+      });
+      if (error) throw new Error(`preload insert failed: ${JSON.stringify(error)}`);
+      ids[i] = data!.id;
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(conc, roots) }, () => worker()));
+  return ids;
+}
+
+// anyWithStatus reports whether at least one instance currently has the given status.
+async function anyWithStatus(
+  client: Client,
+  status: "running" | "failed",
+): Promise<boolean> {
+  const { data, error } = await client.GET("/instances", {
+    params: { query: { status, limit: 1 } },
+  });
+  if (error) throw new Error(`list instances failed: ${JSON.stringify(error)}`);
+  return (data?.items ?? []).length > 0;
+}
+
+// waitDrained blocks until no instance is left running, then asserts none failed. A
+// parent parked on its children keeps status='running' (only its wait_state changes),
+// so an empty status=running page means every tree has fully collapsed and every
+// childless root is done — for both the trees and the drain backlog. The failed-check
+// stops a broken workload from masquerading as a fast drain (a failed instance is also
+// "not running").
+async function waitDrained(client: Client) {
+  const deadline = Date.now() + TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (!(await anyWithStatus(client, "running"))) {
+      if (await anyWithStatus(client, "failed")) {
+        throw new Error("backlog drained but some instances failed");
+      }
+      return;
+    }
+    await sleep(POLL_MS);
+  }
+  throw new Error(`backlog did not drain within ${TIMEOUT_MS}ms`);
+}
+
+// benchEngine runs the workload against one engine in two phases per repeat: (1) load —
+// a tick-only server (--poll 0) preloads `roots` root instances that nothing advances,
+// so they pile up as a backlog; (2) drain — the server is restarted with the real poll
+// loop and the time to work the backlog off is measured. Both phases share the same
+// database (SQLite file / Postgres DSN), so the backlog survives the restart and the
+// definitions persist. Only the drain phase is timed.
 async function benchEngine(
   engine: string,
   dbPath: string,
@@ -192,33 +238,38 @@ async function benchEngine(
 ): Promise<EngineResult> {
   const concurrency = concurrencyFor(engine);
   const bin = await buildGentBinary();
-  const server = await startGent(
-    bin,
-    BENCH_PORT,
-    dbPath,
-    dsn,
-    POLL_MS,
-    concurrency,
-  );
-  try {
-    for (const def of DEFS) {
-      const { error } = await server.client.PUT("/definitions", {
-        body: def as never,
-      });
-      if (error) throw new Error(`register failed: ${JSON.stringify(error)}`);
+  const durations: number[] = [];
+  let instances = 0;
+  for (let run = 0; run < RUNS; run++) {
+    // Phase 1 — load. poll=0 ⇒ manual-tick mode: the engine never auto-advances.
+    const loader = await startGent(bin, BENCH_PORT, dbPath, dsn, 0, concurrency);
+    let rootIds: string[];
+    try {
+      for (const def of DEFS) {
+        const { error } = await loader.client.PUT("/definitions", {
+          body: def as never,
+        });
+        if (error) throw new Error(`register failed: ${JSON.stringify(error)}`);
+      }
+      rootIds = await preload(loader.client, ROOTS, LOAD_CONCURRENCY);
+    } finally {
+      loader.stop();
+      await sleep(300); // release the port and let SQLite checkpoint before reopening
     }
-    const durations: number[] = [];
-    let instances = 0;
-    for (let run = 0; run < RUNS; run++) {
-      const r = await runOnce(server.client);
-      durations.push(r.elapsed);
-      instances = r.instances;
+
+    // Phase 2 — drain. Restart with the normal poll loop and time the work-off.
+    const drainer = await startGent(bin, BENCH_PORT, dbPath, dsn, POLL_MS, concurrency);
+    try {
+      const start = Date.now();
+      await waitDrained(drainer.client);
+      durations.push(Date.now() - start);
+      instances = await countInstances(drainer.client, rootIds);
+    } finally {
+      drainer.stop();
+      await sleep(200);
     }
-    return { engine, durations, instances, concurrency };
-  } finally {
-    server.stop();
-    await sleep(200); // let the process release the port before the next engine
   }
+  return { engine, durations, instances, concurrency };
 }
 
 function fmt(n: number, width: number) {
@@ -232,7 +283,14 @@ function report(results: EngineResult[]) {
   console.log(
     "\nconfig: " +
       `workload=${NAME} input=${JSON.stringify(INPUT)} roots=${ROOTS} ` +
-      `instances=${total} poll_ms=${POLL_MS} runs=${RUNS}`,
+      `load_concurrency=${LOAD_CONCURRENCY} instances=${total} poll_ms=${POLL_MS} runs=${RUNS}`,
+  );
+  // Both engines run fully durable by default (matched comparison): SQLite fsyncs the
+  // WAL on every commit, Postgres commits synchronously. GENT_SQLITE_SYNCHRONOUS
+  // overrides SQLite's level (e.g. NORMAL for the faster, process-crash-only setting).
+  const sqliteSync = process.env.GENT_SQLITE_SYNCHRONOUS ?? "FULL";
+  console.log(
+    `durability: sqlite synchronous=${sqliteSync}, postgres synchronous_commit=on`,
   );
   console.log(`host:   ${HOST}\n`);
 

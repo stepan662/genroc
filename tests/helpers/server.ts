@@ -39,7 +39,12 @@ function spawnProc(
   const poolArgs = process.env.GENT_PG_MAX_OPEN_CONNS
     ? ["--pg-max-open-conns", process.env.GENT_PG_MAX_OPEN_CONNS]
     : [];
-  return spawn(bin, [...dbArgs, "--http", `:${port}`, "--log", "error", ...pollArgs, ...concArgs, ...retryArgs, ...leaseArgs, ...poolArgs], {
+  // Optional SQLite durability via env (used by the benchmark to compare engines at
+  // matched durability, e.g. GENT_SQLITE_SYNCHRONOUS=FULL). Ignored for Postgres.
+  const syncArgs = process.env.GENT_SQLITE_SYNCHRONOUS
+    ? ["--sqlite-synchronous", process.env.GENT_SQLITE_SYNCHRONOUS]
+    : [];
+  return spawn(bin, [...dbArgs, "--http", `:${port}`, "--log", "error", ...pollArgs, ...concArgs, ...retryArgs, ...leaseArgs, ...poolArgs, ...syncArgs], {
     stdio: "ignore",
   });
 }

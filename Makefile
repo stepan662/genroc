@@ -7,7 +7,7 @@ log     ?= info
 
 # BUILD_FLAGS = CGO_ENABLED=1
 
-.PHONY: run build test test-unit test-int test-stress bench-recursive bench-deep swagger client clean generate
+.PHONY: run build test test-unit test-int test-stress bench-recursive bench-deep bench-drain swagger client clean generate
 
 run:
 	$(BUILD_FLAGS) go run ./cmd/gent \
@@ -46,14 +46,18 @@ test-int: client
 # Spawn benchmarks: YAML-defined workloads (tests/bench/workloads/), SQLite vs Postgres.
 # bench-recursive — full binary tree (wide); measures concurrent throughput ceiling.
 # bench-deep      — narrow/tall tree; measures per-spawn depth cost.
-# Defaults are sized to the same instance count (~8k) so the shapes compare directly.
-# Tunables: BENCH_TTL, BENCH_ROOTS, BENCH_POLL_MS, BENCH_MAX_CONCURRENT, BENCH_RUNS,
-# BENCH_TIMEOUT_MS. Set POSTGRES_DSN to also benchmark Postgres.
+# bench-drain     — backlog of many independent processes preloaded into a tick-only
+#                   server, then drained on restart; measures steady-state queue throughput.
+# recursive/deep defaults are sized to the same instance count (~8k) so the shapes
+# compare directly. Set POSTGRES_DSN to also benchmark Postgres.
 bench-recursive: client
 	cd tests && ~/.bun/bin/bun run bench-recursive
 
 bench-deep: client
 	cd tests && ~/.bun/bin/bun run bench-deep
+
+bench-drain: client
+	cd tests && ~/.bun/bin/bun run bench-drain
 
 sqlc:
 	go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate

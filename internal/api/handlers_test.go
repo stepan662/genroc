@@ -15,7 +15,7 @@ func newTestHandlers(t *testing.T) (*Handlers, func()) {
 	}
 	f.Close()
 
-	database, err := db.OpenSQLite(f.Name())
+	database, err := db.OpenSQLite(f.Name(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

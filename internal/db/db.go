@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,14 +45,47 @@ type defKey struct {
 }
 
 // OpenSQLite opens (or creates) the SQLite database at path and runs migrations.
-func OpenSQLite(path string) (*DB, error) {
-	dsn := path + "?_journal_mode=WAL&_synchronous=NORMAL&_foreign_keys=ON&_busy_timeout=5000"
+// synchronous picks the PRAGMA synchronous durability level (empty = NORMAL). The
+// gent binary defaults its --sqlite-synchronous flag to FULL (full power-loss
+// durability, matching Postgres); empty is the relaxed level used by internal tests
+// that don't need it. Levels:
+//   - NORMAL: in WAL mode the WAL is fsync'd only at checkpoints, not per commit, so
+//     a commit is durable across a process crash but the most recent commits can be
+//     lost on an OS crash / power loss (the database stays consistent either way).
+//     Fast — this is the default.
+//   - FULL: fsync the WAL on every commit, so a committed transaction survives even a
+//     power loss — the same guarantee as Postgres's synchronous_commit=on, at a much
+//     higher per-commit cost.
+// OFF and EXTRA are also accepted (weaker / stronger respectively).
+func OpenSQLite(path, synchronous string) (*DB, error) {
+	sync, err := sqliteSynchronous(synchronous)
+	if err != nil {
+		return nil, err
+	}
+	dsn := path + "?_journal_mode=WAL&_synchronous=" + sync + "&_foreign_keys=ON&_busy_timeout=5000"
 	sqldb, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	sqldb.SetMaxOpenConns(1) // SQLite supports only one writer at a time.
 	return open(sqldb, "sqlite")
+}
+
+// sqliteSynchronous whitelists the PRAGMA synchronous level placed on the DSN, so a
+// flag value can never inject extra connection parameters. Empty defaults to NORMAL.
+func sqliteSynchronous(mode string) (string, error) {
+	switch strings.ToUpper(strings.TrimSpace(mode)) {
+	case "", "NORMAL":
+		return "NORMAL", nil
+	case "OFF":
+		return "OFF", nil
+	case "FULL":
+		return "FULL", nil
+	case "EXTRA":
+		return "EXTRA", nil
+	default:
+		return "", fmt.Errorf("invalid sqlite synchronous mode %q (want OFF, NORMAL, FULL, or EXTRA)", mode)
+	}
 }
 
 // OpenPostgres opens a PostgreSQL connection and runs migrations.
