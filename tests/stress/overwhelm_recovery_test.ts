@@ -122,14 +122,17 @@ describe.runIf(!!DSN)("single-worker overwhelm recovery — postgres", () => {
 
       // Phase 1: a single overwhelm-prone worker — tiny lease, huge concurrency,
       // starved pool — so its renewer falls behind, it re-claims its own in-flight
-      // work, and the supervisor restarts it.
+      // work, and the supervisor restarts it. The lease must stay shorter than how long
+      // an advance is stuck waiting on the starved pool; since batched audit logging cut
+      // each advance to ~1 DB round-trip (from ~6), the lease was tightened and the
+      // concurrency raised to keep that margin negative and reliably overwhelm.
       const worker = await startSupervisedWorker(bin, 8941, {
         pgDSN: DSN!,
         pollMs: 1,
-        maxConcurrent: 300,
+        maxConcurrent: 500,
         pgMaxOpenConns: 3,
-        leaseDurationMs: 100,
-        leaseRenewMs: 75,
+        leaseDurationMs: 25,
+        leaseRenewMs: 18,
         immediateRetries: true,
       });
 
