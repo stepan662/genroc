@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782456903000,
+  "lastUpdate": 1782541762300,
   "repoUrl": "https://github.com/stepan662/gent-go",
   "entries": {
     "gent throughput": [
@@ -1512,6 +1512,52 @@ window.BENCHMARK_DATA = {
           {
             "name": "spawn recursive postgres",
             "value": 439,
+            "unit": "inst/s",
+            "extra": "AMD EPYC 7763 64-Core Processor · 4 cores · 16GB · linux x64 6.17.0-1018-azure"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Štěpán Granát",
+            "username": "stepan662",
+            "email": "granat.stepan@gmail.com"
+          },
+          "committer": {
+            "name": "Štěpán Granát",
+            "username": "stepan662",
+            "email": "granat.stepan@gmail.com"
+          },
+          "id": "43a22f0953c3fc6c0cd973eebc21960b73a56306",
+          "message": "chore: update roadmap",
+          "timestamp": "2026-06-25T18:06:07Z",
+          "url": "https://github.com/stepan662/gent-go/commit/43a22f0953c3fc6c0cd973eebc21960b73a56306"
+        },
+        "date": 1782541761817,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "spawn deep sqlite",
+            "value": 89,
+            "unit": "inst/s",
+            "extra": "AMD EPYC 7763 64-Core Processor · 4 cores · 16GB · linux x64 6.17.0-1018-azure"
+          },
+          {
+            "name": "spawn deep postgres",
+            "value": 251,
+            "unit": "inst/s",
+            "extra": "AMD EPYC 7763 64-Core Processor · 4 cores · 16GB · linux x64 6.17.0-1018-azure"
+          },
+          {
+            "name": "spawn recursive sqlite",
+            "value": 115,
+            "unit": "inst/s",
+            "extra": "AMD EPYC 7763 64-Core Processor · 4 cores · 16GB · linux x64 6.17.0-1018-azure"
+          },
+          {
+            "name": "spawn recursive postgres",
+            "value": 441,
             "unit": "inst/s",
             "extra": "AMD EPYC 7763 64-Core Processor · 4 cores · 16GB · linux x64 6.17.0-1018-azure"
           }
