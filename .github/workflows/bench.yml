@@ -27,7 +27,9 @@ jobs:
       fail-fast: false
       matrix:
         workload: [recursive, deep, drain]
-        commit_delay: [0, 25, 50, 100, 200]
+        # High-end pass to find drain's plateau (it was still climbing at 200). 0 and
+        # 200 are kept as anchors so every value is comparable within this one run.
+        commit_delay: [0, 200, 300, 500, 1000]
     services:
       postgres:
         image: postgres:16
