@@ -333,13 +333,17 @@ function report(results: EngineResult[]) {
 
 // When BENCH_JSON is set, write the results as a github-action-benchmark
 // customBiggerIsBetter array (so CI can chart throughput per commit over time).
+// BENCH_LABEL (optional) is appended to each series name to keep parallel sweep legs
+// distinct — e.g. BENCH_LABEL=cd50 yields "spawn drain postgres cd50". Leave it unset
+// for the canonical series ("spawn drain postgres").
 function writeBenchJSON(path: string, results: EngineResult[]) {
+  const label = process.env.BENCH_LABEL ? ` ${process.env.BENCH_LABEL}` : "";
   const entries = results.map((r) => {
     const avg = Math.round(
       r.durations.reduce((a, b) => a + b, 0) / r.durations.length,
     );
     return {
-      name: `spawn ${NAME} ${r.engine}`,
+      name: `spawn ${NAME} ${r.engine}${label}`,
       unit: "inst/s",
       value: Math.round((r.instances / avg) * 1000),
       extra: HOST, // shown in github-action-benchmark chart tooltips
