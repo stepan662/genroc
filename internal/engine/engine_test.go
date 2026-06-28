@@ -122,7 +122,6 @@ func TestIsRetryAllowed(t *testing.T) {
 		{"nil only_once allows http.500", nil, "http.500", nil, true},
 		{"nil only_once allows any code", nil, "output.invalid", nil, true},
 		{"false only_once allows http.500", bp(false), "http.500", nil, true},
-		{"false only_once allows script.1", bp(false), "script.1", nil, true},
 
 		// only_once true — pre.* is always allowed
 		{"true: pre.error allowed", bp(true), "pre.error", nil, true},
@@ -133,8 +132,6 @@ func TestIsRetryAllowed(t *testing.T) {
 		// only_once true — non-pre.* blocked without override
 		{"true: http.500 blocked", bp(true), "http.500", nil, false},
 		{"true: http.timeout blocked", bp(true), "http.timeout", nil, false},
-		{"true: script.1 blocked", bp(true), "script.1", nil, false},
-		{"true: script.timeout blocked", bp(true), "script.timeout", nil, false},
 		{"true: output.invalid blocked", bp(true), "output.invalid", nil, false},
 		{"true: child.failed blocked", bp(true), "child.failed", nil, false},
 

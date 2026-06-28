@@ -213,13 +213,6 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			wantErr: "",
 		},
 		{
-			name: "valid script call task",
-			def: ProcessDefinition{Name: "p", Tasks: []*Task{
-				{ID: "run", Action: &Action{Type: ActionTypeScript, Exec: "python3 foo.py"}, Switch: SwitchMap{{Goto: GotoEnd}}},
-			}},
-			wantErr: "",
-		},
-		{
 			name: "valid switch-only task",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{ID: "router", Switch: SwitchMap{
@@ -276,13 +269,6 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			wantErr: "action.endpoint is required",
 		},
 		{
-			name: "script call missing exec",
-			def: ProcessDefinition{Name: "p", Tasks: []*Task{
-				{ID: "s1", Action: &Action{Type: ActionTypeScript}, Switch: SwitchMap{{Goto: GotoEnd}}},
-			}},
-			wantErr: "action.exec is required",
-		},
-		{
 			name: "valid child call",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{ID: "spawn", Action: &Action{Type: ActionTypeChild, Name: "worker"}, Switch: SwitchMap{{Goto: GotoEnd}}},
@@ -331,7 +317,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{ID: "s1", Action: &Action{Type: "ftp", Endpoint: "ftp://x"}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
-			wantErr: "action.type must be one of: rest, script, child, child_parallel",
+			wantErr: "action.type must be one of: rest, child, child_parallel",
 		},
 		{
 			name: "switch missing catch-all is rejected",
@@ -516,16 +502,16 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			wantErr: `pattern "http.500" can match errors where the call may have executed`,
 		},
 		{
-			name: "only_once:true — retries on script.% is rejected",
+			name: "only_once:true — retries on http.% is rejected",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
-					ID: "run", Action: &Action{Type: ActionTypeScript, Exec: "echo ok"},
+					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
-					OnError:  []ErrorCase{{Code: []string{"script.%"}, Retries: 1}},
+					OnError:  []ErrorCase{{Code: []string{"http.%"}, Retries: 1}},
 				},
 			}},
-			wantErr: `pattern "script.%" can match errors where the call may have executed`,
+			wantErr: `pattern "http.%" can match errors where the call may have executed`,
 		},
 		{
 			name: "only_once:true — catch-all with retries is rejected",
@@ -816,13 +802,11 @@ func TestPatternOnlyMatchesPre(t *testing.T) {
 		{"pre._rror", true},
 		// does not start with "pre." — no wildcard
 		{"http.500", false},
-		{"script.1", false},
 		{"output.parse", false},
 		{"child.failed", false},
 		// wildcards not rooted at pre.
 		{"%", false},
 		{"http.%", false},
-		{"script.%", false},
 		// "pre" without dot: prefix is "pre", not "pre."
 		{"pre%", false},
 		// "p%" could match pre.* but also other codes

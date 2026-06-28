@@ -599,9 +599,6 @@ func (e *Engine) executeAction(ctx context.Context, inst *model.ProcessInstance,
 	resp, err := transport.Send(taskCtx, task.Action, resolvedHeaders, req)
 	if err != nil {
 		code := transport.ClassifyGoError(err)
-		if task.Action.Type == model.ActionTypeScript {
-			code = transport.ClassifyScriptError(err)
-		}
 		// action_failed (debug) records the raw call failure — error detail in data,
 		// code in code — separate from the operational retry/route event that follows.
 		// A transport error has no HTTP status, so meta stays absent.

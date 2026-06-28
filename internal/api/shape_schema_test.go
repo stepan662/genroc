@@ -36,7 +36,7 @@ func TestProcessSchemaShape(t *testing.T) {
 	if ob, _ := json.Marshal(props["output"]); !strings.Contains(string(ob), "ModelShape") {
 		t.Errorf("Task.output should reference ModelShape, got %s", ob)
 	}
-	// The action's input (now on the action union, shared by rest/script/child)
+	// The action's input (now on the action union, shared by rest/child)
 	// must reference the Shape def.
 	action, _ := defs["ModelAction"].(map[string]any)
 	ab, _ := json.Marshal(action)

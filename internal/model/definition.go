@@ -26,7 +26,6 @@ type ActionType string
 
 const (
 	ActionTypeREST          ActionType = "rest"
-	ActionTypeScript        ActionType = "script"
 	ActionTypeChild         ActionType = "child"
 	ActionTypeChildParallel ActionType = "child_parallel"
 	ActionTypeDelay         ActionType = "delay"
@@ -43,7 +42,6 @@ type ChildEntry struct {
 
 // Action describes how to invoke a task's action. It is a discriminated union on Type.
 //   - "rest":           Endpoint (required), Headers (optional), AcceptedStatus (optional), Input (optional), ResultSchema (optional)
-//   - "script":         Exec (required), Input (optional), ResultSchema (optional)
 //   - "child":          Name (required), Input (optional), ResultSchema (optional) — single child process
 //   - "child_parallel": Children (required, keyed map) — concurrent named child processes
 //   - "delay":          Ms (required) — pauses the instance for a duration without holding a worker, then routes via switch
@@ -51,11 +49,11 @@ type ChildEntry struct {
 //     outside caller submits a result via the external-tasks API; no worker is held while waiting.
 //     An optional Task.TimeoutMs (0 = wait forever) raises a catchable "external.timeout" error.
 //
-// Input (rest/script/child/external): templated value evaluated against the current context to build
-// the action's input — the request body (rest), script input (script), child's input payload (child),
+// Input (rest/child/external): templated value evaluated against the current context to build
+// the action's input — the request body (rest), child's input payload (child),
 // or the snapshot exposed to the resolver via the external-tasks queue (external).
 //
-// ResultSchema (rest/script/child/external): when set, the result is validated before the instance
+// ResultSchema (rest/child/external): when set, the result is validated before the instance
 // resumes (the submitted result, for external). Without it the result is available only as "self" in
 // this task's switch.
 //
@@ -65,11 +63,10 @@ type Action struct {
 	Endpoint       string                 `json:"endpoint,omitempty"`        // rest
 	Headers        map[string]string      `json:"headers,omitempty"`         // rest, values are expressions
 	AcceptedStatus []string               `json:"accepted_status,omitempty"` // rest: HTTP status patterns accepted as non-errors
-	Exec           string                 `json:"exec,omitempty"`            // script
-	ResultSchema   *schema.SchemaNode     `json:"result_schema,omitempty"`   // rest/script/child: validate & persist output
+	ResultSchema   *schema.SchemaNode     `json:"result_schema,omitempty"`   // rest/child: validate & persist output
 	Name           string                 `json:"name,omitempty"`            // child
 	Version        int                    `json:"version,omitempty"`         // child
-	Input          *Shape                 `json:"input,omitempty"`           // rest/script/child: templated input payload
+	Input          *Shape                 `json:"input,omitempty"`           // rest/child: templated input payload
 	Children       map[string]ChildEntry  `json:"children,omitempty"`        // child_parallel
 	Ms             string                 `json:"ms,omitempty"`              // delay: milliseconds to pause, as an expression
 }
@@ -91,18 +88,6 @@ func (Action) JSONSchemaBytes() ([]byte, error) {
 					"result_schema":   {"type": "object", "additionalProperties": true, "description": "JSON Schema to validate and persist the response body. Without it the response is available only as 'self' in this task's switch."}
 				},
 				"required": ["type", "endpoint"],
-				"additionalProperties": false
-			},
-			{
-				"type": "object",
-				"description": "Script call — executes a shell command or inline script.",
-				"properties": {
-					"type":          {"type": "string", "const": "script"},
-					"exec":          {"type": "string", "description": "Shell command or script body to execute."},
-					"input":         {"$ref": "#/$defs/ModelShape", "description": "Templated value (string expression or nested object) evaluated against the current context to build the script's input payload."},
-					"result_schema": {"type": "object", "additionalProperties": true, "description": "JSON Schema to validate and persist stdout. Without it the output is available only as 'self' in this task's switch."}
-				},
-				"required": ["type", "exec"],
 				"additionalProperties": false
 			},
 			{
@@ -517,10 +502,6 @@ func validateTask(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int) er
 			if s.Action.Endpoint == "" {
 				return fmt.Errorf("task %q: action.endpoint is required for type %q", s.ID, s.Action.Type)
 			}
-		case ActionTypeScript:
-			if s.Action.Exec == "" {
-				return fmt.Errorf("task %q: action.exec is required for type %q", s.ID, s.Action.Type)
-			}
 		case ActionTypeChild:
 			if s.Action.Name == "" {
 				return fmt.Errorf("task %q: action.name is required for type %q", s.ID, s.Action.Type)
@@ -542,7 +523,7 @@ func validateTask(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int) er
 			// No required action fields: input and result_schema are both optional
 			// (mirroring rest). The wait timeout is the task's timeout_ms (0 = forever).
 		default:
-			return fmt.Errorf("task %q: action.type must be one of: rest, script, child, child_parallel, delay, external", s.ID)
+			return fmt.Errorf("task %q: action.type must be one of: rest, child, child_parallel, delay, external", s.ID)
 		}
 	}
 

@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -25,7 +24,7 @@ type Request struct {
 }
 
 // Response carries the result of a Send call.
-// ErrorCode is non-empty on failure ("http.404", "script.1", "output.parse", "start.error", etc.).
+// ErrorCode is non-empty on failure ("http.404", "output.parse", "start.error", etc.).
 // ErrorMessage is a human-readable description of the failure (may include trimmed response body).
 // Body holds the raw decoded JSON body on success.
 // Status is the HTTP status code for a REST call (success or failure); 0 for non-HTTP transports.
@@ -47,8 +46,6 @@ func Send(ctx context.Context, call *model.Action, headers map[string]string, re
 	switch call.Type {
 	case model.ActionTypeREST:
 		return sendHTTP(ctx, call.Endpoint, call.AcceptedStatus, headers, body)
-	case model.ActionTypeScript:
-		return sendScript(ctx, call.Exec, body)
 	default:
 		return nil, fmt.Errorf("unknown call type: %q", call.Type)
 	}
@@ -108,28 +105,6 @@ func matchAcceptedStatus(code int, patterns []string) bool {
 	return false
 }
 
-// sendScript runs exec via sh -c, writes newline-terminated JSON to stdin,
-// and reads a newline-terminated JSON response from stdout.
-func sendScript(ctx context.Context, command string, body []byte) (*Response, error) {
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
-	cmd.Stdin = bytes.NewReader(append(body, '\n'))
-
-	out, err := cmd.Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			return &Response{ErrorCode: fmt.Sprintf("script.%d", exitErr.ExitCode())}, nil
-		}
-		return nil, err // context deadline, launch failure — caller uses ClassifyScriptError
-	}
-
-	var b any
-	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&b); err != nil {
-		return &Response{ErrorCode: "output.parse"}, nil
-	}
-	return &Response{Body: b}, nil
-}
-
 // ClassifyGoError maps a transport-level Go error to an error code.
 // Used for REST call failures that never received an HTTP response.
 //
@@ -145,19 +120,6 @@ func ClassifyGoError(err error) string {
 		return "http.timeout"
 	}
 	return "pre.error"
-}
-
-// ClassifyScriptError maps a script-level Go error to an error code.
-// Used for script failures that are not exec.ExitError.
-//
-// Returns pre.exec when the process failed to launch (command not found,
-// permission denied, etc.). Returns script.timeout for context cancellations
-// where the process may have already started.
-func ClassifyScriptError(err error) string {
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return "script.timeout"
-	}
-	return "pre.exec"
 }
 
 // RetryDelay returns the backoff duration for a given retry attempt (exponential, capped at 5 min).
