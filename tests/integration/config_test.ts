@@ -53,11 +53,12 @@ test("config resolves from the environment and is usable in expressions", async 
   expect(output.region).toBe("us"); // default applied (e2e_region unset)
 });
 
-// A required config var with no corresponding environment variable rejects the
-// start request up front rather than producing an instance that fails on tick.
-test("starting an instance fails when a required config var is unset", async () => {
+// A required config var with no corresponding environment variable is rejected
+// when the definition is registered, so the missing GENT_<PROCESS>_<NAME> surfaces
+// up front rather than waiting until an instance is started.
+test("registering a definition fails when a required config var is unset", async () => {
   const name = `config_missing_${crypto.randomUUID()}`;
-  await client.PUT("/definitions", {
+  const { data, error } = await client.PUT("/definitions", {
     body: {
       name,
       config_schema: {
@@ -68,10 +69,6 @@ test("starting an instance fails when a required config var is unset", async () 
       tasks: [{ id: "route", switch: "end" }],
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
-  });
-
-  const { data, error } = await client.POST("/instances", {
-    body: { process: name },
   });
   expect(data).toBeUndefined();
   expect(error).toBeDefined();

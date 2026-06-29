@@ -293,6 +293,12 @@ func (h *Handlers) putDefinition(raw json.RawMessage) Reply {
 	if err := validation.ValidateChildProcessRefs(&req.ProcessDefinition, version, h.db); err != nil {
 		return errReply(err)
 	}
+	// Reject registration if a required config var has no value in the server
+	// environment, the same rule ResolveConfig enforces at instance start — so a
+	// missing GENT_<PROCESS>_<NAME> surfaces here rather than on first start.
+	if _, err := req.ResolveConfig(os.LookupEnv); err != nil {
+		return errReply(err)
+	}
 	if err := h.db.SaveDefinition(&req.ProcessDefinition, version, nil, "", defaultChannel); err != nil {
 		return errReply(fmt.Errorf("save: %w", err))
 	}
@@ -930,6 +936,11 @@ func (h *Handlers) applyBatch(defs []model.ProcessDefinition, channel string, au
 			return nil, fmt.Errorf("%s: %w", def.Name, err)
 		}
 		if err := validation.ValidateChildProcessRefs(defForValidation, newVersion, getter); err != nil {
+			return nil, fmt.Errorf("%s: %w", def.Name, err)
+		}
+		// Reject if a required config var is unset in the server environment, the
+		// same rule ResolveConfig enforces at instance start.
+		if _, err := def.ResolveConfig(os.LookupEnv); err != nil {
 			return nil, fmt.Errorf("%s: %w", def.Name, err)
 		}
 
