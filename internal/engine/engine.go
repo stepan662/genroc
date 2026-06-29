@@ -1049,6 +1049,11 @@ func (e *Engine) contextSecrets(inst *model.ProcessInstance) []string {
 			}
 		}
 	}
+	// Scrub the longest value first: when one secret is a prefix/substring of
+	// another (e.g. an input array [5, 50, 500]), replacing the shorter one first
+	// consumes the shared lead and leaves the longer one's tail exposed ("***0",
+	// "***00"). Length-descending order makes each value redacted as a whole.
+	sort.Slice(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
 	return out
 }
 

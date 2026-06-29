@@ -33,18 +33,6 @@ func TestIsSubset_composition_sub(t *testing.T) {
 			`{"oneOf":[{"type":"integer"},{"type":"boolean"}]}`,
 			false,
 		},
-		{
-			"allOf [integer, minimum:5] ⊆ number (integer constraint covers type)",
-			`{"allOf":[{"type":"integer"},{"minimum":5}]}`,
-			`{"type":"number"}`,
-			true,
-		},
-		{
-			"allOf [string, minLength:3] ⊄ integer",
-			`{"allOf":[{"type":"string"},{"minLength":3}]}`,
-			`{"type":"integer"}`,
-			false,
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -83,18 +71,6 @@ func TestIsSubset_composition_super(t *testing.T) {
 			`{"type":"string"}`,
 			`{"oneOf":[{"type":"string"},{"type":"integer"}]}`,
 			true,
-		},
-		{
-			"integer ⊆ allOf [number, minimum:0]",
-			`{"type":"integer","minimum":5}`,
-			`{"allOf":[{"type":"number"},{"minimum":0}]}`,
-			true,
-		},
-		{
-			"integer ⊄ allOf [number, minimum:10] when sub minimum is less",
-			`{"type":"integer","minimum":5}`,
-			`{"allOf":[{"type":"number"},{"minimum":10}]}`,
-			false,
 		},
 	}
 	for _, tc := range cases {

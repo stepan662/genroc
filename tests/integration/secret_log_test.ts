@@ -145,3 +145,38 @@ test("a secret in a failed request's transport error is obscured in logs", async
   const { data: logs } = await client.GET("/instances/{id}/logs", { params: { path: { id } } });
   expect(JSON.stringify(logs)).not.toContain("SECRET12345HOST");
 });
+
+// Regression: when secret values are nested prefixes of one another (e.g. an
+// input array [5, 50, 500]), redaction must replace the longest value first.
+// Replacing a shorter prefix first consumes the shared lead and leaves the longer
+// secrets' tails exposed in the stored log ("***0", "***00"). The secret collector
+// returns values longest-first so each is redacted whole.
+test("nested-prefix secret values are fully redacted in stored logs", async () => {
+  const name = `secret_prefix_${crypto.randomUUID()}`;
+  await client.PUT("/definitions/batch", {
+    body: {
+      definitions: [
+        {
+          name,
+          input_schema: { type: "array", items: { type: "string", secret: true } },
+          tasks: [{ id: "route", switch: "end" }],
+        },
+      ],
+      channel: "latest",
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any);
+
+  // "AAAA" is a prefix of "AAAABBBB": redact the shorter first and the longer
+  // leaks its "BBBB" tail as "***BBBB" in the instance_created input snippet.
+  const { data: startData } = await client.POST("/instances", {
+    body: { process: name, input: ["AAAA", "AAAABBBB"] },
+  });
+  const id = startData!.id;
+  expect(await waitForInstance(id)).toBe("completed");
+
+  const { data: logs } = await client.GET("/instances/{id}/logs", { params: { path: { id } } });
+  const blob = JSON.stringify(logs);
+  expect(blob).not.toContain("BBBB"); // the longer secret's tail must not survive
+  expect(blob).not.toContain("AAAA");
+});

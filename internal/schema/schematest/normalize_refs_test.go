@@ -60,17 +60,11 @@ func TestNormalize_anyOf(t *testing.T) {
 	}`)
 }
 
-func TestNormalize_allOf(t *testing.T) {
-	assertJSON(t, normalize(t, `{
-		"allOf": [{"$ref": "#/$defs/Base"}, {"type": "object"}],
-		"$defs": {
-			"Base":   {"type": "object"},
-			"Unused": {"type": "boolean"}
-		}
-	}`), `{
-		"$defs": {"Base": {"type": "object"}},
-		"allOf": [{"$ref": "#/$defs/Base"}, {"type": "object"}]
-	}`)
+func TestParse_rejectAllOf(t *testing.T) {
+	assertParseErr(t,
+		`{"allOf":[{"type":"integer"},{"minimum":0}]}`,
+		`unsupported schema keyword "allOf"`,
+	)
 }
 
 func TestParse_rejectNot(t *testing.T) {

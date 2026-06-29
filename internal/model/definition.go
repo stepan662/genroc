@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -874,11 +875,14 @@ func (d *ProcessDefinition) SecretConfigValues(resolved map[string]any) []string
 			continue
 		}
 		if v, ok := resolved[name]; ok {
-			if s := fmt.Sprintf("%v", v); s != "" {
+			if s := schema.SecretString(v); s != "" {
 				secrets = append(secrets, s)
 			}
 		}
 	}
+	// Longest-first so substring scrubbing redacts the most specific value before a
+	// shorter one that is its prefix can pre-empt it and leave the tail exposed.
+	sort.Slice(secrets, func(i, j int) bool { return len(secrets[i]) > len(secrets[j]) })
 	return secrets
 }
 

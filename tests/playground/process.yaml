@@ -9,14 +9,21 @@ config_schema:
   required: [server_url]
 
 input_schema:
-  type: number
+  type: array
+  items:
+    type: object
+    properties:
+      sleep:
+        type: number
+        secret: true
+    required: [sleep]
 
 tasks:
   - id: first
     action:
       type: rest
       input:
-        sleep: "{{ input }}"
+        sleep: "{{ input[0].sleep ?? 0 }}"
       endpoint: "{{ config.server_url }}/first"
       result_schema:
         type: object
@@ -31,7 +38,7 @@ tasks:
     action:
       type: rest
       input:
-        sleep: "{{ input }}"
+        sleep: "{{ input[1].sleep ?? 0 }}"
       endpoint: "{{ config.server_url }}/second"
       result_schema:
         type: object
@@ -46,7 +53,7 @@ tasks:
     action:
       type: rest
       input:
-        sleep: "{{ input }}"
+        sleep: "{{ input[2].sleep ?? 0 }}"
       endpoint: "{{ config.server_url }}/third"
       result_schema:
         type: object
@@ -61,7 +68,7 @@ tasks:
     action:
       type: child
       input:
-        sleep: "{{ input }}"
+        sleep: "{{ input[3].sleep ?? 0 }}"
       name: "child"
       result_schema:
         type: object

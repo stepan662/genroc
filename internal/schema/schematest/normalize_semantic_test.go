@@ -92,26 +92,6 @@ func TestNormalizeSemantic_anyOf(t *testing.T) {
 	)
 }
 
-func TestNormalizeSemantic_allOf(t *testing.T) {
-	assertSemanticEquivalence(t,
-		`{
-			"allOf": [
-				{"$ref": "#/$defs/HasName"},
-				{"$ref": "#/$defs/HasAge"}
-			],
-			"$defs": {
-				"HasName": {"type":"object","required":["name"],"properties":{"name":{"type":"string"}}},
-				"HasAge":  {"type":"object","required":["age"], "properties":{"age": {"type":"integer"}}}
-			}
-		}`,
-		[]any{map[string]any{"name": "Bob", "age": 30}},
-		[]any{
-			map[string]any{"name": "Bob"},
-			map[string]any{"age": 30},
-		},
-	)
-}
-
 func TestNormalizeSemantic_recursiveRef(t *testing.T) {
 	assertSemanticEquivalence(t,
 		`{

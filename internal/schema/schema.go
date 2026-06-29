@@ -1,8 +1,14 @@
 // Package schema provides a normalizer and type helpers for a strict subset of JSON Schema.
 //
-// Supported keywords: type, properties, required, items, oneOf, anyOf, allOf, enum,
+// Supported keywords: type, properties, required, items, oneOf, anyOf, enum,
 // minimum, maximum, minLength, maxLength, minItems, maxItems, $ref, $defs, $anchor, $id.
 // Any other keyword causes an unmarshal error.
+//
+// allOf is deliberately NOT accepted: it is an intersection that schema navigation
+// (LookupProperty / InferIndex, and thus type inference and secret detection) cannot
+// resolve a member through, so accepting it would be a half-supported keyword. The
+// AllOf struct field remains only as an internal vehicle for bundling refs during
+// normalization (see flattenNamedSchemas); it is never populated from user JSON.
 package schema
 
 import (
@@ -51,11 +57,12 @@ func (t SchemaType) Contains(s string) bool {
 // elsewhere.
 var allowedKeywords = map[string]bool{
 	"type": true, "properties": true, "required": true, "items": true,
-	"oneOf": true, "anyOf": true, "allOf": true, "enum": true,
+	"oneOf": true, "anyOf": true, "enum": true,
 	"minimum": true, "maximum": true, "minLength": true, "maxLength": true,
 	"minItems": true, "maxItems": true,
 	"$ref": true, "$defs": true, "$anchor": true, "$id": true,
 	"default": true, "secret": true,
+	// "allOf" is intentionally omitted — see the package doc.
 }
 
 // SchemaNode is the typed representation of the supported JSON Schema subset.

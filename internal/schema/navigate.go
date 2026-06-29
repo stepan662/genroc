@@ -288,9 +288,11 @@ func PathHitsSecret(s *SchemaNode, defs map[string]*SchemaNode, path string) boo
 }
 
 // CollectSecrets appends to *out the string form of every value in value whose
-// schema is marked secret, walking objects and arrays against node (resolving
-// $refs and looking through nullable wrappers). It is the gather half of log
-// redaction: the collected values are then scrubbed from free-form log text.
+// schema is marked secret. It descends objects and arrays with the same primitives
+// type inference uses — LookupProperty / InferIndex, which resolve $refs, nullable
+// wrappers, and oneOf/anyOf/allOf combinators — so the walk cannot drift from the
+// schema navigation. It is the gather half of log redaction: the collected values
+// are then scrubbed from free-form log text.
 func CollectSecrets(value any, node *SchemaNode, defs map[string]*SchemaNode, out *[]string) {
 	if node == nil || value == nil {
 		return
@@ -300,38 +302,34 @@ func CollectSecrets(value any, node *SchemaNode, defs map[string]*SchemaNode, ou
 		return
 	}
 	if IsSecret(resolved) {
-		if s := fmt.Sprintf("%v", value); s != "" {
+		if s := SecretString(value); s != "" {
 			*out = append(*out, s)
 		}
 		return
 	}
-	if len(resolved.Properties) == 0 && resolved.Items == nil && (len(resolved.OneOf) > 0 || len(resolved.AnyOf) > 0) {
-		if stripped := StripNull(resolved); stripped != resolved {
-			if d, derr := Deref(stripped, defs); derr == nil {
-				resolved = d
-			}
-		}
-	}
 	switch v := value.(type) {
 	case map[string]any:
 		for k, val := range v {
-			if prop, ok := resolved.Properties[k]; ok {
-				CollectSecrets(val, prop, defs, out)
+			if child, err := LookupProperty(resolved, k, defs); err == nil {
+				CollectSecrets(val, child, defs, out)
 			}
 		}
 	case []any:
-		if resolved.Items != nil {
-			for _, el := range v {
-				CollectSecrets(el, resolved.Items, defs, out)
-			}
+		child, err := InferIndex(resolved, defs)
+		if err != nil {
+			return
+		}
+		for _, el := range v {
+			CollectSecrets(el, child, defs, out)
 		}
 	}
 }
 
 // Redact returns value with every field whose schema is marked secret replaced by
-// "***", walking objects and arrays against node (resolving $refs and looking
-// through nullable wrappers). Non-secret values pass through unchanged. Used to
-// scrub secret-derived values before they cross a public boundary (API, logs).
+// "***". Like CollectSecrets it descends via LookupProperty / InferIndex, so $ref,
+// nullable, and combinator handling lives in one place. Non-secret values pass
+// through unchanged. Used to scrub secret-derived values before they cross a public
+// boundary (API, logs).
 func Redact(value any, node *SchemaNode, defs map[string]*SchemaNode) any {
 	if node == nil || value == nil {
 		return value
@@ -343,40 +341,45 @@ func Redact(value any, node *SchemaNode, defs map[string]*SchemaNode) any {
 	if IsSecret(resolved) {
 		return "***"
 	}
-	// Look through a nullable / single-variant wrapper to the concrete shape.
-	if len(resolved.Properties) == 0 && resolved.Items == nil && (len(resolved.OneOf) > 0 || len(resolved.AnyOf) > 0) {
-		if stripped := StripNull(resolved); stripped != resolved {
-			if d, derr := Deref(stripped, defs); derr == nil {
-				resolved = d
-			}
-		}
-	}
 	switch v := value.(type) {
 	case map[string]any:
-		if len(resolved.Properties) == 0 {
-			return value
-		}
 		out := make(map[string]any, len(v))
 		for k, val := range v {
-			if prop, ok := resolved.Properties[k]; ok {
-				out[k] = Redact(val, prop, defs)
+			if child, err := LookupProperty(resolved, k, defs); err == nil {
+				out[k] = Redact(val, child, defs)
 			} else {
-				out[k] = val
+				out[k] = val // key not in schema — leave untouched
 			}
 		}
 		return out
 	case []any:
-		if resolved.Items == nil {
+		child, err := InferIndex(resolved, defs)
+		if err != nil {
 			return value
 		}
 		out := make([]any, len(v))
 		for i, el := range v {
-			out[i] = Redact(el, resolved.Items, defs)
+			out[i] = Redact(el, child, defs)
 		}
 		return out
 	default:
 		return value
 	}
+}
+
+// SecretString renders a secret value the way it appears in logs so the substring
+// scrub matches it. Strings pass through raw — they appear unquoted (e.g. inside a
+// URL) and as a substring of their quoted JSON form, so the raw value catches both.
+// Everything else uses its JSON encoding: notably a number is "1000000" as
+// json.Marshal writes it, not fmt's "1e+06", which would never match the log text.
+func SecretString(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	if b, err := json.Marshal(v); err == nil {
+		return string(b)
+	}
+	return fmt.Sprintf("%v", v)
 }
 
 // IsNullType reports whether s is exactly {type:"null"}.

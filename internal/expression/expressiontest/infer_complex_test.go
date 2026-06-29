@@ -6,7 +6,7 @@ import (
 	"gent/internal/schema"
 )
 
-// complexCtxJSON is a context schema whose fields use anyOf, oneOf, and allOf.
+// complexCtxJSON is a context schema whose fields use anyOf and oneOf.
 const complexCtxJSON = `{
 	"type": "object",
 	"properties": {
@@ -15,7 +15,6 @@ const complexCtxJSON = `{
 			"properties": {
 				"flexible":      { "anyOf": [{"type":"integer"}, {"type":"string"}] },
 				"exactly_one":   { "oneOf": [{"type":"integer"}, {"type":"number"}] },
-				"combined":      { "allOf": [{"type":"integer"}, {"minimum": 0}] },
 				"numeric_union": { "anyOf": [{"type":"integer"}, {"type":"number"}] },
 				"obj_union": {
 					"anyOf": [
@@ -48,7 +47,7 @@ const complexCtxJSON = `{
 					]
 				}
 			},
-			"required": ["flexible", "exactly_one", "combined", "numeric_union", "obj_union", "obj_union_oneof", "obj_union_same", "obj_union_nested", "obj_union_anyof_in_oneof"]
+			"required": ["flexible", "exactly_one", "numeric_union", "obj_union", "obj_union_oneof", "obj_union_same", "obj_union_nested", "obj_union_anyof_in_oneof"]
 		}
 	},
 	"required": ["input"]
@@ -67,13 +66,6 @@ func TestInfer_OneOf_FieldReturnsSchema(t *testing.T) {
 	c := ctx(t, complexCtxJSON)
 	assertSchema(t, infer(t, "input.exactly_one", c), `{
 		"oneOf": [{"type":"integer"}, {"type":"number"}]
-	}`)
-}
-
-func TestInfer_AllOf_FieldReturnsSchema(t *testing.T) {
-	c := ctx(t, complexCtxJSON)
-	assertSchema(t, infer(t, "input.combined", c), `{
-		"allOf": [{"type":"integer"}, {"minimum": 0}]
 	}`)
 }
 
@@ -126,12 +118,6 @@ func TestInfer_OneOf_AllNumericArithmeticOK(t *testing.T) {
 	c := ctx(t, complexCtxJSON)
 	// integer widened to number because oneOf contains both integer and number.
 	assertSchema(t, infer(t, "input.exactly_one * 2", c), `{"type":"number"}`)
-}
-
-func TestInfer_AllOf_ArithmeticFails(t *testing.T) {
-	c := ctx(t, complexCtxJSON)
-	// allOf carries no plain "type" key at the top level
-	inferErr(t, "input.combined + 1", c, "unambiguous")
 }
 
 // --- nullable types ---
@@ -379,13 +365,6 @@ func TestInfer_AnyOf_NullAndObject_MemberAccess(t *testing.T) {
 		"required": ["input"]
 	}`)
 	assertSchema(t, infer(t, "input.maybe.x", c), `{"type":["integer","null"]}`)
-}
-
-// --- member access on opaque schemas (allOf, unknown) always fails ---
-
-func TestInfer_AllOf_MemberAccessFails(t *testing.T) {
-	c := ctx(t, complexCtxJSON)
-	inferErr(t, "input.combined.x", c, "cannot access .x: schema has no properties")
 }
 
 // --- conditional with complex schemas ---

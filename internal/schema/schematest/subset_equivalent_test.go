@@ -10,12 +10,6 @@ func TestIsSubset_equivalent(t *testing.T) {
 		want bool
 	}{
 		{
-			"single-element allOf is transparent",
-			`{"type":"integer"}`,
-			`{"allOf":[{"type":"integer"}]}`,
-			true,
-		},
-		{
 			"anyOf and oneOf are equivalent for disjoint variants",
 			`{"anyOf":[{"type":"string"},{"type":"integer"}]}`,
 			`{"oneOf":[{"type":"string"},{"type":"integer"}]}`,
