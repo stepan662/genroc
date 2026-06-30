@@ -191,6 +191,7 @@ type ListLogsReq struct {
 	Level     string `json:"level"`     // optional filter: debug, info, warn, error
 	Since     int64  `json:"since"`     // optional: only logs at/after this unix-millis timestamp
 	Recursive bool   `json:"recursive"` // include the whole process subtree, keyed on the root instance
+	Resolve   bool   `json:"resolve"`   // inline full externalized payloads instead of preview + data_ref
 	Pagination
 }
 
@@ -246,8 +247,8 @@ type LogEntryResp struct {
 	Task     string         `json:"task,omitempty"`
 	Message  string         `json:"message,omitempty"`
 	Code     string         `json:"code,omitempty"`
-	Data     string         `json:"data,omitempty"`     // payload (input/output/request/response body); a short preview when externalized (see DataRef)
-	DataRef  *LogDataRef    `json:"data_ref,omitempty"` // set when the full payload was externalized to an object; fetch via /instances/{id}/objects/{ref}
+	Data     string         `json:"data,omitempty"`     // inline payload (input/output/request/response body); empty when externalized — see DataRef — unless ?resolve=true inlines the full value
+	DataRef  *LogDataRef    `json:"data_ref,omitempty"` // set when the full payload was externalized to an object; fetch via /instances/{id}/objects/{ref} or pass ?resolve=true
 	Meta     map[string]any `json:"meta,omitempty"`     // small, complete, parseable metadata (e.g. {"url":…}, {"status":200})
 }
 
@@ -258,9 +259,11 @@ type LogDataRef struct {
 	Size int64  `json:"size"`
 }
 
-// decodeLogData unpacks the stored log-data envelope into the API view: a small
-// payload comes back as its inline string; a large one comes back as a short preview
-// plus a reference to fetch the full value. A non-envelope value is returned verbatim.
+// decodeLogData unpacks the stored log-data envelope into the API view: a small inline
+// payload comes back as its string value; an externalized one comes back as a bare
+// reference with no inline data (the full value is fetched on demand via the log-object
+// endpoint, or inlined by the caller with ?resolve=true). A non-envelope value is
+// returned verbatim.
 func decodeLogData(raw string) (string, *LogDataRef) {
 	if raw == "" {
 		return "", nil
@@ -270,7 +273,7 @@ func decodeLogData(raw string) (string, *LogDataRef) {
 		return raw, nil
 	}
 	if env.IsRef() {
-		return env.Preview, &LogDataRef{Ref: env.Refs[0].Ref, Size: env.Refs[0].Size}
+		return "", &LogDataRef{Ref: env.Refs[0].Ref, Size: env.Refs[0].Size}
 	}
 	s, _ := env.Data.(string)
 	return s, nil
@@ -435,7 +438,7 @@ func (h *Handlers) listInstances(raw json.RawMessage) Reply {
 	return okReply(PageResp[InstanceSummaryResp]{Items: resp, Page: info})
 }
 
-func (h *Handlers) getInstance(id string) Reply {
+func (h *Handlers) getInstance(id string, resolve bool) Reply {
 	if id == "" {
 		return errReply(fmt.Errorf("id is required"))
 	}
@@ -443,10 +446,14 @@ func (h *Handlers) getInstance(id string) Reply {
 	if err != nil {
 		return errReply(err)
 	}
-	// Materialize any externalized value-slots so the full context can be returned
-	// (and redacted) — the detail view, unlike the engine, is not lazy.
-	if err := h.db.HydrateContext(inst); err != nil {
-		return errReply(err)
+	// By default, externalized value-slots are left as {ref, size} references — a
+	// detail read should stay light and not pull large blobs out of the object store.
+	// With resolve=true the caller opts into materializing every slot inline (and then
+	// redacting), the way the full context used to always be returned.
+	if resolve {
+		if err := h.db.HydrateContext(inst); err != nil {
+			return errReply(err)
+		}
 	}
 	resp := instanceToResp(inst)
 	// Redact secret-derived values from the returned context (the DB still holds
@@ -488,6 +495,15 @@ func (h *Handlers) listInstanceLogs(id string, raw json.RawMessage) Reply {
 	resp := make([]LogEntryResp, len(logs))
 	for i, l := range logs {
 		data, ref := decodeLogData(l.Data)
+		// With resolve=true, replace the preview + data_ref with the full payload
+		// inline. The object is owned by the log's own instance (l.InstanceID), which
+		// differs from the queried root for subtree logs. Log objects are stored
+		// pre-redacted, so serving them inline leaks nothing the data_ref didn't.
+		if req.Resolve && ref != nil {
+			if content, oerr := h.db.GetLogObject(l.InstanceID, ref.Ref); oerr == nil {
+				data, ref = content, nil
+			}
+		}
 		resp[i] = LogEntryResp{
 			Time:     l.CreatedAt.Format(time.RFC3339Nano),
 			Instance: l.InstanceID,

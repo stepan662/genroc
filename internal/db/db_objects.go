@@ -31,16 +31,23 @@ const logForeverMillis = math.MaxInt64
 func (db *DB) SetObjectRetention(d time.Duration) { db.objectRetentionMs.Store(d.Milliseconds()) }
 
 // pendingObject is a content object an encode step wants written. Hash is the
-// sha256 of Content; it is the object's id and the change-detection key.
+// content address of Content (see hashContent); it is the object's id and the
+// change-detection key.
 type pendingObject struct {
 	Hash    string
 	Content string
 	Size    int64
 }
 
+// hashContent is the content address of an object: the first 16 bytes (128 bits) of
+// the sha256, hex-encoded (32 chars). It is deterministic, so byte-identical content
+// still collapses to one row (the context/log dedup), and 128 bits stays collision-free
+// at any foreseeable scale while keeping the reference compact in API and CLI output.
+// Truncation is safe because the hash is only ever produced and compared here — never
+// reconstructed from the full digest.
 func hashContent(b []byte) string {
 	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
+	return hex.EncodeToString(sum[:16])
 }
 
 // encodeContextValue turns a plain value into the envelope stored for a context

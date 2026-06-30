@@ -302,7 +302,8 @@ var registry = func() []actionDef {
 			Summary: "Get status of a process instance",
 			Tags:    []string{"Instances"},
 			PathQuery: struct {
-				ID string `path:"id" format:"uuid"`
+				ID      string `path:"id" format:"uuid"`
+				Resolve bool   `query:"resolve" description:"Resolve externalized context values inline; default false returns large values as {ref, size} references"`
 			}{},
 			Resp: InstanceStatusResp{
 				ID: "550e8400-e29b-41d4-a716-446655440000", Process: "order_pipeline",
@@ -310,10 +311,16 @@ var registry = func() []actionDef {
 				Context: map[string]any{"order_id": 42, "charged": true},
 			},
 			fromHTTP: func(r *http.Request) (Envelope, error) {
-				return Envelope{Action: "get_instance", ID: r.PathValue("id")}, nil
+				resolve, _ := strconv.ParseBool(r.URL.Query().Get("resolve"))
+				b, _ := json.Marshal(map[string]bool{"resolve": resolve})
+				return Envelope{Action: "get_instance", ID: r.PathValue("id"), Payload: b}, nil
 			},
 			handle: func(h *Handlers, env Envelope) Reply {
-				return h.getInstance(env.ID)
+				var p struct {
+					Resolve bool `json:"resolve"`
+				}
+				_ = json.Unmarshal(env.Payload, &p)
+				return h.getInstance(env.ID, p.Resolve)
 			},
 		},
 		{
@@ -327,6 +334,7 @@ var registry = func() []actionDef {
 				Level     string `query:"level" enum:"debug,info,warn,error" description:"Filter by log level"`
 				Since     int64  `query:"since" description:"Only logs at/after this unix-millis timestamp"`
 				Recursive bool   `query:"recursive" description:"Include the whole process subtree, keyed on the root instance"`
+				Resolve   bool   `query:"resolve" description:"Inline full externalized payloads; default false returns a preview + data_ref"`
 				pageQuery
 			}{},
 			Resp: PageResp[LogEntryResp]{},
@@ -334,10 +342,12 @@ var registry = func() []actionDef {
 				q := r.URL.Query()
 				since, _ := strconv.ParseInt(q.Get("since"), 10, 64)
 				recursive, _ := strconv.ParseBool(q.Get("recursive"))
+				resolve, _ := strconv.ParseBool(q.Get("resolve"))
 				b, _ := json.Marshal(ListLogsReq{
 					Level:      q.Get("level"),
 					Since:      since,
 					Recursive:  recursive,
+					Resolve:    resolve,
 					Pagination: paginationFrom(r),
 				})
 				return Envelope{Action: "list_instance_logs", ID: r.PathValue("id"), Payload: b}, nil

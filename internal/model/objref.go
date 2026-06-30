@@ -22,10 +22,11 @@ type Envelope struct {
 	Preview string `json:"preview,omitempty"`
 }
 
-// ObjectRef points at one row in process_objects. Ref is the sha256 hex of the
-// stored content; it doubles as the object id and the change-detection key (a
-// re-encoded value with the same hash needs no new write). Size is the byte length
-// of the content, surfaced to the API without loading the object.
+// ObjectRef points at one row in process_objects. Ref is the content address — the
+// first 16 bytes (128 bits) of the content's sha256, hex-encoded (32 chars); it
+// doubles as the object id and the change-detection key (a re-encoded value with the
+// same hash needs no new write). Size is the byte length of the content, surfaced to
+// the API without loading the object.
 type ObjectRef struct {
 	Ref  string `json:"ref"`
 	Size int64  `json:"size"`

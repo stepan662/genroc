@@ -365,9 +365,13 @@ func runGetCmd(server string, args []string) {
 	fs := flag.NewFlagSet("get", flag.ExitOnError)
 	serverFlag := fs.String("server", server, "gent server base URL ($GENT_SERVER)")
 	jsonFlag := fs.Bool("json", false, "print the raw JSON response")
+	resolveFlag := fs.Bool("resolve", false, "resolve externalized context values inline instead of {ref, size} references")
 	id := instanceIDAndFlags(fs, args)
 
 	u := *serverFlag + "/instances/" + url.PathEscape(id)
+	if *resolveFlag {
+		u += "?resolve=true"
+	}
 	if *jsonFlag {
 		var raw json.RawMessage
 		if err := callGet(u, &raw); err != nil {
@@ -490,6 +494,7 @@ func runLogsCmd(server string, args []string) {
 	sinceFlag := fs.Int64("since", 0, "only logs at/after this unix-millis timestamp")
 	limitFlag := fs.Int("limit", 200, "max entries to return")
 	recursiveFlag := fs.Bool("recursive", false, "include the whole process subtree (root instance id)")
+	resolveFlag := fs.Bool("resolve", false, "inline full externalized payloads instead of a preview + reference")
 	modeFlag := fs.String("mode", "detail", "output: basic (no data body), detail (+ data), or json (one JSON object per line, untruncated)")
 	id := instanceIDAndFlags(fs, args)
 	mode, err := logview.ParseMode(*modeFlag)
@@ -509,6 +514,9 @@ func runLogsCmd(server string, args []string) {
 	}
 	if *recursiveFlag {
 		q.Set("recursive", "true")
+	}
+	if *resolveFlag {
+		q.Set("resolve", "true")
 	}
 	u := *serverFlag + "/instances/" + url.PathEscape(id) + "/logs"
 	if enc := q.Encode(); enc != "" {
@@ -531,6 +539,10 @@ func runLogsCmd(server string, args []string) {
 		return
 	}
 
+	type logDataRef struct {
+		Ref  string `json:"ref"`
+		Size int64  `json:"size"`
+	}
 	type logRow struct {
 		Time     string         `json:"time"`
 		Instance string         `json:"instance"`
@@ -540,6 +552,7 @@ func runLogsCmd(server string, args []string) {
 		Message  string         `json:"message"`
 		Code     string         `json:"code"`
 		Data     string         `json:"data"`
+		DataRef  *logDataRef    `json:"data_ref"`
 		Meta     map[string]any `json:"meta"`
 	}
 	// A single page, bounded by --limit (the server caps it at 1000). Unlike
@@ -560,7 +573,16 @@ func runLogsCmd(server string, args []string) {
 	fmt.Println(logview.Header(*recursiveFlag))
 	for _, l := range resp.Items {
 		t, _ := parseTime(l.Time)
-		rec := logview.Record{Event: l.Event, Task: l.Task, Msg: l.Message, Code: l.Code, Data: l.Data, Meta: l.Meta}
+		// An externalized payload comes back as a bare {ref, size} reference with no
+		// inline body — show the reference itself in the body's place (rendered raw via
+		// the leading "{"). Pass --resolve to fetch and inline the full value instead.
+		data := l.Data
+		if data == "" && l.DataRef != nil {
+			if b, err := json.Marshal(l.DataRef); err == nil {
+				data = string(b)
+			}
+		}
+		rec := logview.Record{Event: l.Event, Task: l.Task, Msg: l.Message, Code: l.Code, Data: data, Meta: l.Meta}
 		idTag := ""
 		if *recursiveFlag {
 			idTag = shortID(l.Instance)
