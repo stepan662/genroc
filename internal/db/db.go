@@ -50,6 +50,13 @@ type DB struct {
 	logBuf     []dbgen.InsertLogParams
 	logStop    chan struct{} // closed by Close() to stop the flusher
 	logStopped chan struct{} // closed by the flusher after its final flush
+
+	// objectRetentionMs is the window a dereferenced process_objects row survives
+	// before GC, mirroring the audit-log retention so a log referencing an object
+	// outlives the log itself. Set by the engine at startup (SetObjectRetention);
+	// 0 means "keep forever" — dereferenced objects are left pinned (never swept),
+	// consistent with logs-forever.
+	objectRetentionMs atomic.Int64
 }
 
 type defKey struct {
@@ -291,3 +298,5 @@ func nullStringPtr(n sql.NullString) *string {
 	}
 	return &n.String
 }
+
+func nullInt64(v int64) sql.NullInt64 { return sql.NullInt64{Int64: v, Valid: true} }

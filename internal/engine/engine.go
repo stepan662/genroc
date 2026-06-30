@@ -128,6 +128,9 @@ func New(database *db.DB, pollEvery time.Duration, maxConcurrent int, immediateR
 	if leaseRenewInterval <= 0 {
 		leaseRenewInterval = defaultLeaseRenewInterval
 	}
+	// Dereferenced objects survive on the same horizon as audit logs, so a log that
+	// references an object stays resolvable for as long as the log itself lives.
+	database.SetObjectRetention(logCfg.Retention)
 	return &Engine{
 		db:                 database,
 		pollEvery:          pollEvery,
@@ -329,6 +332,13 @@ func (e *Engine) pruneLogs() {
 		e.logOnly(logEvent{Level: model.LogError, Msg: "prune logs: " + err.Error()})
 	} else if n > 0 {
 		e.logOnly(logEvent{Level: model.LogDebug, Msg: "pruned audit logs", Meta: map[string]any{"count": n, "older_than": e.logCfg.Retention}})
+	}
+	// Sweep dereferenced/expired objects (log payloads and dropped context values) on
+	// the same horizon — their expiration was stamped to now+retention when released.
+	if n, err := e.db.DeleteExpiredObjects(db.Now().UnixMilli()); err != nil {
+		e.logOnly(logEvent{Level: model.LogError, Msg: "prune objects: " + err.Error()})
+	} else if n > 0 {
+		e.logOnly(logEvent{Level: model.LogDebug, Msg: "pruned objects", Meta: map[string]any{"count": n}})
 	}
 }
 
@@ -697,7 +707,7 @@ func (e *Engine) executeAction(ctx context.Context, inst *model.ProcessInstance,
 // prior output (its value from the last loop iteration, or nil on the first run).
 func (e *Engine) evalTaskOutput(inst *model.ProcessInstance, task *model.Task, result, previous any) (any, error) {
 	self := map[string]any{"result": result, "previous": previous}
-	return evalShape(task.Output.Raw, evalEnv(inst.ContextData, inst.Config, self))
+	return e.evalShapeCtx(inst, task.Output.Raw, self)
 }
 
 // setTaskOutput stores value as the task's exported output (outputs.taskID),
@@ -736,7 +746,7 @@ func (e *Engine) evalSwitch(inst *model.ProcessInstance, task *model.Task, selfO
 		if c.Case == "" {
 			return c.Goto, nil
 		}
-		ok, err := evalBool(c.Case, inst.ContextData, inst.Config, selfOutput)
+		ok, err := e.evalBoolCtx(inst, c.Case, selfOutput)
 		if err != nil {
 			return "", fmt.Errorf("case %q: %w", c.Case, err)
 		}
@@ -853,7 +863,7 @@ func (e *Engine) buildTaskData(inst *model.ProcessInstance, task *model.Task) (a
 	if !task.Action.Input.Present() {
 		return map[string]any{}, nil
 	}
-	return evalShape(task.Action.Input.Raw, evalEnv(inst.ContextData, inst.Config, nil))
+	return e.evalShapeCtx(inst, task.Action.Input.Raw, nil)
 }
 
 // runDelay implements the delay action. On first entry — WakeAt is nil
@@ -865,7 +875,7 @@ func (e *Engine) buildTaskData(inst *model.ProcessInstance, task *model.Task) (a
 // or failed (the caller stops and persists it).
 func (e *Engine) runDelay(inst *model.ProcessInstance, task *model.Task) *advanceOutcome {
 	if inst.WakeAt == nil {
-		ms, err := evalDurationMs(task.Action.Ms, inst.ContextData, inst.Config)
+		ms, err := e.evalDurationMsCtx(inst, task.Action.Ms)
 		if err != nil {
 			return stop(e.failInstance(inst, fmt.Sprintf("task %q delay: %v", task.ID, err)))
 		}
@@ -957,6 +967,21 @@ func evalDurationMs(expr string, ctx, config map[string]any) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	return durationFromValue(expr, v)
+}
+
+// evalDurationMsCtx is evalDurationMs against an instance's context, resolving only
+// the slots the duration expression references.
+func (e *Engine) evalDurationMsCtx(inst *model.ProcessInstance, expr string) (int64, error) {
+	v, err := e.evalAnyCtx(inst, expr)
+	if err != nil {
+		return 0, err
+	}
+	return durationFromValue(expr, v)
+}
+
+// durationFromValue coerces an evaluated delay expression to a non-negative ms count.
+func durationFromValue(expr string, v any) (int64, error) {
 	var ms int64
 	switch n := v.(type) {
 	case int:
@@ -1010,7 +1035,10 @@ func (e *Engine) audit(inst *model.ProcessInstance, ev logEvent) {
 		ev.Msg = redactSecrets(ev.Msg, secrets)
 		ev.Meta = redactMeta(ev.Meta, secrets)
 	}
-	e.emit(ev)
+	// Console shows a capped excerpt regardless of how the full payload is persisted.
+	consoleEv := ev
+	consoleEv.Data = truncateStr(ev.Data, e.payloadCap())
+	e.emit(consoleEv)
 	if err := e.db.AppendLog(&model.LogEntry{
 		InstanceID: ev.ID,
 		Level:      ev.Level,
@@ -1018,7 +1046,7 @@ func (e *Engine) audit(inst *model.ProcessInstance, ev logEvent) {
 		TaskID:     ev.Task,
 		Message:    ev.Msg,
 		Code:       ev.Code,
-		Data:       ev.Data,
+		Data:       e.encodeLogData(ev.ID, ev.Data),
 		Meta:       ev.Meta,
 	}); err != nil {
 		e.logOnly(logEvent{Level: model.LogError, ID: ev.ID, Msg: "append audit log: " + err.Error()})
@@ -1029,6 +1057,13 @@ func (e *Engine) audit(inst *model.ProcessInstance, ev logEvent) {
 // config secrets, plus input/output values whose inferred schema is marked secret —
 // so audit can scrub them from log text. (The action response body is not in the
 // context; it is schema-redacted at its log site via snippetResult.)
+//
+// It considers only already-materialized values: inline values and slots that were
+// resolved earlier this advance (inst.ResolvedObjects). An unresolved *ObjectRef is
+// skipped, because a value that was never loaded was never used, so it cannot appear
+// in any log line being scrubbed. This relies on the invariant that anything logged
+// is derived from a value resolved BEFORE the audit call that logs it (every eval
+// path feeds inst.ResolvedObjects via resolveValue first) — preserve that ordering.
 func (e *Engine) contextSecrets(inst *model.ProcessInstance) []string {
 	def, err := e.db.GetDefinition(inst.ProcessName, inst.ProcessVersion)
 	if err != nil {
@@ -1039,13 +1074,26 @@ func (e *Engine) contextSecrets(inst *model.ProcessInstance) []string {
 	if !ok {
 		return out
 	}
+	collect := func(v any, node *schema.SchemaNode) {
+		if node == nil {
+			return
+		}
+		if ref, isRef := v.(*model.ObjectRef); isRef {
+			cached, ok := inst.ResolvedObjects[ref.Ref]
+			if !ok {
+				return // never materialized this advance → cannot be in any log line
+			}
+			v = cached
+		}
+		schema.CollectSecrets(v, node, sf.Defs, &out)
+	}
 	if v, ok := inst.ContextData["input"]; ok {
-		schema.CollectSecrets(v, sf.ProcessInput, sf.Defs, &out)
+		collect(v, sf.ProcessInput)
 	}
 	if outs, ok := inst.ContextData["outputs"].(map[string]any); ok {
 		for tid, v := range outs {
 			if ts, ok := sf.Tasks[tid]; ok {
-				schema.CollectSecrets(v, ts.Output, sf.Defs, &out)
+				collect(v, ts.Output)
 			}
 		}
 	}
@@ -1179,8 +1227,10 @@ func (e *Engine) outputData(inst *model.ProcessInstance) string {
 	return e.snippet(inst.ContextData["output"])
 }
 
-// snippet renders v as JSON capped to the configured payload size for inclusion
-// in an audit detail. Returns "" when payload capture is disabled or v is empty.
+// snippet renders v as JSON for inclusion in an audit detail. It returns the FULL
+// payload (no truncation): audit caps it for the console and externalizes anything
+// over the payload size to a log object, so the captured value is never lossy.
+// Returns "" when payload capture is disabled or v is empty.
 func (e *Engine) snippet(v any) string {
 	if !e.logCfg.Payloads || v == nil {
 		return ""
@@ -1189,31 +1239,65 @@ func (e *Engine) snippet(v any) string {
 	if err != nil {
 		return ""
 	}
-	max := e.logCfg.PayloadBytes
-	if max <= 0 {
-		max = defaultPayloadBytes
-	}
-	if len(b) > max {
-		return string(b[:max]) + "…(truncated)"
-	}
 	return string(b)
 }
 
-// snippetRaw caps an already-string payload (e.g. an error response body, which is
-// raw text, not a value to JSON-encode) to the configured size, the same way
-// snippet caps marshalled JSON. Returns "" when payload capture is off or s is empty.
+// snippetRaw returns an already-string payload (e.g. an error response body, raw
+// text not a value to JSON-encode) in full; audit caps/externalizes it like snippet.
+// Returns "" when payload capture is off or s is empty.
 func (e *Engine) snippetRaw(s string) string {
-	if !e.logCfg.Payloads || s == "" {
+	if !e.logCfg.Payloads {
 		return ""
 	}
-	max := e.logCfg.PayloadBytes
-	if max <= 0 {
-		max = defaultPayloadBytes
+	return s
+}
+
+// payloadCap is the configured per-payload size used both as the console truncation
+// point and the inline-vs-externalize threshold for log data.
+func (e *Engine) payloadCap() int {
+	if e.logCfg.PayloadBytes > 0 {
+		return e.logCfg.PayloadBytes
 	}
-	if len(s) > max {
+	return defaultPayloadBytes
+}
+
+// logPreviewBytes is the length of the inline excerpt kept on a log row whose full
+// payload was externalized, so a listing can show a snippet without loading the object.
+const logPreviewBytes = 512
+
+func truncateStr(s string, max int) string {
+	if max > 0 && len(s) > max {
 		return s[:max] + "…(truncated)"
 	}
 	return s
+}
+
+// encodeLogData renders a (already secret-scrubbed) log payload into the data column:
+// a small payload is stored inline as an envelope; a large one is written to a log
+// object and stored as a reference plus a short preview, so the high-churn process_logs
+// table never holds a huge value. Best-effort: if the object write fails it falls back
+// to an inline, truncated preview.
+func (e *Engine) encodeLogData(instanceID, full string) string {
+	if full == "" {
+		return ""
+	}
+	if len(full) <= e.payloadCap() {
+		if b, err := json.Marshal(model.Envelope{Data: full}); err == nil {
+			return string(b)
+		}
+		return ""
+	}
+	ref, err := e.db.WriteLogObject(instanceID, full)
+	if err != nil {
+		if b, mErr := json.Marshal(model.Envelope{Data: truncateStr(full, e.payloadCap())}); mErr == nil {
+			return string(b)
+		}
+		return ""
+	}
+	if b, err := json.Marshal(model.Envelope{Refs: []*model.ObjectRef{ref}, Preview: truncateStr(full, logPreviewBytes)}); err == nil {
+		return string(b)
+	}
+	return ""
 }
 
 // failInstance moves the instance to its failed state and returns the terminal
@@ -1489,7 +1573,7 @@ func (e *Engine) evalChildInput(inst *model.ProcessInstance, taskID, label strin
 	if !input.Present() {
 		return map[string]any{}, nil
 	}
-	val, err := evalShape(input.Raw, evalEnv(inst.ContextData, inst.Config, nil))
+	val, err := e.evalShapeCtx(inst, input.Raw, nil)
 	if err != nil {
 		return nil, fmt.Errorf("task %q %s input: %v", taskID, label, err)
 	}
@@ -1507,7 +1591,7 @@ func (e *Engine) computeOutput(inst *model.ProcessInstance) error {
 	if !def.Output.Present() {
 		return nil
 	}
-	out, err := evalShape(def.Output.Raw, evalEnv(inst.ContextData, inst.Config, nil))
+	out, err := e.evalShapeCtx(inst, def.Output.Raw, nil)
 	if err != nil {
 		return fmt.Errorf("output: %w", err)
 	}
@@ -1523,7 +1607,7 @@ func (e *Engine) resolveEndpoint(inst *model.ProcessInstance, call *model.Action
 	if call.Endpoint == "" {
 		return "", nil
 	}
-	val, err := evalAny(call.Endpoint, inst.ContextData, inst.Config)
+	val, err := e.evalAnyCtx(inst, call.Endpoint)
 	if err != nil {
 		return "", err
 	}
@@ -1538,7 +1622,7 @@ func (e *Engine) resolveHeaders(inst *model.ProcessInstance, call *model.Action)
 	}
 	resolved := make(map[string]string, len(call.Headers))
 	for k, expr := range call.Headers {
-		val, err := evalAny(expr, inst.ContextData, inst.Config)
+		val, err := e.evalAnyCtx(inst, expr)
 		if err != nil {
 			return nil, fmt.Errorf("header %q: %w", k, err)
 		}

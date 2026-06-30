@@ -78,6 +78,39 @@ func (q *Queries) DeleteDependencies(ctx context.Context, arg DeleteDependencies
 	return err
 }
 
+const deleteDereferencedObject = `-- name: DeleteDereferencedObject :exec
+DELETE FROM process_objects
+WHERE instance_id = ?1 AND hash = ?2
+  AND (log_until IS NULL OR log_until < ?3)
+`
+
+type DeleteDereferencedObjectParams struct {
+	InstanceID string
+	Hash       string
+	Now        sql.NullInt64
+}
+
+// Context dereference: delete the row outright when no live log still needs it, so a
+// replaced value (and any secret in it) does not linger.
+func (q *Queries) DeleteDereferencedObject(ctx context.Context, arg DeleteDereferencedObjectParams) error {
+	_, err := q.db.ExecContext(ctx, deleteDereferencedObject, arg.InstanceID, arg.Hash, arg.Now)
+	return err
+}
+
+const deleteExpiredObjects = `-- name: DeleteExpiredObjects :execrows
+DELETE FROM process_objects
+WHERE pinned = 0 AND (log_until IS NULL OR log_until < ?1)
+`
+
+// GC sweep: reclaim rows no longer pinned by context and no longer needed by any log.
+func (q *Queries) DeleteExpiredObjects(ctx context.Context, before sql.NullInt64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteExpiredObjects, before)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteLogsBefore = `-- name: DeleteLogsBefore :execrows
 
 DELETE FROM process_logs WHERE created_at < ?1
@@ -251,9 +284,10 @@ func (q *Queries) GetChannel(ctx context.Context, arg GetChannelParams) (int64, 
 }
 
 const getChildrenForTask = `-- name: GetChildrenForTask :many
-SELECT id, process_name, process_version, task_queue, context_data, parent_id,
+SELECT id, process_name, process_version, task_queue, parent_id,
        call_stack, retry_count, wake_at, status, error,
-       created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_task_id
+       created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_task_id,
+       input_data, outputs_data, output_data, error_data, external_data, engine_state
 FROM process_instances
 WHERE parent_id = ?1
   AND spawn_task_id = ?2
@@ -278,7 +312,6 @@ func (q *Queries) GetChildrenForTask(ctx context.Context, arg GetChildrenForTask
 			&i.ProcessName,
 			&i.ProcessVersion,
 			&i.TaskQueue,
-			&i.ContextData,
 			&i.ParentID,
 			&i.CallStack,
 			&i.RetryCount,
@@ -291,6 +324,12 @@ func (q *Queries) GetChildrenForTask(ctx context.Context, arg GetChildrenForTask
 			&i.LeaseExpiresAt,
 			&i.WaitState,
 			&i.SpawnTaskID,
+			&i.InputData,
+			&i.OutputsData,
+			&i.OutputData,
+			&i.ErrorData,
+			&i.ExternalData,
+			&i.EngineState,
 		); err != nil {
 			return nil, err
 		}
@@ -357,13 +396,16 @@ func (q *Queries) GetDependencyVersion(ctx context.Context, arg GetDependencyVer
 }
 
 const getInstance = `-- name: GetInstance :one
-SELECT id, process_name, process_version, task_queue, context_data, parent_id,
+SELECT id, process_name, process_version, task_queue, parent_id,
        call_stack, retry_count, wake_at, status, error,
-       created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_task_id
+       created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_task_id,
+       input_data, outputs_data, output_data, error_data, external_data, engine_state
 FROM process_instances
 WHERE id = ?1
 `
 
+// Column order matches the process_instances row struct (context columns last, as
+// appended by migration 019) so sqlc returns dbgen.ProcessInstance directly.
 func (q *Queries) GetInstance(ctx context.Context, id string) (ProcessInstance, error) {
 	row := q.db.QueryRowContext(ctx, getInstance, id)
 	var i ProcessInstance
@@ -372,7 +414,6 @@ func (q *Queries) GetInstance(ctx context.Context, id string) (ProcessInstance, 
 		&i.ProcessName,
 		&i.ProcessVersion,
 		&i.TaskQueue,
-		&i.ContextData,
 		&i.ParentID,
 		&i.CallStack,
 		&i.RetryCount,
@@ -385,8 +426,50 @@ func (q *Queries) GetInstance(ctx context.Context, id string) (ProcessInstance, 
 		&i.LeaseExpiresAt,
 		&i.WaitState,
 		&i.SpawnTaskID,
+		&i.InputData,
+		&i.OutputsData,
+		&i.OutputData,
+		&i.ErrorData,
+		&i.ExternalData,
+		&i.EngineState,
 	)
 	return i, err
+}
+
+const getLogObject = `-- name: GetLogObject :one
+SELECT content FROM process_objects
+WHERE instance_id = ?1 AND hash = ?2 AND log_until IS NOT NULL
+`
+
+type GetLogObjectParams struct {
+	InstanceID string
+	Hash       string
+}
+
+// Serve-safe read for the log endpoint: only log-referenced rows are returned, whose
+// content is always pre-redacted or (when shared) byte-identical to it, hence secret-free.
+func (q *Queries) GetLogObject(ctx context.Context, arg GetLogObjectParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, getLogObject, arg.InstanceID, arg.Hash)
+	var content string
+	err := row.Scan(&content)
+	return content, err
+}
+
+const getObject = `-- name: GetObject :one
+SELECT content FROM process_objects WHERE instance_id = ?1 AND hash = ?2
+`
+
+type GetObjectParams struct {
+	InstanceID string
+	Hash       string
+}
+
+// Trusted internal read for context resolution (the instance owns the object).
+func (q *Queries) GetObject(ctx context.Context, arg GetObjectParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, getObject, arg.InstanceID, arg.Hash)
+	var content string
+	err := row.Scan(&content)
+	return content, err
 }
 
 const getWaitState = `-- name: GetWaitState :one
@@ -453,13 +536,17 @@ func (q *Queries) InsertDependency(ctx context.Context, arg InsertDependencyPara
 
 const insertInstance = `-- name: InsertInstance :exec
 INSERT INTO process_instances
-    (id, process_name, process_version, task_queue, context_data, parent_id, spawn_task_id,
+    (id, process_name, process_version, task_queue,
+     input_data, outputs_data, output_data, error_data, external_data, engine_state,
+     parent_id, spawn_task_id,
      call_stack, retry_count, wake_at, status, wait_state, error, created_at, updated_at)
 VALUES
-    (?1, ?2, ?3,
-     ?4, ?5, ?6, ?7,
+    (?1, ?2, ?3, ?4,
+     ?5, ?6, ?7,
      ?8, ?9, ?10,
-     ?11, ?12, ?13, ?14, ?15)
+     ?11, ?12,
+     ?13, ?14, ?15,
+     ?16, ?17, ?18, ?19, ?20)
 `
 
 type InsertInstanceParams struct {
@@ -467,7 +554,12 @@ type InsertInstanceParams struct {
 	ProcessName    string
 	ProcessVersion int64
 	TaskQueue      string
-	ContextData    string
+	InputData      string
+	OutputsData    string
+	OutputData     string
+	ErrorData      string
+	ExternalData   string
+	EngineState    string
 	ParentID       string
 	SpawnTaskID    string
 	CallStack      string
@@ -486,7 +578,12 @@ func (q *Queries) InsertInstance(ctx context.Context, arg InsertInstanceParams) 
 		arg.ProcessName,
 		arg.ProcessVersion,
 		arg.TaskQueue,
-		arg.ContextData,
+		arg.InputData,
+		arg.OutputsData,
+		arg.OutputData,
+		arg.ErrorData,
+		arg.ExternalData,
+		arg.EngineState,
 		arg.ParentID,
 		arg.SpawnTaskID,
 		arg.CallStack,
@@ -616,6 +713,35 @@ func (q *Queries) LoadDefinitionsOnChannel(ctx context.Context, channel string) 
 	return items, nil
 }
 
+const pinContextObject = `-- name: PinContextObject :exec
+INSERT INTO process_objects (instance_id, hash, content, size, pinned, log_until, created_at)
+VALUES (?1, ?2, ?3, ?4, 1, NULL, ?5)
+ON CONFLICT (instance_id, hash) DO UPDATE SET pinned = 1
+`
+
+type PinContextObjectParams struct {
+	InstanceID string
+	Hash       string
+	Content    string
+	Size       int64
+	CreatedAt  int64
+}
+
+// Writes (or re-pins) a context object. ON CONFLICT keeps the immutable content and
+// sets pinned = 1: re-referencing a previously-dereferenced object (a looping task
+// recomputing the same big output) makes it pinned again without touching any log
+// reference the row may also carry.
+func (q *Queries) PinContextObject(ctx context.Context, arg PinContextObjectParams) error {
+	_, err := q.db.ExecContext(ctx, pinContextObject,
+		arg.InstanceID,
+		arg.Hash,
+		arg.Content,
+		arg.Size,
+		arg.CreatedAt,
+	)
+	return err
+}
+
 const popOldestSignal = `-- name: PopOldestSignal :one
 DELETE FROM process_signals
 WHERE id = (
@@ -638,6 +764,36 @@ func (q *Queries) PopOldestSignal(ctx context.Context, arg PopOldestSignalParams
 	var payload string
 	err := row.Scan(&payload)
 	return payload, err
+}
+
+const referenceLogObject = `-- name: ReferenceLogObject :exec
+INSERT INTO process_objects (instance_id, hash, content, size, pinned, log_until, created_at)
+VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)
+ON CONFLICT (instance_id, hash) DO UPDATE SET log_until = excluded.log_until
+`
+
+type ReferenceLogObjectParams struct {
+	InstanceID string
+	Hash       string
+	Content    string
+	Size       int64
+	LogUntil   sql.NullInt64
+	CreatedAt  int64
+}
+
+// Records that a log row references this (pre-redacted) content until log_until, so
+// it survives at least as long as the log. ON CONFLICT keeps the immutable content and
+// extends the horizon, leaving any context pin intact (a shared, secret-free row).
+func (q *Queries) ReferenceLogObject(ctx context.Context, arg ReferenceLogObjectParams) error {
+	_, err := q.db.ExecContext(ctx, referenceLogObject,
+		arg.InstanceID,
+		arg.Hash,
+		arg.Content,
+		arg.Size,
+		arg.LogUntil,
+		arg.CreatedAt,
+	)
+	return err
 }
 
 const renewWorkerLeasesChunk = `-- name: RenewWorkerLeasesChunk :execrows
@@ -673,7 +829,7 @@ func (q *Queries) RenewWorkerLeasesChunk(ctx context.Context, arg RenewWorkerLea
 
 const setExternalResult = `-- name: SetExternalResult :exec
 UPDATE process_instances
-SET context_data = ?1,
+SET external_data = ?1,
     wait_state   = '',
     wake_at      = NULL,
     updated_at   = ?2
@@ -681,51 +837,82 @@ WHERE id = ?3
 `
 
 type SetExternalResultParams struct {
-	ContextData string
-	UpdatedAt   int64
-	ID          string
+	ExternalData string
+	UpdatedAt    int64
+	ID           string
 }
 
-// Un-parks an external task by storing the submitted/buffered result under
-// _external_result and clearing the wait. It does NOT touch worker_id/lease: callers
-// run it under the instance row lock and either the instance is parked (lease already
-// NULL) or the engine is mid-arm and must keep its lease until it finishes advancing.
+// Un-parks an external task by storing the submitted/buffered result in external_data
+// and clearing the wait. It does NOT touch worker_id/lease: callers run it under the
+// instance row lock and either the instance is parked (lease already NULL) or the
+// engine is mid-arm and must keep its lease until it finishes advancing.
 func (q *Queries) SetExternalResult(ctx context.Context, arg SetExternalResultParams) error {
-	_, err := q.db.ExecContext(ctx, setExternalResult, arg.ContextData, arg.UpdatedAt, arg.ID)
+	_, err := q.db.ExecContext(ctx, setExternalResult, arg.ExternalData, arg.UpdatedAt, arg.ID)
+	return err
+}
+
+const unpinObject = `-- name: UnpinObject :exec
+UPDATE process_objects SET pinned = 0
+WHERE instance_id = ?1 AND hash = ?2
+`
+
+type UnpinObjectParams struct {
+	InstanceID string
+	Hash       string
+}
+
+// Context dereference for a row a log still needs: drop the context pin so the GC sweep
+// reclaims it once the log horizon passes. No-op if DeleteDereferencedObject removed it.
+func (q *Queries) UnpinObject(ctx context.Context, arg UnpinObjectParams) error {
+	_, err := q.db.ExecContext(ctx, unpinObject, arg.InstanceID, arg.Hash)
 	return err
 }
 
 const updateInstance = `-- name: UpdateInstance :exec
 UPDATE process_instances
 SET task_queue       = ?1,
-    context_data     = ?2,
-    retry_count      = ?3,
-    wake_at    = ?4,
-    status           = ?5,
-    wait_state       = ?6,
-    error            = ?7,
-    updated_at       = ?8,
+    outputs_data     = ?2,
+    output_data      = ?3,
+    error_data       = ?4,
+    external_data    = ?5,
+    engine_state     = ?6,
+    retry_count      = ?7,
+    wake_at    = ?8,
+    status           = ?9,
+    wait_state       = ?10,
+    error            = ?11,
+    updated_at       = ?12,
     worker_id        = NULL,
     lease_expires_at = NULL
-WHERE id = ?9
+WHERE id = ?13
 `
 
 type UpdateInstanceParams struct {
-	TaskQueue   string
-	ContextData string
-	RetryCount  int64
-	WakeAt      sql.NullInt64
-	Status      string
-	WaitState   string
-	Error       string
-	UpdatedAt   int64
-	ID          string
+	TaskQueue    string
+	OutputsData  string
+	OutputData   string
+	ErrorData    string
+	ExternalData string
+	EngineState  string
+	RetryCount   int64
+	WakeAt       sql.NullInt64
+	Status       string
+	WaitState    string
+	Error        string
+	UpdatedAt    int64
+	ID           string
 }
 
+// input_data is intentionally NOT written: the process input is immutable after
+// creation, so re-writing it every update would be pure churn.
 func (q *Queries) UpdateInstance(ctx context.Context, arg UpdateInstanceParams) error {
 	_, err := q.db.ExecContext(ctx, updateInstance,
 		arg.TaskQueue,
-		arg.ContextData,
+		arg.OutputsData,
+		arg.OutputData,
+		arg.ErrorData,
+		arg.ExternalData,
+		arg.EngineState,
 		arg.RetryCount,
 		arg.WakeAt,
 		arg.Status,
@@ -740,30 +927,41 @@ func (q *Queries) UpdateInstance(ctx context.Context, arg UpdateInstanceParams) 
 const updateInstanceProgress = `-- name: UpdateInstanceProgress :exec
 UPDATE process_instances
 SET task_queue       = ?1,
-    context_data     = ?2,
-    retry_count      = ?3,
-    wake_at    = ?4,
-    wait_state       = ?5,
-    updated_at       = ?6,
+    outputs_data     = ?2,
+    error_data       = ?3,
+    external_data    = ?4,
+    engine_state     = ?5,
+    retry_count      = ?6,
+    wake_at    = ?7,
+    wait_state       = ?8,
+    updated_at       = ?9,
     worker_id        = NULL,
     lease_expires_at = NULL
-WHERE id = ?7
+WHERE id = ?10
 `
 
 type UpdateInstanceProgressParams struct {
-	TaskQueue   string
-	ContextData string
-	RetryCount  int64
-	WakeAt      sql.NullInt64
-	WaitState   string
-	UpdatedAt   int64
-	ID          string
+	TaskQueue    string
+	OutputsData  string
+	ErrorData    string
+	ExternalData string
+	EngineState  string
+	RetryCount   int64
+	WakeAt       sql.NullInt64
+	WaitState    string
+	UpdatedAt    int64
+	ID           string
 }
 
+// Mid-process write: neither input_data (immutable) nor output_data (only set on
+// completion, which goes through UpdateInstance with a status change) is touched.
 func (q *Queries) UpdateInstanceProgress(ctx context.Context, arg UpdateInstanceProgressParams) error {
 	_, err := q.db.ExecContext(ctx, updateInstanceProgress,
 		arg.TaskQueue,
-		arg.ContextData,
+		arg.OutputsData,
+		arg.ErrorData,
+		arg.ExternalData,
+		arg.EngineState,
 		arg.RetryCount,
 		arg.WakeAt,
 		arg.WaitState,

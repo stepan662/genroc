@@ -57,7 +57,12 @@ func (db *DB) FinishChild(child *model.ProcessInstance) error {
 	parentFound := err == nil
 
 	// Save child as terminal.
-	childParams, err := updateInstanceParams(child, nowMillis())
+	now := nowMillis()
+	cols, err := db.persistContext(ctx, qtx, child, now)
+	if err != nil {
+		return err
+	}
+	childParams, err := updateInstanceParams(child, cols, now)
 	if err != nil {
 		return err
 	}
@@ -119,7 +124,11 @@ func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 		lockRows.Close()
 	}
 
-	childParams, err := updateInstanceParams(child, now)
+	cols, err := db.persistContext(ctx, qtx, child, now)
+	if err != nil {
+		return err
+	}
+	childParams, err := updateInstanceParams(child, cols, now)
 	if err != nil {
 		return err
 	}
@@ -396,17 +405,25 @@ func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 
 	now := nowMillis()
 	for _, node := range dirty {
+		// Retry preserves the instance's context verbatim, so the already-encoded
+		// column strings (and the objects they reference) pass straight through —
+		// references are unchanged, so no object pin/deref is needed. input_data is
+		// immutable and not written by UpdateInstance.
 		raw := rawRows[node.ID]
 		if err := qtx.UpdateInstance(ctx, dbgen.UpdateInstanceParams{
-			ID:          node.ID,
-			TaskQueue:   raw.TaskQueue,
-			ContextData: raw.ContextData,
-			RetryCount:  int64(node.RetryCount),
-			WakeAt: fromTimePtr(node.WakeAt),
-			Status:      string(node.Status),
-			WaitState:   string(node.WaitState),
-			Error:       "",
-			UpdatedAt:   now,
+			ID:           node.ID,
+			TaskQueue:    raw.TaskQueue,
+			OutputsData:  raw.OutputsData,
+			OutputData:   raw.OutputData,
+			ErrorData:    raw.ErrorData,
+			ExternalData: raw.ExternalData,
+			EngineState:  raw.EngineState,
+			RetryCount:   int64(node.RetryCount),
+			WakeAt:       fromTimePtr(node.WakeAt),
+			Status:       string(node.Status),
+			WaitState:    string(node.WaitState),
+			Error:        "",
+			UpdatedAt:    now,
 		}); err != nil {
 			return fmt.Errorf("revive instance %q: %w", node.ID, err)
 		}
@@ -454,7 +471,11 @@ func (db *DB) SpawnChildrenAndWait(ctx context.Context, parent *model.ProcessIns
 	now := nowMillis()
 	for i, child := range children {
 		ts := now + int64(i)
-		params, err := insertInstanceParams(child, currentStatus, ts, ts)
+		cols, err := db.persistContext(ctx, qtx, child, ts)
+		if err != nil {
+			return err
+		}
+		params, err := insertInstanceParams(child, cols, currentStatus, ts, ts)
 		if err != nil {
 			return err
 		}
@@ -464,20 +485,28 @@ func (db *DB) SpawnChildrenAndWait(ctx context.Context, parent *model.ProcessIns
 	}
 
 	// Suspend parent: keep status, set wait_state='waiting'.
-	parentQueue, parentCtx, err := marshalInstanceState(parent)
+	parentCols, err := db.persistContext(ctx, qtx, parent, now)
+	if err != nil {
+		return err
+	}
+	parentQueue, err := marshalTaskQueue(parent)
 	if err != nil {
 		return err
 	}
 	if err := qtx.UpdateInstance(ctx, dbgen.UpdateInstanceParams{
-		ID:          parent.ID,
-		TaskQueue:   parentQueue,
-		ContextData: parentCtx,
-		RetryCount:  int64(parent.RetryCount),
-		WakeAt: sql.NullInt64{},
-		Status:      currentStatus,
-		WaitState:   string(model.WaitStateWaiting),
-		Error:       parent.Error,
-		UpdatedAt:   now,
+		ID:           parent.ID,
+		TaskQueue:    parentQueue,
+		OutputsData:  parentCols.OutputsData,
+		OutputData:   parentCols.OutputData,
+		ErrorData:    parentCols.ErrorData,
+		ExternalData: parentCols.ExternalData,
+		EngineState:  parentCols.EngineState,
+		RetryCount:   int64(parent.RetryCount),
+		WakeAt:       sql.NullInt64{},
+		Status:       currentStatus,
+		WaitState:    string(model.WaitStateWaiting),
+		Error:        parent.Error,
+		UpdatedAt:    now,
 	}); err != nil {
 		return fmt.Errorf("suspend parent: %w", err)
 	}

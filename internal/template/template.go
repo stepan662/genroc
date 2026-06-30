@@ -147,6 +147,45 @@ func OutputRefs(s string) ([]string, error) {
 	return ids, nil
 }
 
+// RootRefs reports which context roots (input / error / specific or all outputs) the
+// expressions embedded in template s read, merged across every {{ }} block. A plain
+// string with no {{ }} reads nothing. Used by the engine to lazily resolve only the
+// externalized value-slots a template needs.
+func RootRefs(s string) (expression.Roots, error) {
+	var out expression.Roots
+	merge := func(expr string) error {
+		r, err := expression.RootRefs(expr)
+		if err != nil {
+			return fmt.Errorf("template expression %q: %w", expr, err)
+		}
+		out.Input = out.Input || r.Input
+		out.Error = out.Error || r.Error
+		out.AllOutputs = out.AllOutputs || r.AllOutputs
+		out.Outputs = append(out.Outputs, r.Outputs...)
+		return nil
+	}
+	if expr, ok := singleExpr(s); ok {
+		return out, merge(expr)
+	}
+	rest := s
+	for {
+		start := strings.Index(rest, "{{")
+		if start == -1 {
+			break
+		}
+		rest = rest[start+2:]
+		end := strings.Index(rest, "}}")
+		if end == -1 {
+			break
+		}
+		if err := merge(rest[:end]); err != nil {
+			return out, err
+		}
+		rest = rest[end+2:]
+	}
+	return out, nil
+}
+
 // singleExpr reports whether s is exactly "{{expr}}" with nothing outside.
 func singleExpr(s string) (string, bool) {
 	if !strings.HasPrefix(s, "{{") || !strings.HasSuffix(s, "}}") {

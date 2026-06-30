@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 
 	dbgen "gent/internal/db/gen"
@@ -75,13 +74,13 @@ func (db *DB) ResolveExternalTask(ctx context.Context, instanceID, token string,
 		lock = " FOR UPDATE"
 	}
 
-	var status, waitState, contextData string
+	var status, waitState, externalData string
 	var workerID sql.NullString
 	var leaseExpiresAt sql.NullInt64
 	err = raw.QueryRowContext(ctx,
-		`SELECT status, wait_state, context_data, worker_id, lease_expires_at
+		`SELECT status, wait_state, external_data, worker_id, lease_expires_at
 		   FROM process_instances WHERE id = ?`+lock, instanceID).
-		Scan(&status, &waitState, &contextData, &workerID, &leaseExpiresAt)
+		Scan(&status, &waitState, &externalData, &workerID, &leaseExpiresAt)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("external task not found")
 	}
@@ -98,27 +97,24 @@ func (db *DB) ResolveExternalTask(ctx context.Context, instanceID, token string,
 		return fmt.Errorf("external task is being processed; try again")
 	}
 
-	var cd map[string]any
-	if err := json.Unmarshal([]byte(contextData), &cd); err != nil {
-		return fmt.Errorf("unmarshal context: %w", err)
+	storedToken, err := externalToken(externalData)
+	if err != nil {
+		return err
 	}
-	ext, _ := cd[model.CtxExternal].(map[string]any)
-	storedToken, _ := ext["token"].(string)
 	if storedToken == "" || storedToken != token {
 		return fmt.Errorf("token does not match the waiting task (it may have already been resolved or re-armed)")
 	}
 
-	cd[model.CtxExternalResult] = result
-	newCtx, err := json.Marshal(cd)
+	newExt, err := withExternalResult(externalData, result)
 	if err != nil {
-		return fmt.Errorf("marshal context: %w", err)
+		return fmt.Errorf("marshal external_data: %w", err)
 	}
 	// The status/wait_state/token/lease checks above ran under the row lock, so the
 	// un-park is unconditional here.
 	if err := qtx.SetExternalResult(ctx, dbgen.SetExternalResultParams{
-		ContextData: string(newCtx),
-		UpdatedAt:   nowMillis(),
-		ID:          instanceID,
+		ExternalData: newExt,
+		UpdatedAt:    nowMillis(),
+		ID:           instanceID,
 	}); err != nil {
 		return fmt.Errorf("resolve external task: %w", err)
 	}

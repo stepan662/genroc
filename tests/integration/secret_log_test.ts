@@ -180,3 +180,63 @@ test("nested-prefix secret values are fully redacted in stored logs", async () =
   expect(blob).not.toContain("BBBB"); // the longer secret's tail must not survive
   expect(blob).not.toContain("AAAA");
 });
+
+// A secret inside a LARGE (externalized) value must still be scrubbed from logs.
+// The token is >8KiB so it lives in the object store, not inline; on the advance that
+// calls the action the input is a lazy marker, resolved into the request body. The
+// secret reaches a log line (the request snippet) only via that resolution, so it is
+// collected for scrubbing from the per-advance resolve cache — proving the lazy path
+// doesn't open a leak.
+test("a secret in a large (externalized) request body is redacted in stored logs", async () => {
+  const mock = await startMockService(0, { response: { ok: 1 } });
+  const name = `secret_big_body_${crypto.randomUUID()}`;
+  const secret = "Z".repeat(9000); // exceeds the 8 KiB externalization threshold
+
+  await client.PUT("/definitions/batch", {
+    body: {
+      definitions: [
+        {
+          name,
+          input_schema: {
+            type: "object",
+            required: ["token"],
+            properties: { token: { type: "string", secret: true } },
+          },
+          tasks: [
+            {
+              id: "call",
+              action: {
+                type: "rest",
+                endpoint: `http://localhost:${mock.port}/x`,
+                input: { auth: "{{ input.token }}" },
+                result_schema: {
+                  type: "object",
+                  properties: { ok: { type: "number" } },
+                  required: ["ok"],
+                },
+              },
+              output: "{{ self.result }}",
+              switch: "end",
+            },
+          ],
+        },
+      ],
+      channel: "latest",
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any);
+
+  const { data: startData } = await client.POST("/instances", {
+    body: { process: name, input: { token: secret } },
+  });
+  const id = startData!.id;
+  expect(await waitForInstance(id)).toBe("completed");
+
+  const { data: logs } = await client.GET("/instances/{id}/logs", {
+    params: { path: { id }, query: { limit: 100 } },
+  });
+  // The raw secret must not survive anywhere in the trail — not inline, not in a
+  // preview, and not in any externalized log object.
+  expect(JSON.stringify(logs)).not.toContain("ZZZZZZZZZZ");
+  mock.stop();
+});

@@ -37,7 +37,6 @@ type ProcessInstance struct {
 	ProcessName    string
 	ProcessVersion int64
 	TaskQueue      string
-	ContextData    string
 	ParentID       string
 	CallStack      string
 	RetryCount     int64
@@ -50,6 +49,12 @@ type ProcessInstance struct {
 	LeaseExpiresAt sql.NullInt64
 	WaitState      string
 	SpawnTaskID    string
+	InputData      string
+	OutputsData    string
+	OutputData     string
+	ErrorData      string
+	ExternalData   string
+	EngineState    string
 }
 
 type ProcessLog struct {
@@ -63,6 +68,16 @@ type ProcessLog struct {
 	Data       string
 	CreatedAt  int64
 	Meta       string
+}
+
+type ProcessObject struct {
+	InstanceID string
+	Hash       string
+	Content    string
+	Size       int64
+	Pinned     int64
+	LogUntil   sql.NullInt64
+	CreatedAt  int64
 }
 
 type ProcessSignal struct {

@@ -32,19 +32,22 @@ func (e *Engine) collectChildOutputs(ctx context.Context, inst *model.ProcessIns
 		}
 	}
 	if task.Action.Type == model.ActionTypeChild {
-		return buildSingleChildOutput(siblings)
+		return e.buildSingleChildOutput(siblings)
 	}
-	return buildParallelChildOutput(siblings)
+	return e.buildParallelChildOutput(siblings)
 }
 
 // buildSingleChildOutput returns the single child's output (validated against the
-// declared result_schema, if any).
-func buildSingleChildOutput(siblings []*model.ProcessInstance) (any, error) {
+// declared result_schema, if any), resolving it from the object store if externalized.
+func (e *Engine) buildSingleChildOutput(siblings []*model.ProcessInstance) (any, error) {
 	if len(siblings) == 0 {
 		return nil, nil
 	}
 	child := siblings[0]
-	output := child.ContextData["output"]
+	output, err := e.resolveValue(child, child.ContextData["output"])
+	if err != nil {
+		return nil, err
+	}
 	if schemaRaw, _ := child.ContextData["_spawn_result_schema"].(string); schemaRaw != "" {
 		var schema map[string]any
 		json.Unmarshal([]byte(schemaRaw), &schema) //nolint:errcheck
@@ -56,12 +59,16 @@ func buildSingleChildOutput(siblings []*model.ProcessInstance) (any, error) {
 }
 
 // buildParallelChildOutput returns a map of each sibling's output keyed by its
-// child key (validated against the declared result_schema, if any).
-func buildParallelChildOutput(siblings []*model.ProcessInstance) (any, error) {
+// child key (validated against the declared result_schema, if any), resolving each
+// from the object store if externalized.
+func (e *Engine) buildParallelChildOutput(siblings []*model.ProcessInstance) (any, error) {
 	result := make(map[string]any, len(siblings))
 	for _, child := range siblings {
 		key, _ := child.ContextData["_spawn_child_key"].(string)
-		output := child.ContextData["output"]
+		output, err := e.resolveValue(child, child.ContextData["output"])
+		if err != nil {
+			return nil, err
+		}
 		if schemaRaw, _ := child.ContextData["_spawn_result_schema"].(string); schemaRaw != "" {
 			var schema map[string]any
 			json.Unmarshal([]byte(schemaRaw), &schema) //nolint:errcheck

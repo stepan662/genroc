@@ -69,14 +69,14 @@ func (db *DB) ArmExternalOrConsumeSignal(ctx context.Context, inst *model.Proces
 		cd := cloneContext(inst.ContextData)
 		cd[model.CtxExternalResult] = p
 		delete(cd, model.CtxExternal)
-		ctxJSON, err := json.Marshal(cd)
+		extData, err := encodeExternalData(cd)
 		if err != nil {
 			return false, nil, err
 		}
 		if err := qtx.SetExternalResult(ctx, dbgen.SetExternalResultParams{
-			ContextData: string(ctxJSON),
-			UpdatedAt:   now,
-			ID:          inst.ID,
+			ExternalData: extData,
+			UpdatedAt:    now,
+			ID:           inst.ID,
 		}); err != nil {
 			return false, nil, fmt.Errorf("consume buffered signal: %w", err)
 		}
@@ -93,7 +93,11 @@ func (db *DB) ArmExternalOrConsumeSignal(ctx context.Context, inst *model.Proces
 	delete(inst.ContextData, model.CtxExternalResult)
 	inst.WaitState = model.WaitStateExternal
 	inst.WakeAt = wakeAt
-	params, err := updateInstanceParams(inst, now)
+	cols, err := db.persistContext(ctx, qtx, inst, now)
+	if err != nil {
+		return false, nil, err
+	}
+	params, err := updateInstanceParams(inst, cols, now)
 	if err != nil {
 		return false, nil, err
 	}
@@ -127,13 +131,13 @@ func (db *DB) DeliverSignal(ctx context.Context, instanceID, taskID, signalID st
 	if db.dialect == "postgres" {
 		lock = " FOR UPDATE"
 	}
-	var status, waitState, taskQueue, contextData string
+	var status, waitState, taskQueue, externalData string
 	var workerID sql.NullString
 	var leaseExpiresAt sql.NullInt64
 	switch err := raw.QueryRowContext(ctx,
-		`SELECT status, wait_state, task_queue, context_data, worker_id, lease_expires_at
+		`SELECT status, wait_state, task_queue, external_data, worker_id, lease_expires_at
 		   FROM process_instances WHERE id = ?`+lock, instanceID).
-		Scan(&status, &waitState, &taskQueue, &contextData, &workerID, &leaseExpiresAt); err {
+		Scan(&status, &waitState, &taskQueue, &externalData, &workerID, &leaseExpiresAt); err {
 	case nil:
 	case sql.ErrNoRows:
 		return false, fmt.Errorf("instance not found")
@@ -154,20 +158,15 @@ func (db *DB) DeliverSignal(ctx context.Context, instanceID, taskID, signalID st
 	liveLeased := workerID.Valid && leaseExpiresAt.Valid && leaseExpiresAt.Int64 > nowMillis()
 
 	if armed && !liveLeased {
-		var cd map[string]any
-		if err := json.Unmarshal([]byte(contextData), &cd); err != nil {
-			return false, fmt.Errorf("decode context: %w", err)
-		}
-		cd[model.CtxExternalResult] = payload
-		newCtx, err := json.Marshal(cd)
+		newExt, err := withExternalResult(externalData, payload)
 		if err != nil {
 			return false, err
 		}
 		// armed/lease checked above under the row lock, so the un-park is unconditional.
 		if err := qtx.SetExternalResult(ctx, dbgen.SetExternalResultParams{
-			ContextData: string(newCtx),
-			UpdatedAt:   nowMillis(),
-			ID:          instanceID,
+			ExternalData: newExt,
+			UpdatedAt:    nowMillis(),
+			ID:           instanceID,
 		}); err != nil {
 			return false, fmt.Errorf("deliver signal: %w", err)
 		}

@@ -58,9 +58,10 @@ func instanceSummaryCursorVals(sort string, s *model.InstanceSummary) []any {
 // instanceColumns is the full process_instances column list, in the order
 // scanInstance reads them. Shared by the hand-written ClaimInstances and
 // RetryProcess queries so adding a column touches one place.
-const instanceColumns = `id, process_name, process_version, task_queue, context_data, parent_id,
+const instanceColumns = `id, process_name, process_version, task_queue, parent_id,
 	call_stack, retry_count, wake_at, status, error,
-	created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_task_id`
+	created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_task_id,
+	input_data, outputs_data, output_data, error_data, external_data, engine_state`
 
 // instanceSummaryColumns is the lightweight projection used by ListInstances: no
 // context_data/task_queue/call_stack, so a list never reads or unmarshals a
@@ -97,53 +98,251 @@ func scanInstanceSummary(s interface{ Scan(...any) error }) (*model.InstanceSumm
 func scanInstance(s interface{ Scan(...any) error }) (dbgen.ProcessInstance, error) {
 	var r dbgen.ProcessInstance
 	err := s.Scan(
-		&r.ID, &r.ProcessName, &r.ProcessVersion,
-		&r.TaskQueue, &r.ContextData, &r.ParentID,
-		&r.CallStack, &r.RetryCount, &r.WakeAt,
-		&r.Status, &r.Error, &r.CreatedAt, &r.UpdatedAt,
-		&r.WorkerID, &r.LeaseExpiresAt, &r.WaitState, &r.SpawnTaskID,
+		&r.ID, &r.ProcessName, &r.ProcessVersion, &r.TaskQueue, &r.ParentID,
+		&r.CallStack, &r.RetryCount, &r.WakeAt, &r.Status, &r.Error,
+		&r.CreatedAt, &r.UpdatedAt, &r.WorkerID, &r.LeaseExpiresAt, &r.WaitState, &r.SpawnTaskID,
+		&r.InputData, &r.OutputsData, &r.OutputData, &r.ErrorData, &r.ExternalData, &r.EngineState,
 	)
 	return r, err
 }
 
-// marshalInstanceState serialises the two JSON blobs every instance write needs.
-func marshalInstanceState(inst *model.ProcessInstance) (taskQueue, contextData string, err error) {
-	queue, err := json.Marshal(inst.TaskQueue)
-	if err != nil {
-		return "", "", err
-	}
-	ctx, err := json.Marshal(inst.ContextData)
-	if err != nil {
-		return "", "", err
-	}
-	return string(queue), string(ctx), nil
+// contextCols holds the six decomposed context columns as serialized JSON, ready
+// to drop into an Insert/Update params struct.
+type contextCols struct {
+	InputData, OutputsData, OutputData, ErrorData, ExternalData, EngineState string
 }
 
-// updateInstanceParams builds the params for the UpdateInstance query from inst,
-// stamping updated_at with now.
-func updateInstanceParams(inst *model.ProcessInstance, now int64) (dbgen.UpdateInstanceParams, error) {
-	queue, ctx, err := marshalInstanceState(inst)
+// outputsColumn is the on-disk shape of outputs_data: the completion order plus the
+// per-task output envelopes, each independently inline-or-externalized.
+type outputsColumn struct {
+	Order []string                   `json:"order,omitempty"`
+	Items map[string]json.RawMessage `json:"items,omitempty"`
+}
+
+func marshalTaskQueue(inst *model.ProcessInstance) (string, error) {
+	b, err := json.Marshal(inst.TaskQueue)
+	return string(b), err
+}
+
+// encodeValueSlot externalizes a value-bearing slot (input / a task output / the
+// process output): big values become an object reference (appended to pending and
+// recorded in referenced), small ones stay inline. An *model.ObjectRef (an
+// unchanged, still-lazy slot) is re-emitted as its reference with no new object.
+func encodeValueSlot(v any, pending *[]*pendingObject, referenced map[string]struct{}) (model.Envelope, error) {
+	env, p, err := encodeContextValue(v)
+	if err != nil {
+		return model.Envelope{}, err
+	}
+	if p != nil {
+		*pending = append(*pending, p)
+	}
+	if env.IsRef() {
+		referenced[env.Refs[0].Ref] = struct{}{}
+	}
+	return env, nil
+}
+
+// encodeContext splits inst.ContextData into the six column strings, collecting the
+// objects to write (pending) and the full set of object hashes the value-slots still
+// reference (referenced) so the write transaction can pin new objects and dereference
+// ones a slot no longer points at.
+func encodeContext(inst *model.ProcessInstance) (cols contextCols, pending []*pendingObject, referenced map[string]struct{}, err error) {
+	referenced = map[string]struct{}{}
+	cd := inst.ContextData
+
+	encodeSlot := func(v any) (string, error) {
+		env, e := encodeValueSlot(v, &pending, referenced)
+		if e != nil {
+			return "", e
+		}
+		b, e := json.Marshal(env)
+		return string(b), e
+	}
+
+	if v, ok := cd["input"]; ok {
+		if cols.InputData, err = encodeSlot(v); err != nil {
+			return
+		}
+	}
+	if outs, ok := cd["outputs"].(map[string]any); ok {
+		oc := outputsColumn{Order: toStringSlice(cd["output_order"]), Items: map[string]json.RawMessage{}}
+		for k, v := range outs {
+			env, e := encodeValueSlot(v, &pending, referenced)
+			if e != nil {
+				err = e
+				return
+			}
+			b, e := json.Marshal(env)
+			if e != nil {
+				err = e
+				return
+			}
+			oc.Items[k] = b
+		}
+		b, e := json.Marshal(oc)
+		if e != nil {
+			err = e
+			return
+		}
+		cols.OutputsData = string(b)
+	}
+	if v, ok := cd["output"]; ok {
+		if cols.OutputData, err = encodeSlot(v); err != nil {
+			return
+		}
+	}
+	if v, ok := cd["error"]; ok {
+		b, e := json.Marshal(v)
+		if e != nil {
+			err = e
+			return
+		}
+		cols.ErrorData = string(b)
+	}
+	if cols.ExternalData, err = encodeExternalData(cd); err != nil {
+		return
+	}
+	cols.EngineState, err = encodeEngineState(cd)
+	return
+}
+
+// encodeExternalData serialises the parked external-task bookkeeping (task_id, token,
+// the inline input snapshot, and a submitted result) into external_data. Returns ""
+// when no external state is present. External payloads stay inline in v1 (their own
+// column already keeps them off the main runnable index).
+func encodeExternalData(cd map[string]any) (string, error) {
+	ext := map[string]any{}
+	if e, ok := cd[model.CtxExternal].(map[string]any); ok {
+		for k, v := range e {
+			ext[k] = v
+		}
+	}
+	if r, ok := cd[model.CtxExternalResult]; ok {
+		ext["result"] = r
+		ext["has_result"] = true
+	}
+	if len(ext) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(ext)
+	return string(b), err
+}
+
+// withExternalResult writes a submitted/buffered result into an external_data column
+// value (the {task_id,token,input,...} bookkeeping), marking has_result so the engine
+// consumes it on the next claim. Used by the resolve/deliver paths that operate on the
+// column string directly rather than the in-memory context map.
+func withExternalResult(externalData string, result any) (string, error) {
+	ext := map[string]any{}
+	if externalData != "" {
+		if err := json.Unmarshal([]byte(externalData), &ext); err != nil {
+			return "", fmt.Errorf("decode external_data: %w", err)
+		}
+	}
+	ext["result"] = result
+	ext["has_result"] = true
+	b, err := json.Marshal(ext)
+	return string(b), err
+}
+
+// externalToken extracts the per-occurrence token from an external_data column value.
+func externalToken(externalData string) (string, error) {
+	if externalData == "" {
+		return "", nil
+	}
+	var ext map[string]any
+	if err := json.Unmarshal([]byte(externalData), &ext); err != nil {
+		return "", fmt.Errorf("decode external_data: %w", err)
+	}
+	tok, _ := ext["token"].(string)
+	return tok, nil
+}
+
+// encodeEngineState serialises the spawn/children bookkeeping into engine_state.
+// Returns "" when none is present.
+func encodeEngineState(cd map[string]any) (string, error) {
+	es := map[string]any{}
+	for ctxKey, col := range engineStateKeys {
+		if v, ok := cd[ctxKey]; ok {
+			es[col] = v
+		}
+	}
+	if len(es) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(es)
+	return string(b), err
+}
+
+// engineStateKeys maps the engine-internal context keys to their engine_state field
+// names (and back, in decodeContext).
+var engineStateKeys = map[string]string{
+	"_children":            "children",
+	"_spawn_action_type":   "spawn_action_type",
+	"_spawn_child_key":     "spawn_child_key",
+	"_spawn_result_schema": "spawn_result_schema",
+}
+
+func toStringSlice(v any) []string {
+	switch s := v.(type) {
+	case []string:
+		return s
+	case []any:
+		out := make([]string, 0, len(s))
+		for _, item := range s {
+			if str, ok := item.(string); ok {
+				out = append(out, str)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// persistContext encodes inst's context, writes/dereferences the implied objects via
+// qtx (inside the caller's transaction), and returns the column strings for the
+// caller's Insert/Update params.
+func (db *DB) persistContext(ctx context.Context, qtx *dbgen.Queries, inst *model.ProcessInstance, now int64) (contextCols, error) {
+	cols, pending, referenced, err := encodeContext(inst)
+	if err != nil {
+		return contextCols{}, err
+	}
+	if err := db.applyContextObjectDiff(ctx, qtx, inst.ID, pending, inst.LoadedObjectHashes, referenced, now); err != nil {
+		return contextCols{}, err
+	}
+	return cols, nil
+}
+
+// updateInstanceParams builds UpdateInstance params from inst + already-encoded
+// columns, stamping updated_at with now.
+func updateInstanceParams(inst *model.ProcessInstance, cols contextCols, now int64) (dbgen.UpdateInstanceParams, error) {
+	queue, err := marshalTaskQueue(inst)
 	if err != nil {
 		return dbgen.UpdateInstanceParams{}, err
 	}
 	return dbgen.UpdateInstanceParams{
-		ID:          inst.ID,
-		TaskQueue:   queue,
-		ContextData: ctx,
-		RetryCount:  int64(inst.RetryCount),
-		WakeAt: fromTimePtr(inst.WakeAt),
-		Status:      string(inst.Status),
-		WaitState:   string(inst.WaitState),
-		Error:       inst.Error,
-		UpdatedAt:   now,
+		ID:           inst.ID,
+		TaskQueue:    queue,
+		OutputsData:  cols.OutputsData,
+		OutputData:   cols.OutputData,
+		ErrorData:    cols.ErrorData,
+		ExternalData: cols.ExternalData,
+		EngineState:  cols.EngineState,
+		RetryCount:   int64(inst.RetryCount),
+		WakeAt:       fromTimePtr(inst.WakeAt),
+		Status:       string(inst.Status),
+		WaitState:    string(inst.WaitState),
+		Error:        inst.Error,
+		UpdatedAt:    now,
 	}, nil
 }
 
-// insertInstanceParams builds the params for the InsertInstance query. status is
-// passed explicitly so callers can override it (e.g. spawned children inherit the
-// parent's status); created/updated timestamps are passed for the same reason.
-func insertInstanceParams(inst *model.ProcessInstance, status string, createdAt, updatedAt int64) (dbgen.InsertInstanceParams, error) {
-	queue, ctx, err := marshalInstanceState(inst)
+// insertInstanceParams builds InsertInstance params from inst + already-encoded
+// columns. status is passed explicitly so callers can override it (e.g. spawned
+// children inherit the parent's status); created/updated timestamps are passed for
+// the same reason.
+func insertInstanceParams(inst *model.ProcessInstance, cols contextCols, status string, createdAt, updatedAt int64) (dbgen.InsertInstanceParams, error) {
+	queue, err := marshalTaskQueue(inst)
 	if err != nil {
 		return dbgen.InsertInstanceParams{}, err
 	}
@@ -156,12 +355,17 @@ func insertInstanceParams(inst *model.ProcessInstance, status string, createdAt,
 		ProcessName:    inst.ProcessName,
 		ProcessVersion: int64(inst.ProcessVersion),
 		TaskQueue:      queue,
-		ContextData:    ctx,
+		InputData:      cols.InputData,
+		OutputsData:    cols.OutputsData,
+		OutputData:     cols.OutputData,
+		ErrorData:      cols.ErrorData,
+		ExternalData:   cols.ExternalData,
+		EngineState:    cols.EngineState,
 		ParentID:       inst.ParentID,
 		SpawnTaskID:    inst.SpawnTaskID,
 		CallStack:      string(callStack),
 		RetryCount:     int64(inst.RetryCount),
-		WakeAt:    fromTimePtr(inst.WakeAt),
+		WakeAt:         fromTimePtr(inst.WakeAt),
 		Status:         status,
 		WaitState:      string(inst.WaitState),
 		Error:          inst.Error,
@@ -171,20 +375,47 @@ func insertInstanceParams(inst *model.ProcessInstance, status string, createdAt,
 }
 
 func (db *DB) SaveInstance(inst *model.ProcessInstance) error {
+	ctx := context.Background()
 	now := nowMillis()
-	params, err := insertInstanceParams(inst, string(inst.Status), now, now)
+	tx, qtx, _, err := db.beginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	return db.q.InsertInstance(context.Background(), params)
+	defer tx.Rollback()
+	cols, err := db.persistContext(ctx, qtx, inst, now)
+	if err != nil {
+		return err
+	}
+	params, err := insertInstanceParams(inst, cols, string(inst.Status), now, now)
+	if err != nil {
+		return err
+	}
+	if err := qtx.InsertInstance(ctx, params); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (db *DB) UpdateInstance(inst *model.ProcessInstance) error {
-	params, err := updateInstanceParams(inst, nowMillis())
+	ctx := context.Background()
+	now := nowMillis()
+	tx, qtx, _, err := db.beginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	return db.q.UpdateInstance(context.Background(), params)
+	defer tx.Rollback()
+	cols, err := db.persistContext(ctx, qtx, inst, now)
+	if err != nil {
+		return err
+	}
+	params, err := updateInstanceParams(inst, cols, now)
+	if err != nil {
+		return err
+	}
+	if err := qtx.UpdateInstance(ctx, params); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // UpdateInstanceProgress writes the mutable task state (queue, context, retry
@@ -196,19 +427,36 @@ func (db *DB) UpdateInstance(inst *model.ProcessInstance) error {
 // post-collect reset to ” must be persisted or the stale 'collecting' would
 // make the next spawn task skip phase 1 entirely.
 func (db *DB) UpdateInstanceProgress(inst *model.ProcessInstance) error {
-	queue, ctx, err := marshalInstanceState(inst)
+	ctx := context.Background()
+	now := nowMillis()
+	tx, qtx, _, err := db.beginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	return db.q.UpdateInstanceProgress(context.Background(), dbgen.UpdateInstanceProgressParams{
-		ID:          inst.ID,
-		TaskQueue:   queue,
-		ContextData: ctx,
-		RetryCount:  int64(inst.RetryCount),
-		WakeAt: fromTimePtr(inst.WakeAt),
-		WaitState:   string(inst.WaitState),
-		UpdatedAt:   nowMillis(),
-	})
+	defer tx.Rollback()
+	cols, err := db.persistContext(ctx, qtx, inst, now)
+	if err != nil {
+		return err
+	}
+	queue, err := marshalTaskQueue(inst)
+	if err != nil {
+		return err
+	}
+	if err := qtx.UpdateInstanceProgress(ctx, dbgen.UpdateInstanceProgressParams{
+		ID:           inst.ID,
+		TaskQueue:    queue,
+		OutputsData:  cols.OutputsData,
+		ErrorData:    cols.ErrorData,
+		ExternalData: cols.ExternalData,
+		EngineState:  cols.EngineState,
+		RetryCount:   int64(inst.RetryCount),
+		WakeAt:       fromTimePtr(inst.WakeAt),
+		WaitState:    string(inst.WaitState),
+		UpdatedAt:    now,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (db *DB) GetInstance(id string) (*model.ProcessInstance, error) {
@@ -330,11 +578,101 @@ func toInstance(r dbgen.ProcessInstance) (*model.ProcessInstance, error) {
 	if err := json.Unmarshal([]byte(r.TaskQueue), &inst.TaskQueue); err != nil {
 		return nil, fmt.Errorf("unmarshal task_queue: %w", err)
 	}
-	if err := json.Unmarshal([]byte(r.ContextData), &inst.ContextData); err != nil {
-		return nil, fmt.Errorf("unmarshal context_data: %w", err)
+	cd, loaded, err := decodeContext(r)
+	if err != nil {
+		return nil, err
 	}
+	inst.ContextData = cd
+	inst.LoadedObjectHashes = loaded
 	if err := json.Unmarshal([]byte(r.CallStack), &inst.CallStack); err != nil {
 		return nil, fmt.Errorf("unmarshal call_stack: %w", err)
 	}
 	return inst, nil
+}
+
+// decodeContext reassembles the six context columns into the in-memory ContextData
+// map. Externalized value-slots become *model.ObjectRef markers (resolved lazily on
+// first access); loaded is the set of referenced object hashes, used at write time to
+// dereference objects a slot stops pointing at.
+func decodeContext(r dbgen.ProcessInstance) (map[string]any, map[string]struct{}, error) {
+	cd := map[string]any{}
+	loaded := map[string]struct{}{}
+
+	decodeSlot := func(s, key string) error {
+		if s == "" {
+			return nil
+		}
+		var env model.Envelope
+		if err := json.Unmarshal([]byte(s), &env); err != nil {
+			return fmt.Errorf("decode %s envelope: %w", key, err)
+		}
+		if env.IsRef() {
+			loaded[env.Refs[0].Ref] = struct{}{}
+		}
+		cd[key] = decodeEnvelope(env)
+		return nil
+	}
+
+	if err := decodeSlot(r.InputData, "input"); err != nil {
+		return nil, nil, err
+	}
+	if r.OutputsData != "" {
+		var oc outputsColumn
+		if err := json.Unmarshal([]byte(r.OutputsData), &oc); err != nil {
+			return nil, nil, fmt.Errorf("decode outputs_data: %w", err)
+		}
+		items := make(map[string]any, len(oc.Items))
+		for k, raw := range oc.Items {
+			var env model.Envelope
+			if err := json.Unmarshal(raw, &env); err != nil {
+				return nil, nil, fmt.Errorf("decode output %s envelope: %w", k, err)
+			}
+			if env.IsRef() {
+				loaded[env.Refs[0].Ref] = struct{}{}
+			}
+			items[k] = decodeEnvelope(env)
+		}
+		cd["outputs"] = items
+		if oc.Order != nil {
+			cd["output_order"] = oc.Order
+		}
+	}
+	if err := decodeSlot(r.OutputData, "output"); err != nil {
+		return nil, nil, err
+	}
+	if r.ErrorData != "" {
+		var ev any
+		if err := json.Unmarshal([]byte(r.ErrorData), &ev); err != nil {
+			return nil, nil, fmt.Errorf("decode error_data: %w", err)
+		}
+		cd["error"] = ev
+	}
+	if r.ExternalData != "" {
+		var ext map[string]any
+		if err := json.Unmarshal([]byte(r.ExternalData), &ext); err != nil {
+			return nil, nil, fmt.Errorf("decode external_data: %w", err)
+		}
+		hasResult, _ := ext["has_result"].(bool)
+		result := ext["result"]
+		delete(ext, "has_result")
+		delete(ext, "result")
+		if len(ext) > 0 {
+			cd[model.CtxExternal] = ext
+		}
+		if hasResult {
+			cd[model.CtxExternalResult] = result
+		}
+	}
+	if r.EngineState != "" {
+		var es map[string]any
+		if err := json.Unmarshal([]byte(r.EngineState), &es); err != nil {
+			return nil, nil, fmt.Errorf("decode engine_state: %w", err)
+		}
+		for ctxKey, col := range engineStateKeys {
+			if v, ok := es[col]; ok {
+				cd[ctxKey] = v
+			}
+		}
+	}
+	return cd, loaded, nil
 }

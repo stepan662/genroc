@@ -89,6 +89,17 @@ type ProcessInstance struct {
 	// was non-null) rather than picked up at a clean task boundary. It signals that
 	// the current task may have been interrupted mid-execution on the previous owner.
 	ReclaimedExpired bool
+
+	// LoadedObjectHashes is the set of process_objects hashes the value-slots
+	// (input/outputs/output) referenced when this instance was read. The write path
+	// diffs it against the slots' current references to dereference objects a slot no
+	// longer points at. Transient, never persisted.
+	LoadedObjectHashes map[string]struct{} `json:"-"`
+
+	// ResolvedObjects memoises externalized-value lookups for the current advance,
+	// keyed by object hash, so a slot referenced by several expressions loads once.
+	// Transient, never persisted.
+	ResolvedObjects map[string]any `json:"-"`
 }
 
 // InstanceSummary is the lightweight projection of a ProcessInstance used by list

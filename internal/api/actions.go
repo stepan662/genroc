@@ -347,6 +347,29 @@ var registry = func() []actionDef {
 			},
 		},
 		{
+			Name:    "get_log_object",
+			Method:  http.MethodGet,
+			Path:    "/instances/{id}/objects/{ref}",
+			Summary: "Fetch the full payload of an externalized log entry (referenced by a log's data_ref)",
+			Tags:    []string{"Instances"},
+			PathQuery: struct {
+				ID  string `path:"id" format:"uuid"`
+				Ref string `path:"ref"`
+			}{},
+			Resp: map[string]any{"data": ""},
+			fromHTTP: func(r *http.Request) (Envelope, error) {
+				b, _ := json.Marshal(map[string]string{"ref": r.PathValue("ref")})
+				return Envelope{Action: "get_log_object", ID: r.PathValue("id"), Payload: b}, nil
+			},
+			handle: func(h *Handlers, env Envelope) Reply {
+				var p struct {
+					Ref string `json:"ref"`
+				}
+				_ = json.Unmarshal(env.Payload, &p)
+				return h.getLogObject(env.ID, p.Ref)
+			},
+		},
+		{
 			Name:    "cancel_instance",
 			Method:  http.MethodPost,
 			Path:    "/instances/{id}/cancel",

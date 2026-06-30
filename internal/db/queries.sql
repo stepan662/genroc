@@ -57,18 +57,28 @@ ORDER BY pc.name;
 
 -- name: InsertInstance :exec
 INSERT INTO process_instances
-    (id, process_name, process_version, task_queue, context_data, parent_id, spawn_task_id,
+    (id, process_name, process_version, task_queue,
+     input_data, outputs_data, output_data, error_data, external_data, engine_state,
+     parent_id, spawn_task_id,
      call_stack, retry_count, wake_at, status, wait_state, error, created_at, updated_at)
 VALUES
-    (sqlc.arg(id), sqlc.arg(process_name), sqlc.arg(process_version),
-     sqlc.arg(task_queue), sqlc.arg(context_data), sqlc.arg(parent_id), sqlc.arg(spawn_task_id),
+    (sqlc.arg(id), sqlc.arg(process_name), sqlc.arg(process_version), sqlc.arg(task_queue),
+     sqlc.arg(input_data), sqlc.arg(outputs_data), sqlc.arg(output_data),
+     sqlc.arg(error_data), sqlc.arg(external_data), sqlc.arg(engine_state),
+     sqlc.arg(parent_id), sqlc.arg(spawn_task_id),
      sqlc.arg(call_stack), sqlc.arg(retry_count), sqlc.arg(wake_at),
      sqlc.arg(status), sqlc.arg(wait_state), sqlc.arg(error), sqlc.arg(created_at), sqlc.arg(updated_at));
 
 -- name: UpdateInstance :exec
+-- input_data is intentionally NOT written: the process input is immutable after
+-- creation, so re-writing it every update would be pure churn.
 UPDATE process_instances
 SET task_queue       = sqlc.arg(task_queue),
-    context_data     = sqlc.arg(context_data),
+    outputs_data     = sqlc.arg(outputs_data),
+    output_data      = sqlc.arg(output_data),
+    error_data       = sqlc.arg(error_data),
+    external_data    = sqlc.arg(external_data),
+    engine_state     = sqlc.arg(engine_state),
     retry_count      = sqlc.arg(retry_count),
     wake_at    = sqlc.arg(wake_at),
     status           = sqlc.arg(status),
@@ -80,9 +90,14 @@ SET task_queue       = sqlc.arg(task_queue),
 WHERE id = sqlc.arg(id);
 
 -- name: UpdateInstanceProgress :exec
+-- Mid-process write: neither input_data (immutable) nor output_data (only set on
+-- completion, which goes through UpdateInstance with a status change) is touched.
 UPDATE process_instances
 SET task_queue       = sqlc.arg(task_queue),
-    context_data     = sqlc.arg(context_data),
+    outputs_data     = sqlc.arg(outputs_data),
+    error_data       = sqlc.arg(error_data),
+    external_data    = sqlc.arg(external_data),
+    engine_state     = sqlc.arg(engine_state),
     retry_count      = sqlc.arg(retry_count),
     wake_at    = sqlc.arg(wake_at),
     wait_state       = sqlc.arg(wait_state),
@@ -92,9 +107,12 @@ SET task_queue       = sqlc.arg(task_queue),
 WHERE id = sqlc.arg(id);
 
 -- name: GetInstance :one
-SELECT id, process_name, process_version, task_queue, context_data, parent_id,
+-- Column order matches the process_instances row struct (context columns last, as
+-- appended by migration 019) so sqlc returns dbgen.ProcessInstance directly.
+SELECT id, process_name, process_version, task_queue, parent_id,
        call_stack, retry_count, wake_at, status, error,
-       created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_task_id
+       created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_task_id,
+       input_data, outputs_data, output_data, error_data, external_data, engine_state
 FROM process_instances
 WHERE id = sqlc.arg(id);
 
@@ -118,12 +136,12 @@ WHERE id = (
 RETURNING payload;
 
 -- name: SetExternalResult :exec
--- Un-parks an external task by storing the submitted/buffered result under
--- _external_result and clearing the wait. It does NOT touch worker_id/lease: callers
--- run it under the instance row lock and either the instance is parked (lease already
--- NULL) or the engine is mid-arm and must keep its lease until it finishes advancing.
+-- Un-parks an external task by storing the submitted/buffered result in external_data
+-- and clearing the wait. It does NOT touch worker_id/lease: callers run it under the
+-- instance row lock and either the instance is parked (lease already NULL) or the
+-- engine is mid-arm and must keep its lease until it finishes advancing.
 UPDATE process_instances
-SET context_data = sqlc.arg(context_data),
+SET external_data = sqlc.arg(external_data),
     wait_state   = '',
     wake_at      = NULL,
     updated_at   = sqlc.arg(updated_at)
@@ -165,9 +183,10 @@ SET wait_state = CASE WHEN status = 'running' THEN 'collecting' ELSE '' END,
 WHERE id = sqlc.arg(id);
 
 -- name: GetChildrenForTask :many
-SELECT id, process_name, process_version, task_queue, context_data, parent_id,
+SELECT id, process_name, process_version, task_queue, parent_id,
        call_stack, retry_count, wake_at, status, error,
-       created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_task_id
+       created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_task_id,
+       input_data, outputs_data, output_data, error_data, external_data, engine_state
 FROM process_instances
 WHERE parent_id = sqlc.arg(parent_id)
   AND spawn_task_id = sqlc.arg(spawn_task_id);
@@ -212,3 +231,48 @@ VALUES
 
 -- name: DeleteLogsBefore :execrows
 DELETE FROM process_logs WHERE created_at < sqlc.arg(before);
+
+-- name: PinContextObject :exec
+-- Writes (or re-pins) a context object. ON CONFLICT keeps the immutable content and
+-- sets pinned = 1: re-referencing a previously-dereferenced object (a looping task
+-- recomputing the same big output) makes it pinned again without touching any log
+-- reference the row may also carry.
+INSERT INTO process_objects (instance_id, hash, content, size, pinned, log_until, created_at)
+VALUES (sqlc.arg(instance_id), sqlc.arg(hash), sqlc.arg(content), sqlc.arg(size), 1, NULL, sqlc.arg(created_at))
+ON CONFLICT (instance_id, hash) DO UPDATE SET pinned = 1;
+
+-- name: ReferenceLogObject :exec
+-- Records that a log row references this (pre-redacted) content until log_until, so
+-- it survives at least as long as the log. ON CONFLICT keeps the immutable content and
+-- extends the horizon, leaving any context pin intact (a shared, secret-free row).
+INSERT INTO process_objects (instance_id, hash, content, size, pinned, log_until, created_at)
+VALUES (sqlc.arg(instance_id), sqlc.arg(hash), sqlc.arg(content), sqlc.arg(size), 0, sqlc.arg(log_until), sqlc.arg(created_at))
+ON CONFLICT (instance_id, hash) DO UPDATE SET log_until = excluded.log_until;
+
+-- name: GetObject :one
+-- Trusted internal read for context resolution (the instance owns the object).
+SELECT content FROM process_objects WHERE instance_id = sqlc.arg(instance_id) AND hash = sqlc.arg(hash);
+
+-- name: GetLogObject :one
+-- Serve-safe read for the log endpoint: only log-referenced rows are returned, whose
+-- content is always pre-redacted or (when shared) byte-identical to it, hence secret-free.
+SELECT content FROM process_objects
+WHERE instance_id = sqlc.arg(instance_id) AND hash = sqlc.arg(hash) AND log_until IS NOT NULL;
+
+-- name: DeleteDereferencedObject :exec
+-- Context dereference: delete the row outright when no live log still needs it, so a
+-- replaced value (and any secret in it) does not linger.
+DELETE FROM process_objects
+WHERE instance_id = sqlc.arg(instance_id) AND hash = sqlc.arg(hash)
+  AND (log_until IS NULL OR log_until < sqlc.arg(now));
+
+-- name: UnpinObject :exec
+-- Context dereference for a row a log still needs: drop the context pin so the GC sweep
+-- reclaims it once the log horizon passes. No-op if DeleteDereferencedObject removed it.
+UPDATE process_objects SET pinned = 0
+WHERE instance_id = sqlc.arg(instance_id) AND hash = sqlc.arg(hash);
+
+-- name: DeleteExpiredObjects :execrows
+-- GC sweep: reclaim rows no longer pinned by context and no longer needed by any log.
+DELETE FROM process_objects
+WHERE pinned = 0 AND (log_until IS NULL OR log_until < sqlc.arg(before));

@@ -1,0 +1,214 @@
+package db
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"time"
+
+	dbgen "gent/internal/db/gen"
+	"gent/internal/model"
+)
+
+// contextObjectThreshold is the inline cutoff for a context value-slot: a value
+// whose serialized JSON exceeds this many bytes is externalized to process_objects
+// instead of being kept inline on the instance row. Below it, the value stays inline
+// (no extra row, no extra read), so the common small-value case is unaffected.
+const contextObjectThreshold = 8 * 1024
+
+// logForeverMillis marks a log-referenced object that must never be GC'd — used when
+// log retention is disabled (logs are kept forever, so their objects must be too).
+const logForeverMillis = math.MaxInt64
+
+// SetObjectRetention sets the log-retention window used to compute how long a
+// log-referenced object must survive. The engine calls this at startup with the same
+// window it uses for audit-log retention.
+func (db *DB) SetObjectRetention(d time.Duration) { db.objectRetentionMs.Store(d.Milliseconds()) }
+
+// pendingObject is a content object an encode step wants written. Hash is the
+// sha256 of Content; it is the object's id and the change-detection key.
+type pendingObject struct {
+	Hash    string
+	Content string
+	Size    int64
+}
+
+func hashContent(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// encodeContextValue turns a plain value into the envelope stored for a context
+// value-slot. Small values are kept inline ({data: v}); large ones are replaced by a
+// single root reference ({refs:[{ref,size}]}) and the bytes are returned as a
+// pendingObject for the caller to persist + pin in the same transaction. A value
+// that is already an *model.ObjectRef (an unchanged, still-lazy slot) is re-emitted
+// as its reference with no new object — this is how an untouched big slot avoids any
+// rewrite.
+func encodeContextValue(v any) (model.Envelope, *pendingObject, error) {
+	if ref, ok := v.(*model.ObjectRef); ok {
+		return model.Envelope{Refs: []*model.ObjectRef{ref}}, nil, nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return model.Envelope{}, nil, fmt.Errorf("marshal value for externalization: %w", err)
+	}
+	if len(b) <= contextObjectThreshold {
+		return model.Envelope{Data: v}, nil, nil
+	}
+	h := hashContent(b)
+	return model.Envelope{Refs: []*model.ObjectRef{{Ref: h, Size: int64(len(b))}}},
+		&pendingObject{Hash: h, Content: string(b), Size: int64(len(b))}, nil
+}
+
+// decodeEnvelope turns a stored envelope back into an in-memory value: an inline
+// value is returned as-is; an externalized one becomes an *model.ObjectRef marker
+// that the engine resolves lazily on first access.
+func decodeEnvelope(env model.Envelope) any {
+	if env.IsRef() {
+		return env.Refs[0]
+	}
+	return env.Data
+}
+
+// loadObjectValue reads and unmarshals one context/log object's content.
+func (db *DB) loadObjectValue(ctx context.Context, instanceID, hash string) (any, error) {
+	content, err := db.q.GetObject(ctx, dbgen.GetObjectParams{InstanceID: instanceID, Hash: hash})
+	if err != nil {
+		return nil, fmt.Errorf("load object %s: %w", hash, err)
+	}
+	var v any
+	if err := json.Unmarshal([]byte(content), &v); err != nil {
+		return nil, fmt.Errorf("decode object %s: %w", hash, err)
+	}
+	return v, nil
+}
+
+// ResolveObject loads the value behind a reference produced for instanceID. Used by
+// the engine's lazy resolver.
+func (db *DB) ResolveObject(ctx context.Context, instanceID string, ref *model.ObjectRef) (any, error) {
+	return db.loadObjectValue(ctx, instanceID, ref.Ref)
+}
+
+// applyContextObjectDiff persists the object changes implied by one instance write,
+// inside that write's transaction (qtx). pending are the new objects to write+pin;
+// referenced is the set of hashes the instance still points at after the write;
+// loaded is the set it pointed at when read.
+//   - pending (new) → written and pinned (PinContextObject; ON CONFLICT re-pins a
+//     previously-dereferenced shared row).
+//   - dereferenced (loaded − referenced) → deleted immediately when no live log still
+//     references the row, so a replaced value (and any secret in it) does not linger;
+//     a row a log still needs is only unpinned and left for the GC sweep.
+//
+// (loaded ∩ referenced is left untouched — those rows are still pinned from before.)
+func (db *DB) applyContextObjectDiff(ctx context.Context, qtx *dbgen.Queries, instanceID string, pending []*pendingObject, loaded, referenced map[string]struct{}, now int64) error {
+	for _, obj := range pending {
+		if err := qtx.PinContextObject(ctx, dbgen.PinContextObjectParams{
+			InstanceID: instanceID,
+			Hash:       obj.Hash,
+			Content:    obj.Content,
+			Size:       obj.Size,
+			CreatedAt:  now,
+		}); err != nil {
+			return fmt.Errorf("write object %s: %w", obj.Hash, err)
+		}
+	}
+	for h := range loaded {
+		if _, stillRef := referenced[h]; stillRef {
+			continue
+		}
+		// Delete outright unless a log still needs it; then unpin the survivor.
+		if err := qtx.DeleteDereferencedObject(ctx, dbgen.DeleteDereferencedObjectParams{
+			InstanceID: instanceID,
+			Hash:       h,
+			Now:        nullInt64(now),
+		}); err != nil {
+			return fmt.Errorf("delete dereferenced object %s: %w", h, err)
+		}
+		if err := qtx.UnpinObject(ctx, dbgen.UnpinObjectParams{InstanceID: instanceID, Hash: h}); err != nil {
+			return fmt.Errorf("unpin object %s: %w", h, err)
+		}
+	}
+	return nil
+}
+
+// HydrateContext resolves every externalized value-slot (input, outputs, output) in
+// inst.ContextData in place, replacing *model.ObjectRef markers with their loaded
+// values. Used by the API detail view, which returns the full context and so needs
+// it fully materialized (and then redacted) rather than lazily.
+func (db *DB) HydrateContext(inst *model.ProcessInstance) error {
+	resolve := func(v any) (any, error) {
+		ref, ok := v.(*model.ObjectRef)
+		if !ok {
+			return v, nil
+		}
+		val, err := db.loadObjectValue(context.Background(), inst.ID, ref.Ref)
+		if errors.Is(err, sql.ErrNoRows) {
+			// The value was superseded (and its object deleted) between reading the row
+			// and hydrating it — a benign race for the detail view; show it as absent.
+			return nil, nil
+		}
+		return val, err
+	}
+	for _, key := range []string{"input", "output"} {
+		if v, ok := inst.ContextData[key]; ok {
+			rv, err := resolve(v)
+			if err != nil {
+				return err
+			}
+			inst.ContextData[key] = rv
+		}
+	}
+	if outs, ok := inst.ContextData["outputs"].(map[string]any); ok {
+		for k, v := range outs {
+			rv, err := resolve(v)
+			if err != nil {
+				return err
+			}
+			outs[k] = rv
+		}
+	}
+	return nil
+}
+
+// WriteLogObject records that a log references a (pre-redacted) payload too large to
+// keep inline, returning a reference to it. The object is kept until the log-retention
+// horizon (forever when retention is disabled) so it stays resolvable for at least as
+// long as the log row that references it. If the content collides with an existing
+// (e.g. context-pinned, secret-free) object the rows are shared — only the log horizon
+// is extended.
+func (db *DB) WriteLogObject(instanceID, content string) (*model.ObjectRef, error) {
+	h := hashContent([]byte(content))
+	logUntil := int64(logForeverMillis)
+	if retention := db.objectRetentionMs.Load(); retention > 0 {
+		logUntil = nowMillis() + retention
+	}
+	if err := db.q.ReferenceLogObject(context.Background(), dbgen.ReferenceLogObjectParams{
+		InstanceID: instanceID,
+		Hash:       h,
+		Content:    content,
+		Size:       int64(len(content)),
+		LogUntil:   nullInt64(logUntil),
+		CreatedAt:  nowMillis(),
+	}); err != nil {
+		return nil, fmt.Errorf("reference log object: %w", err)
+	}
+	return &model.ObjectRef{Ref: h, Size: int64(len(content))}, nil
+}
+
+// GetLogObject returns a log-referenced object's raw content. Non-log-referenced
+// (unredacted, context-only) objects are never served here — see the query.
+func (db *DB) GetLogObject(instanceID, hash string) (string, error) {
+	return db.q.GetLogObject(context.Background(), dbgen.GetLogObjectParams{InstanceID: instanceID, Hash: hash})
+}
+
+// DeleteExpiredObjects removes objects no longer pinned by context and no longer
+// needed by any log (log_until passed). Called from the log-retention sweep.
+func (db *DB) DeleteExpiredObjects(before int64) (int64, error) {
+	return db.q.DeleteExpiredObjects(context.Background(), nullInt64(before))
+}
