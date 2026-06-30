@@ -18,7 +18,7 @@ var externalPaginator = paginator{
 	table:      "process_instances",
 	columns:    instanceColumns,
 	baseWhere:  "wait_state = 'external'",
-	filterCols: []string{"process_name", "process_version"},
+	filterCols: []string{"process_name", "process_version", "task"},
 	sorts: map[string]sortMode{
 		"updated": {{"updated_at", kindInt}, {"id", kindText}},
 	},
@@ -29,16 +29,18 @@ var externalPaginator = paginator{
 }
 
 // ListExternalTasks returns a page of instances parked on an external task,
-// filtered by process name/version (empty/0 = any), sorted and paged per pg. It
-// returns the page and the cursor for the next page ("" on the final page).
+// filtered by process name/version (empty/0 = any) and the current task id
+// (empty = any), sorted and paged per pg. It returns the page and the cursor for
+// the next page ("" on the final page).
 //
-// task_id filtering is left to the caller (it lives in the JSON task queue, not a
-// column), so a caller post-filtering task_id may see fewer than the page size
-// even when more rows match — the returned cursor still advances correctly.
-func (db *DB) ListExternalTasks(processName string, processVersion int, req PageReq) ([]*model.ProcessInstance, PageInfo, error) {
+// task is the instance's current-task column, which for a parked external instance
+// is exactly the resolvable task id (CurrentTask resolves task == inst.Task), so it
+// filters in SQL — pages stay full and the before/after counts stay accurate.
+func (db *DB) ListExternalTasks(processName string, processVersion int, task string, req PageReq) ([]*model.ProcessInstance, PageInfo, error) {
 	b, err := externalPaginator.query(req).
 		EqIf("process_name", processName, processName != "").
 		EqIf("process_version", int64(processVersion), processVersion != 0).
+		EqIf("task", task, task != "").
 		build()
 	if err != nil {
 		return nil, PageInfo{}, err

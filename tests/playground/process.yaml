@@ -1,12 +1,5 @@
 # yaml-language-server: $schema=http://localhost:8888/process-schema.json
 name: order-pipeline
-config_schema:
-  type: object
-  properties:
-    server_url:
-      type: string
-      secret: true
-  required: [server_url]
 
 input_schema:
   type: object
@@ -18,71 +11,17 @@ input_schema:
   required: [blob, sleep]
 
 tasks:
-  - id: zero
-    output: "{{ input.blob }}"
-    switch: next
-
   - id: first
     action:
-      type: rest
+      type: external
       input:
-        sleep: "{{ input.sleep ?? 0 }}"
-      endpoint: "{{ config.server_url }}/first"
+        blob: "{{ input.blob }}"
+        additional: "{{ input.sleep }}"
       result_schema:
         type: object
         properties:
-          slept:
-            type: number
-        required: [slept]
-    output: "{{ self.result }}"
-    switch: next
-
-  - id: second
-    action:
-      type: rest
-      input:
-        sleep: "{{ input.sleep ?? 0 }}"
-      endpoint: "{{ config.server_url }}/second"
-      result_schema:
-        type: object
-        properties:
-          slept:
-            type: number
-        required: [slept]
-    output: "{{ self.result }}"
-    switch: next
-
-  - id: third
-    action:
-      type: rest
-      input:
-        sleep: "{{ input.sleep ?? 0 }}"
-      endpoint: "{{ config.server_url }}/third"
-      result_schema:
-        type: object
-        properties:
-          slept:
-            type: number
-        required: [slept]
-    output: "{{ self.result }}"
-    switch: next
-
-  - id: long_long_long_long
-    action:
-      type: child
-      input:
-        sleep: "{{ input.sleep ?? 0 }}"
-      name: "child"
-      result_schema:
-        type: object
-        properties:
-          final_result:
-            type: object  
-            properties:
-              slept:
-                type: number
-                secret: true
-    output: "{{ self.result }}"
+          result:
+            type: string
     switch: end
 
 output: 

@@ -41,7 +41,7 @@ type actionDef struct {
 type pageQuery struct {
 	Sort   string `query:"sort" description:"Sort key (per-endpoint whitelist; omit for the default)"`
 	Order  string `query:"order" enum:"asc,desc" description:"Sort direction (omit for the endpoint default)"`
-	Limit  int    `query:"limit" description:"Page size (default 200, cap 1000)"`
+	Limit  int    `query:"limit" description:"Page size (default 20, cap 100)"`
 	After  string `query:"after" description:"Cursor from a previous page's page.next_cursor — fetch the next page"`
 	Before string `query:"before" description:"Cursor from a previous page's page.previous_cursor — fetch the previous page"`
 }

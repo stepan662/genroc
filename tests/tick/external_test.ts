@@ -154,6 +154,58 @@ test("a no-timeout external wait is never self-claimed", async () => {
   expect(await ctx.env.status(id)).toBe("completed");
 });
 
+test("the queue filters by task id in SQL, so filtered pages stay full and counts stay accurate", async () => {
+  // Two processes whose external tasks have distinct ids. Park 3 betas, then 3 alphas,
+  // so the betas sort ahead (oldest-first). A task=pq_alpha filter must skip the betas
+  // in SQL — not page over them and post-filter, which would under-fill the page and
+  // count the skipped betas.
+  await ctx.env.define("ext_pq_alpha", [
+    { id: "pq_alpha", action: { type: "external", result_schema: approvedSchema }, switch: "end" },
+  ]);
+  await ctx.env.define("ext_pq_beta", [
+    { id: "pq_beta", action: { type: "external", result_schema: approvedSchema }, switch: "end" },
+  ]);
+
+  const betas = [
+    await ctx.env.start("ext_pq_beta"),
+    await ctx.env.start("ext_pq_beta"),
+    await ctx.env.start("ext_pq_beta"),
+  ];
+  const alphas = [
+    await ctx.env.start("ext_pq_alpha"),
+    await ctx.env.start("ext_pq_alpha"),
+    await ctx.env.start("ext_pq_alpha"),
+  ];
+  // max-concurrent=1: exactly one instance arms per tick, in start order — so all six
+  // park betas-before-alphas in updated_at (and UUIDv7 id) order.
+  for (let i = 0; i < betas.length + alphas.length; i++) await ctx.env.tick();
+
+  // First filtered page: two alphas, the three betas skipped entirely, one alpha after.
+  const first = await ctx.env.client.GET("/external-tasks", {
+    params: { query: { task: "pq_alpha", limit: 2 } },
+  });
+  if (first.error) throw new Error(`list failed: ${JSON.stringify(first.error)}`);
+  const page1 = first.data!;
+  expect(page1.items!.map((t) => t.task_id)).toEqual(["pq_alpha", "pq_alpha"]);
+  expect(page1.page.items_before).toBe(0);
+  expect(page1.page.items_after).toBe(1); // only the third alpha; betas are not counted
+  expect(page1.page.after).toBeTruthy(); // more to come
+
+  // Following the cursor yields the last alpha and nothing else.
+  const second = await ctx.env.client.GET("/external-tasks", {
+    params: { query: { task: "pq_alpha", limit: 2, after: page1.page.after } },
+  });
+  if (second.error) throw new Error(`list failed: ${JSON.stringify(second.error)}`);
+  const page2 = second.data!;
+  expect(page2.items!.map((t) => t.task_id)).toEqual(["pq_alpha"]);
+  expect(page2.page.items_before).toBe(2);
+  expect(page2.page.items_after).toBe(0);
+
+  // Drain so these do not bleed into later tests.
+  for (const id of [...betas, ...alphas]) await ctx.env.cancel(id);
+  await ctx.env.tickUntilIdle();
+});
+
 test("cancel drains an externally-waiting instance immediately", async () => {
   await ctx.env.define("ext_cancel", [
     { id: "approval", action: { type: "external", result_schema: approvedSchema }, switch: "end" },

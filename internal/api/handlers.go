@@ -566,7 +566,7 @@ func (h *Handlers) listExternalTasks(raw json.RawMessage) Reply {
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &req)
 	}
-	instances, info, err := h.db.ListExternalTasks(req.Process, req.Version, req.page())
+	instances, info, err := h.db.ListExternalTasks(req.Process, req.Version, req.Task, req.page())
 	if err != nil {
 		return errReply(err)
 	}
@@ -576,10 +576,6 @@ func (h *Handlers) listExternalTasks(raw json.RawMessage) Reply {
 		if err != nil || task == nil {
 			// Not a resolvable external task (no current task), which a concurrent
 			// transition could momentarily produce — skip it.
-			continue
-		}
-		// task_id is the current task, not a filterable column, so filter it here.
-		if req.Task != "" && task.ID != req.Task {
 			continue
 		}
 		resp = append(resp, externalTaskToResp(inst, task))
