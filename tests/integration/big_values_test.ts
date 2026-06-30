@@ -263,3 +263,77 @@ test("recursive + resolve inlines a child instance's externalized payload", asyn
   expect(full!.data_ref).toBeUndefined();
   expect(full!.data).toBe(JSON.stringify({ blob: BLOB }));
 });
+
+// A big value passed into a child's input and returned in the child's output flows all
+// the way back: the parent collects the child's (externalized) output, re-externalizes
+// it into its own context, and exposes it as a reference by default / the full value
+// under resolve. Exercises the collect path (child output → parent) with a large value.
+test("a big value round-trips through a child's input and output back to the parent", async () => {
+  const child = `bv_rt_child_${crypto.randomUUID()}`;
+  const parent = `bv_rt_parent_${crypto.randomUUID()}`;
+  await client.PUT("/definitions", {
+    body: {
+      name: child,
+      input_schema: {
+        type: "object",
+        properties: { blob: { type: "string" } },
+        required: ["blob"],
+      },
+      // The child returns the big value it received straight back in its output.
+      output: { echo: "{{ input.blob }}" },
+      tasks: [{ id: "leaf", switch: [{ goto: "end" }] }],
+    },
+  });
+  await client.PUT("/definitions", {
+    body: {
+      name: parent,
+      input_schema: {
+        type: "object",
+        properties: { blob: { type: "string" } },
+        required: ["blob"],
+      },
+      tasks: [
+        {
+          id: "spawn",
+          action: {
+            type: "child" as const,
+            name: child,
+            input: { blob: "{{ input.blob }}" },
+            result_schema: {
+              type: "object",
+              properties: { echo: { type: "string" } },
+              required: ["echo"],
+            },
+          },
+          // Collect the child's (big) output into this task's output…
+          output: "{{ self.result }}",
+          switch: [{ goto: "end" }],
+        },
+      ],
+      // …and surface it again as the parent's own output.
+      output: { echo: "{{ outputs.spawn.echo }}" },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any,
+  });
+
+  const { data: started } = await client.POST("/instances", {
+    body: { process: parent, input: { blob: BLOB } },
+  });
+  const id = started!.id;
+  expect(await waitForInstance(id, 10_000)).toBe("completed");
+
+  // Default: the collected child output and the parent's own output are both references.
+  const { data: lazy, error } = await client.GET("/instances/{id}", {
+    params: { path: { id } },
+  });
+  expect(error).toBeUndefined();
+  expect(typeof (lazy!.context as any).outputs.spawn.ref).toBe("string");
+  expect(typeof (lazy!.context as any).output.ref).toBe("string");
+
+  // Resolved: the big value is intact after the full parent → child → parent round-trip.
+  const { data: full } = await client.GET("/instances/{id}", {
+    params: { path: { id }, query: { resolve: true } },
+  });
+  expect((full!.context as any).outputs.spawn.echo).toBe(BLOB);
+  expect((full!.context as any).output.echo).toBe(BLOB);
+});

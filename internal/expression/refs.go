@@ -48,10 +48,12 @@ func collectOutputRefs(node ast.Node, set map[string]struct{}) {
 // engine to resolve only the externalized value-slots an expression actually needs
 // (slot-level lazy loading) instead of materializing every big value every tick.
 type Roots struct {
-	Input      bool     // reads the process input
-	Error      bool     // reads the error namespace
-	Outputs    []string // reads outputs.<id> for these specific task ids
-	AllOutputs bool     // reads the outputs map in a way we can't pin to static ids
+	Input        bool     // reads the process input
+	Error        bool     // reads the error namespace
+	Outputs      []string // reads outputs.<id> for these specific task ids
+	AllOutputs   bool     // reads the outputs map in a way we can't pin to static ids
+	SelfPrevious bool     // reads self.previous (this task's own prior output — an alias
+	//                      for outputs[<this task>], so it can be an externalized ref too)
 }
 
 // RootRefs reports which context roots expr reads.
@@ -71,6 +73,10 @@ func collectRoots(node ast.Node, r *Roots) {
 		if id := outputRefID(n); id != "" {
 			r.Outputs = append(r.Outputs, id)
 			return // consumed outputs.<id>; don't descend into the "outputs" identifier
+		}
+		if isSelfPrevious(n) {
+			r.SelfPrevious = true
+			return // consumed self.previous; don't descend into the "self" identifier
 		}
 		collectRoots(n.Node, r)
 		collectRoots(n.Property, r)
@@ -93,6 +99,18 @@ func collectRoots(node ast.Node, r *Roots) {
 		collectRoots(n.Exp1, r)
 		collectRoots(n.Exp2, r)
 	}
+}
+
+// isSelfPrevious reports whether n is exactly self.previous (base identifier
+// "self", string property "previous"). A deeper access like self.previous.x is a
+// MemberNode whose .Node is this node, so collectRoots reaches it while descending.
+func isSelfPrevious(n *ast.MemberNode) bool {
+	base, ok := n.Node.(*ast.IdentifierNode)
+	if !ok || base.Value != "self" {
+		return false
+	}
+	prop, ok := n.Property.(*ast.StringNode)
+	return ok && prop.Value == "previous"
 }
 
 // outputRefID returns <id> when n is exactly outputs.<id> (base identifier

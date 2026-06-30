@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        workload: [recursive, deep, drain]
+        workload: [recursive, deep, drain, drain-big]
     services:
       postgres:
         image: postgres:16

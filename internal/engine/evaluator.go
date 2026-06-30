@@ -44,6 +44,25 @@ func (e *Engine) buildEnv(inst *model.ProcessInstance, self any, roots expressio
 	}
 	env := map[string]any{"self": self, "config": config}
 
+	// self.previous is this task's own prior output — the same value as outputs[<this
+	// task>], so when that output was externalized it reloads as an *ObjectRef marker.
+	// Resolve it just like an outputs.<id> ref (lazily — only when the expression reads
+	// it), otherwise self.previous.<field> would read through the marker and yield null.
+	if roots.SelfPrevious {
+		if sm, ok := self.(map[string]any); ok {
+			prev, err := e.resolveValue(inst, sm["previous"])
+			if err != nil {
+				return nil, err
+			}
+			selfCopy := make(map[string]any, len(sm))
+			for k, v := range sm {
+				selfCopy[k] = v
+			}
+			selfCopy["previous"] = prev
+			env["self"] = selfCopy
+		}
+	}
+
 	include := func(key string, referenced bool) error {
 		v := inst.ContextData[key]
 		if _, isRef := v.(*model.ObjectRef); isRef && !referenced {
@@ -101,6 +120,7 @@ func shapeRoots(node any) (expression.Roots, error) {
 			r.Error = r.Error || tr.Error
 			r.AllOutputs = r.AllOutputs || tr.AllOutputs
 			r.Outputs = append(r.Outputs, tr.Outputs...)
+			r.SelfPrevious = r.SelfPrevious || tr.SelfPrevious
 		case map[string]any:
 			for _, vv := range v {
 				if err := walk(vv); err != nil {

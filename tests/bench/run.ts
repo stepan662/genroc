@@ -19,6 +19,8 @@
 //   recursive — one root, full binary tree (wide); concurrent throughput ceiling.
 //   deep      — one root, narrow/tall tree; per-spawn depth cost.
 //   drain     — many independent roots; steady-state queue-drain throughput.
+//   drain_big — like drain, but each root carries a ~16 KiB input echoed to its output,
+//               so both externalize into process_objects; isolates object-store overhead.
 //
 // Instances processed are counted from each root's SELF-REPORTED subtree size
 // (output[count_field], summed) when the process defines one (recursive/deep); a
@@ -49,8 +51,14 @@ import {
 import recursive from "./workloads/recursive.yaml";
 import deep from "./workloads/deep.yaml";
 import drain from "./workloads/drain.yaml";
+import drainBig from "./workloads/drain_big.yaml";
 
-const WORKLOADS: Record<string, Workload> = { recursive, deep, drain };
+const WORKLOADS: Record<string, Workload> = {
+  recursive,
+  deep,
+  drain,
+  drain_big: drainBig,
+};
 
 // Per-engine knobs (under bench.sqlite / bench.postgres).
 interface EngineConfig {
@@ -276,13 +284,25 @@ function fmt(n: number, width: number) {
   return String(n).padStart(width);
 }
 
+// describeInput summarizes the input for the config line: a long string value (e.g.
+// drain_big's ~16 KiB blob) is shown as "<N bytes>" so the report stays one readable line
+// instead of dumping the whole payload to the terminal.
+function describeInput(input: Record<string, unknown>): string {
+  const shown = Object.fromEntries(
+    Object.entries(input).map(([k, v]) =>
+      typeof v === "string" && v.length > 64 ? [k, `<${v.length} bytes>`] : [k, v],
+    ),
+  );
+  return JSON.stringify(shown);
+}
+
 function report(results: EngineResult[]) {
   const total = results[0]?.instances ?? 0;
   const throughput = (ms: number) => Math.round((total / ms) * 1000);
 
   console.log(
     "\nconfig: " +
-      `workload=${NAME} input=${JSON.stringify(INPUT)} roots=${ROOTS} ` +
+      `workload=${NAME} input=${describeInput(INPUT)} roots=${ROOTS} ` +
       `load_concurrency=${LOAD_CONCURRENCY} instances=${total} poll_ms=${POLL_MS} runs=${RUNS}`,
   );
   // Both engines run fully durable by default (matched comparison): SQLite fsyncs the

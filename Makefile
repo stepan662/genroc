@@ -7,7 +7,7 @@ log     ?= info
 
 # BUILD_FLAGS = CGO_ENABLED=1
 
-.PHONY: run build test test-unit test-int test-stress bench-recursive bench-deep bench-drain swagger client clean generate
+.PHONY: run build test test-unit test-int test-stress bench-recursive bench-deep bench-drain bench-drain-big swagger client clean generate
 
 run:
 	$(BUILD_FLAGS) go run ./cmd/gent \
@@ -48,6 +48,8 @@ test-int: client
 # bench-deep      — narrow/tall tree; measures per-spawn depth cost.
 # bench-drain     — backlog of many independent processes preloaded into a tick-only
 #                   server, then drained on restart; measures steady-state queue throughput.
+# bench-drain-big — like bench-drain, but each instance carries a ~16 KiB input echoed to
+#                   its output (both externalized); isolates per-instance object-store cost.
 # recursive/deep defaults are sized to the same instance count (~8k) so the shapes
 # compare directly. Set POSTGRES_DSN to also benchmark Postgres.
 bench-recursive: client
@@ -58,6 +60,9 @@ bench-deep: client
 
 bench-drain: client
 	cd tests && ~/.bun/bin/bun run bench-drain
+
+bench-drain-big: client
+	cd tests && ~/.bun/bin/bun run bench-drain-big
 
 sqlc:
 	go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate

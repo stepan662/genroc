@@ -10,7 +10,8 @@
     "playground:run": "bun run playground/run.ts",
     "bench-recursive": "bun run bench/run.ts recursive",
     "bench-deep": "bun run bench/run.ts deep",
-    "bench-drain": "bun run bench/run.ts drain"
+    "bench-drain": "bun run bench/run.ts drain",
+    "bench-drain-big": "bun run bench/run.ts drain_big"
   },
   "dependencies": {
     "ajv": "^8.20.0",
