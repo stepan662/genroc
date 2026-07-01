@@ -14,8 +14,8 @@
 - [x] logs for each process
 - [x] let user to repeat the task manually (how will it interact with parents?)
 - [x] pagination
-- [] filtering
-- [] env variables
+- [x] filtering
+- [x] env variables
 
 # docs
 
