@@ -27,7 +27,7 @@ func TestCollectSecrets(t *testing.T) {
 		"nested": map[string]any{"key": "deep-secret", "ok": "fine"},
 	}
 	var got []string
-	schema.CollectSecrets(val, sc.Node(), nil, &got)
+	got = sc.CollectSecrets(val)
 	has := func(s string) bool {
 		for _, x := range got {
 			if x == s {
@@ -61,7 +61,7 @@ func TestCollectSecretsArrayOfObjects(t *testing.T) {
 		map[string]any{"sleep": float64(50)},
 	}
 	var got []string
-	schema.CollectSecrets(val, sc.Node(), nil, &got)
+	got = sc.CollectSecrets(val)
 	if len(got) != 2 || got[0] != "5" || got[1] != "50" {
 		t.Errorf("collected = %v, want [5 50]", got)
 	}
@@ -89,7 +89,7 @@ func TestCollectSecretsCombinators(t *testing.T) {
 		}
 		val := map[string]any{"data": map[string]any{"token": "SEKRET"}}
 		var got []string
-		schema.CollectSecrets(val, sc.Node(), nil, &got)
+		got = sc.CollectSecrets(val)
 		found := false
 		for _, g := range got {
 			if g == "SEKRET" {
@@ -112,7 +112,7 @@ func TestCollectSecretsNumericFormatting(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	var got []string
-	schema.CollectSecrets([]any{float64(1000000), float64(0.0001)}, sc.Node(), nil, &got)
+	got = sc.CollectSecrets([]any{float64(1000000), float64(0.0001)})
 	if len(got) != 2 || got[0] != "1000000" || got[1] != "0.0001" {
 		t.Errorf("collected = %v, want [1000000 0.0001]", got)
 	}
@@ -129,7 +129,7 @@ func TestRedactCombinators(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	val := map[string]any{"data": map[string]any{"token": "SEKRET", "ok": "fine"}}
-	got := schema.Redact(val, sc.Node(), nil).(map[string]any)
+	got := sc.Redact(val).(map[string]any)
 	data := got["data"].(map[string]any)
 	if data["token"] != "***" {
 		t.Errorf("data.token = %v, want ***", data["token"])
@@ -164,9 +164,9 @@ func TestRedact(t *testing.T) {
 		"nested": map[string]any{"key": "deep-secret", "ok": "fine"},
 		"list":   []any{"a", "b"},
 	}
-	got, ok := schema.Redact(val, sc.Node(), nil).(map[string]any)
+	got, ok := sc.Redact(val).(map[string]any)
 	if !ok {
-		t.Fatalf("Redact did not return a map: %T", schema.Redact(val, sc.Node(), nil))
+		t.Fatalf("Redact did not return a map: %T", sc.Redact(val))
 	}
 	if got["token"] != "***" {
 		t.Errorf("token = %v, want ***", got["token"])

@@ -181,7 +181,7 @@ func TestValidateEmptySchemaPassesThrough(t *testing.T) {
 }
 
 func TestValidateNilSchema(t *testing.T) {
-	got, err := schema.Validate(nil, mustData(t, `{"a":1}`))
+	got, err := schema.FromNode(nil).Validate(mustData(t, `{"a":1}`))
 	if err != nil {
 		t.Fatalf("nil schema: %v", err)
 	}

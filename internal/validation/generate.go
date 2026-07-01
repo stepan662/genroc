@@ -12,9 +12,9 @@ import (
 
 // TaskSchemas holds the schemas associated with a single task task.
 type TaskSchemas struct {
-	ActionType model.ActionType     `json:"action_type"`
-	Input    *schema.SchemaNode `json:"input,omitempty"`
-	Output   *schema.SchemaNode `json:"output,omitempty"`
+	ActionType model.ActionType   `json:"action_type"`
+	Input      *schema.SchemaNode `json:"input,omitempty"`
+	Output     *schema.SchemaNode `json:"output,omitempty"`
 }
 
 // SchemaFile is the top-level output.
@@ -29,30 +29,11 @@ type SchemaFile struct {
 // RedactContext returns a copy of an instance's context_data with secret-derived
 // values replaced by "***", using the schemas inferred for the process: input is
 // scrubbed against ProcessInput, each outputs.<task> against that task's output
-// schema, and output against ProcessOutput. Values with no inferred schema (or no
-// secrets) pass through unchanged.
+// schema, and output against ProcessOutput. Keys with no inferred schema (unknown
+// tasks, $error, bookkeeping) pass through unchanged. It runs the whole scrub as a
+// single walk of the composed context schema.
 func RedactContext(ctxData map[string]any, sf SchemaFile) map[string]any {
-	out := make(map[string]any, len(ctxData))
-	for k, v := range ctxData {
-		out[k] = v
-	}
-	if v, ok := out["input"]; ok && sf.ProcessInput != nil {
-		out["input"] = schema.Redact(v, sf.ProcessInput, sf.Defs)
-	}
-	if outputs, ok := out["outputs"].(map[string]any); ok {
-		red := make(map[string]any, len(outputs))
-		for tid, v := range outputs {
-			if ts, ok := sf.Tasks[tid]; ok && ts.Output != nil {
-				red[tid] = schema.Redact(v, ts.Output, sf.Defs)
-			} else {
-				red[tid] = v
-			}
-		}
-		out["outputs"] = red
-	}
-	if v, ok := out["output"]; ok && sf.ProcessOutput != nil {
-		out["output"] = schema.Redact(v, sf.ProcessOutput, sf.Defs)
-	}
+	out, _ := SchemaFileContext(sf).Redact(ctxData).(map[string]any)
 	return out
 }
 
@@ -162,9 +143,7 @@ func Generate(def *model.ProcessDefinition) (SchemaFile, error) {
 func inferProcessOutput(def *model.ProcessDefinition, tasks map[string]TaskSchemas, processInput, configSchema *schema.SchemaNode, defs map[string]*schema.SchemaNode) (*schema.SchemaNode, error) {
 	req, opt, errReq, errOpt := outputContextSets(def)
 	ctx := contextSchema(req, opt, tasks, processInput, configSchema, errReq, errOpt)
-	if len(defs) > 0 {
-		ctx = withDefs(ctx, defs)
-	}
+	ctx = withDefs(ctx, defs)
 	return inferShape(def.Output.Raw, ctx, "output")
 }
 
@@ -220,11 +199,11 @@ func flattenNamedSchemas(named map[string]*schema.SchemaNode) (map[string]*schem
 		refs = append(refs, schemaRef(name))
 	}
 	container := &schema.SchemaNode{Defs: defs, AllOf: refs}
-	normalised, err := schema.Normalize(container)
+	normalised, err := schema.FromNode(container).Normalize()
 	if err != nil {
 		return nil, err
 	}
-	return normalised.Defs, nil
+	return normalised.Node().Defs, nil
 }
 
 func uniqueDefName(base string, defs map[string]*schema.SchemaNode) string {

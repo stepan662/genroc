@@ -33,9 +33,7 @@ func buildInputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proces
 			hasHeaders := isREST && len(s.Action.Headers) > 0
 			if inMap || s.Action.Input.Present() || hasEndpoint || hasHeaders {
 				ctx := contextSchema(required[s.ID], optional[s.ID], taskSchemas, processInput, configSchema, mustErr[s.ID], mayErr[s.ID])
-				if len(defs) > 0 {
-					ctx = withDefs(ctx, defs)
-				}
+				ctx = withDefs(ctx, defs)
 				// The rest endpoint and header values are templates evaluated against the
 				// context; type-check them and reject a possibly-null result (a null URL or
 				// header value would silently stringify to "null").
@@ -76,9 +74,7 @@ func buildInputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proces
 				loops := slices.Contains(optional[s.ID], s.ID) || slices.Contains(required[s.ID], s.ID)
 				switchCtx = addSelfSchema(switchCtx, s, loops)
 			}
-			if len(defs) > 0 {
-				switchCtx = withDefs(switchCtx, defs)
-			}
+			switchCtx = withDefs(switchCtx, defs)
 			for _, c := range s.Switch {
 				if c.Case == "" {
 					continue
@@ -114,9 +110,7 @@ func inferInput(s *model.Task, ctx *schema.SchemaNode, defs map[string]*schema.S
 	if !s.Action.Input.Present() {
 		return &schema.SchemaNode{Type: schema.SchemaType{"object"}}, nil
 	}
-	if len(defs) > 0 {
-		ctx = withDefs(ctx, defs)
-	}
+	ctx = withDefs(ctx, defs)
 	return inferShape(s.Action.Input.Raw, ctx, fmt.Sprintf("task %q input", s.ID))
 }
 

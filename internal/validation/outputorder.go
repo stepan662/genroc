@@ -62,9 +62,7 @@ func inferOutputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proce
 		members := make([]sccMember, 0, len(scc))
 		for _, id := range scc {
 			base := contextSchema(required[id], optional[id], taskSchemas, processInput, configSchema, mustErr[id], mayErr[id])
-			if len(defs) > 0 {
-				base = withDefs(base, defs)
-			}
+			base = withDefs(base, defs)
 			// The task loops iff it is its own predecessor: computeContextSets then
 			// lists its own output among its available (optional) outputs.
 			loops := slices.Contains(optional[id], id) || slices.Contains(required[id], id)

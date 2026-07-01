@@ -108,7 +108,7 @@ func (e *Engine) schemaFile(inst *model.ProcessInstance) (validation.SchemaFile,
 // by audit's context-secret pass — it is schema-redacted here instead.
 func (e *Engine) snippetResult(task *model.Task, body any) string {
 	if e.logCfg.Payloads && task.Action != nil && task.Action.ResultSchema != nil {
-		body = schema.Redact(body, task.Action.ResultSchema, task.Action.ResultSchema.Defs)
+		body = schema.FromNode(task.Action.ResultSchema).Redact(body)
 	}
 	return e.snippet(body)
 }
@@ -1157,7 +1157,7 @@ func (e *Engine) contextSecrets(inst *model.ProcessInstance) []string {
 			}
 			v = cached
 		}
-		schema.CollectSecrets(v, node, sf.Defs, &out)
+		out = append(out, schema.Wrap(node, sf.Defs).CollectSecrets(v)...)
 	}
 	if v, ok := inst.ContextData["input"]; ok {
 		collect(v, sf.ProcessInput)

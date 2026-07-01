@@ -41,17 +41,6 @@ func (s Schema) ValidateAt(path string, data any) (any, error) {
 	return sub.Validate(data)
 }
 
-// Validate is the free-function form of Schema.Validate, operating directly on a
-// SchemaNode. $defs are read from node (the root), so a normalized schema is
-// expected.
-func Validate(node *SchemaNode, data any) (any, error) {
-	var defs map[string]*SchemaNode
-	if node != nil {
-		defs = node.Defs
-	}
-	return conform(node, defs, data, "")
-}
-
 // conform is the recursive validator/normalizer. path is the dotted location of
 // data within the root value (empty at the root), used only for error messages.
 func conform(node *SchemaNode, defs map[string]*SchemaNode, data any, path string) (any, error) {
@@ -321,28 +310,16 @@ func isIntegral(data any) bool {
 	}
 }
 
-// jsonTypeName names data's JSON type for error messages.
+// jsonTypeName names data's JSON type for error messages, reusing valueHasType so
+// the naming can't drift from the type check. "integer" is tried before "number"
+// so an integral value reads as the more specific kind.
 func jsonTypeName(data any) string {
-	switch data.(type) {
-	case nil:
-		return "null"
-	case bool:
-		return "boolean"
-	case string:
-		return "string"
-	case map[string]any:
-		return "object"
-	case []any:
-		return "array"
-	default:
-		if _, ok := asFloat(data); ok {
-			if isIntegral(data) {
-				return "integer"
-			}
-			return "number"
+	for _, t := range []string{"null", "boolean", "integer", "number", "string", "array", "object"} {
+		if valueHasType(data, t) {
+			return t
 		}
-		return fmt.Sprintf("%T", data)
 	}
+	return fmt.Sprintf("%T", data)
 }
 
 // cloneJSON deep-copies a JSON value so a schema default can be handed out

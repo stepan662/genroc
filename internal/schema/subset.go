@@ -5,9 +5,9 @@ import (
 	"strings"
 )
 
-// IsSubset reports whether every value valid under sub is also valid under super.
+// isSubset reports whether every value valid under sub is also valid under super.
 // Both schemas must be normalized (flat $defs at root, only #/$defs/<name> refs).
-func IsSubset(sub, super *SchemaNode) bool {
+func isSubset(sub, super *SchemaNode) bool {
 	var subDefs, superDefs map[string]*SchemaNode
 	if sub != nil {
 		subDefs = sub.Defs

@@ -53,9 +53,9 @@ func parsePath(path string) ([]pathStep, error) {
 	return steps, nil
 }
 
-// Navigate navigates a dot-path expression from the root of s, resolving $refs
+// navigate navigates a dot-path expression from the root of s, resolving $refs
 // against defs, and returns the subschema at the end of the path.
-func Navigate(s *SchemaNode, defs map[string]*SchemaNode, path string) (*SchemaNode, error) {
+func navigate(s *SchemaNode, defs map[string]*SchemaNode, path string) (*SchemaNode, error) {
 	steps, err := parsePath(path)
 	if err != nil {
 		return nil, err
@@ -63,9 +63,9 @@ func Navigate(s *SchemaNode, defs map[string]*SchemaNode, path string) (*SchemaN
 	return navigateSchema(s, defs, steps)
 }
 
-// LookupProperty returns the subschema for a single named property within s.
+// lookupProperty returns the subschema for a single named property within s.
 // Optional properties are returned wrapped as nullable.
-func LookupProperty(s *SchemaNode, name string, defs map[string]*SchemaNode) (*SchemaNode, error) {
+func lookupProperty(s *SchemaNode, name string, defs map[string]*SchemaNode) (*SchemaNode, error) {
 	resolved, err := Deref(s, defs)
 	if err != nil {
 		return nil, err
@@ -92,7 +92,7 @@ func LookupProperty(s *SchemaNode, name string, defs map[string]*SchemaNode) (*S
 				hadNull = true
 				continue
 			}
-			r, err := LookupProperty(v, name, defs)
+			r, err := lookupProperty(v, name, defs)
 			if err != nil {
 				hadMiss = true
 				hadNull = true
@@ -141,9 +141,9 @@ func LookupProperty(s *SchemaNode, name string, defs map[string]*SchemaNode) (*S
 	return result, nil
 }
 
-// InferIndex returns the (nullable) element type for array index access on s.
+// inferIndex returns the (nullable) element type for array index access on s.
 // Always nullable because the index may be out of bounds at runtime.
-func InferIndex(s *SchemaNode, defs map[string]*SchemaNode) (*SchemaNode, error) {
+func inferIndex(s *SchemaNode, defs map[string]*SchemaNode) (*SchemaNode, error) {
 	resolved, err := Deref(s, defs)
 	if err != nil {
 		return nil, err
@@ -164,7 +164,7 @@ func InferIndex(s *SchemaNode, defs map[string]*SchemaNode) (*SchemaNode, error)
 				hadNull = true
 				continue
 			}
-			r, err := InferIndex(v, defs)
+			r, err := inferIndex(v, defs)
 			if err != nil {
 				hadNull = true
 				continue
@@ -219,10 +219,10 @@ func Deref(s *SchemaNode, defs map[string]*SchemaNode) (*SchemaNode, error) {
 	return target, nil
 }
 
-// IsSecret reports whether s is a secret value (marked secret:true), looking
+// isSecret reports whether s is a secret value (marked secret:true), looking
 // through nullable / single-variant union wrappers so an optional or wrapped
 // secret is still recognised.
-func IsSecret(s *SchemaNode) bool {
+func isSecret(s *SchemaNode) bool {
 	if s == nil {
 		return false
 	}
@@ -230,12 +230,12 @@ func IsSecret(s *SchemaNode) bool {
 		return true
 	}
 	for _, v := range s.OneOf {
-		if IsSecret(v) {
+		if isSecret(v) {
 			return true
 		}
 	}
 	for _, v := range s.AnyOf {
-		if IsSecret(v) {
+		if isSecret(v) {
 			return true
 		}
 	}
@@ -256,10 +256,10 @@ func Taint(s *SchemaNode) *SchemaNode {
 	return &n
 }
 
-// PathHitsSecret reports whether navigating path from s passes through (or ends
+// pathHitsSecret reports whether navigating path from s passes through (or ends
 // at) a node marked secret — reading from inside a secret object is itself
 // secret. Returns false if the path cannot be resolved.
-func PathHitsSecret(s *SchemaNode, defs map[string]*SchemaNode, path string) bool {
+func pathHitsSecret(s *SchemaNode, defs map[string]*SchemaNode, path string) bool {
 	steps, err := parsePath(path)
 	if err != nil {
 		return false
@@ -268,32 +268,32 @@ func PathHitsSecret(s *SchemaNode, defs map[string]*SchemaNode, path string) boo
 	if err != nil {
 		return false
 	}
-	if IsSecret(cur) {
+	if isSecret(cur) {
 		return true
 	}
 	for _, step := range steps {
 		if step.prop != "" {
-			cur, err = LookupProperty(cur, step.prop, defs)
+			cur, err = lookupProperty(cur, step.prop, defs)
 		} else {
-			cur, err = InferIndex(cur, defs)
+			cur, err = inferIndex(cur, defs)
 		}
 		if err != nil {
 			return false
 		}
-		if IsSecret(cur) {
+		if isSecret(cur) {
 			return true
 		}
 	}
 	return false
 }
 
-// CollectSecrets appends to *out the string form of every value in value whose
+// collectSecrets appends to *out the string form of every value in value whose
 // schema is marked secret. It descends objects and arrays with the same primitives
-// type inference uses — LookupProperty / InferIndex, which resolve $refs, nullable
+// type inference uses — lookupProperty / inferIndex, which resolve $refs, nullable
 // wrappers, and oneOf/anyOf/allOf combinators — so the walk cannot drift from the
 // schema navigation. It is the gather half of log redaction: the collected values
 // are then scrubbed from free-form log text.
-func CollectSecrets(value any, node *SchemaNode, defs map[string]*SchemaNode, out *[]string) {
+func collectSecrets(value any, node *SchemaNode, defs map[string]*SchemaNode, out *[]string) {
 	if node == nil || value == nil {
 		return
 	}
@@ -301,7 +301,7 @@ func CollectSecrets(value any, node *SchemaNode, defs map[string]*SchemaNode, ou
 	if err != nil {
 		return
 	}
-	if IsSecret(resolved) {
+	if isSecret(resolved) {
 		if s := SecretString(value); s != "" {
 			*out = append(*out, s)
 		}
@@ -310,27 +310,27 @@ func CollectSecrets(value any, node *SchemaNode, defs map[string]*SchemaNode, ou
 	switch v := value.(type) {
 	case map[string]any:
 		for k, val := range v {
-			if child, err := LookupProperty(resolved, k, defs); err == nil {
-				CollectSecrets(val, child, defs, out)
+			if child, err := lookupProperty(resolved, k, defs); err == nil {
+				collectSecrets(val, child, defs, out)
 			}
 		}
 	case []any:
-		child, err := InferIndex(resolved, defs)
+		child, err := inferIndex(resolved, defs)
 		if err != nil {
 			return
 		}
 		for _, el := range v {
-			CollectSecrets(el, child, defs, out)
+			collectSecrets(el, child, defs, out)
 		}
 	}
 }
 
-// Redact returns value with every field whose schema is marked secret replaced by
-// "***". Like CollectSecrets it descends via LookupProperty / InferIndex, so $ref,
+// redact returns value with every field whose schema is marked secret replaced by
+// "***". Like collectSecrets it descends via lookupProperty / inferIndex, so $ref,
 // nullable, and combinator handling lives in one place. Non-secret values pass
 // through unchanged. Used to scrub secret-derived values before they cross a public
 // boundary (API, logs).
-func Redact(value any, node *SchemaNode, defs map[string]*SchemaNode) any {
+func redact(value any, node *SchemaNode, defs map[string]*SchemaNode) any {
 	if node == nil || value == nil {
 		return value
 	}
@@ -338,28 +338,28 @@ func Redact(value any, node *SchemaNode, defs map[string]*SchemaNode) any {
 	if err != nil {
 		return value
 	}
-	if IsSecret(resolved) {
+	if isSecret(resolved) {
 		return "***"
 	}
 	switch v := value.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(v))
 		for k, val := range v {
-			if child, err := LookupProperty(resolved, k, defs); err == nil {
-				out[k] = Redact(val, child, defs)
+			if child, err := lookupProperty(resolved, k, defs); err == nil {
+				out[k] = redact(val, child, defs)
 			} else {
 				out[k] = val // key not in schema — leave untouched
 			}
 		}
 		return out
 	case []any:
-		child, err := InferIndex(resolved, defs)
+		child, err := inferIndex(resolved, defs)
 		if err != nil {
 			return value
 		}
 		out := make([]any, len(v))
 		for i, el := range v {
-			out[i] = Redact(el, child, defs)
+			out[i] = redact(el, child, defs)
 		}
 		return out
 	default:
@@ -507,9 +507,9 @@ func navigateSchema(s *SchemaNode, defs map[string]*SchemaNode, steps []pathStep
 	for _, step := range steps {
 		var err error
 		if step.prop != "" {
-			current, err = LookupProperty(current, step.prop, defs)
+			current, err = lookupProperty(current, step.prop, defs)
 		} else {
-			current, err = InferIndex(current, defs)
+			current, err = inferIndex(current, defs)
 		}
 		if err != nil {
 			return nil, err

@@ -53,9 +53,9 @@ func (e ErrUnresolvedRef) Error() string {
 	return fmt.Sprintf("unresolved $ref %q: no matching definition", e.Ref)
 }
 
-// Normalize flattens all $defs to the root, removes unused definitions,
+// normalize flattens all $defs to the root, removes unused definitions,
 // and rewrites $ref values to point to the new flat locations.
-func Normalize(schema *SchemaNode) (*SchemaNode, error) {
+func normalize(schema *SchemaNode) (*SchemaNode, error) {
 	if schema == nil {
 		return nil, nil
 	}

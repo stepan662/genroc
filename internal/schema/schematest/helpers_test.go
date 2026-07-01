@@ -14,11 +14,11 @@ func normalize(t *testing.T, in string) *schema.SchemaNode {
 	if err := json.Unmarshal([]byte(in), &n); err != nil {
 		t.Fatalf("parse schema: %v", err)
 	}
-	out, err := schema.Normalize(&n)
+	out, err := schema.FromNode(&n).Normalize()
 	if err != nil {
 		t.Fatalf("Normalize: %v", err)
 	}
-	return out
+	return out.Node()
 }
 
 func assertParseErr(t *testing.T, in string, wantMsg string) {
@@ -39,7 +39,7 @@ func assertErr(t *testing.T, in string, wantMsg string) {
 	if err := json.Unmarshal([]byte(in), &n); err != nil {
 		t.Fatalf("parse schema: %v", err)
 	}
-	_, err := schema.Normalize(&n)
+	_, err := schema.FromNode(&n).Normalize()
 	if err == nil {
 		t.Fatalf("expected error %q, got nil", wantMsg)
 	}
@@ -81,10 +81,11 @@ func assertSemanticEquivalence(t *testing.T, src string, valid []any, invalid []
 		t.Fatalf("parse schema copy: %v", err)
 	}
 
-	normalized, err := schema.Normalize(&toNorm)
+	normalizedSchema, err := schema.FromNode(&toNorm).Normalize()
 	if err != nil {
 		t.Fatalf("Normalize: %v", err)
 	}
+	normalized := normalizedSchema.Node()
 
 	origSchema, err := gojsonschema.NewSchema(gojsonschema.NewGoLoader(&original))
 	if err != nil {

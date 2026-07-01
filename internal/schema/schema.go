@@ -127,9 +127,19 @@ func defsOf(n *SchemaNode) map[string]*SchemaNode {
 	return n.Defs
 }
 
-// FromNode wraps a SchemaNode. The caller must not modify it after calling FromNode.
+// FromNode wraps a SchemaNode, taking its own $defs as the root defs. The caller
+// must not modify it after calling FromNode.
 func FromNode(n *SchemaNode) Schema {
-	return Schema{node: n, defs: defsOf(n)}
+	return Wrap(n, defsOf(n))
+}
+
+// Wrap builds a Schema from a node plus an explicit set of root $defs. Use it when
+// the node is a sub-tree — produced by navigation or type inference — whose $refs
+// must still resolve against the original root. Prefer Parse/Load/FromNode for a
+// whole schema; Wrap is the way to carry root defs alongside a transient sub-node
+// so the result stays a first-class, method-driven Schema.
+func Wrap(n *SchemaNode, defs map[string]*SchemaNode) Schema {
+	return Schema{node: n, defs: defs}
 }
 
 // Node returns the underlying SchemaNode. The caller must not modify it.
@@ -190,7 +200,7 @@ func (s Schema) Normalize() (Schema, error) {
 	if err != nil {
 		return Schema{}, err
 	}
-	out, err := Normalize(cloned)
+	out, err := normalize(cloned)
 	if err != nil {
 		return Schema{}, err
 	}
@@ -202,11 +212,7 @@ func (s Schema) Normalize() (Schema, error) {
 // so the result stays navigable/validatable. The schema should be normalized
 // before calling Infer so that $refs are resolvable.
 func (s Schema) Infer(path string) (Schema, error) {
-	result, err := Navigate(s.node, s.defs, path)
-	if err != nil {
-		return Schema{}, err
-	}
-	return Schema{node: result, defs: s.defs}, nil
+	return s.subSchema(navigate(s.node, s.defs, path))
 }
 
 // At is an alias for Infer, reading better where the intent is "the schema at
@@ -215,10 +221,33 @@ func (s Schema) At(path string) (Schema, error) {
 	return s.Infer(path)
 }
 
+// Property returns the subschema for a single named property, carrying the same
+// root $defs. An optional property comes back nullable, matching Infer's per-step
+// semantics. It is the single-step form of Infer used by the type inferrer.
+func (s Schema) Property(name string) (Schema, error) {
+	return s.subSchema(lookupProperty(s.node, name, s.defs))
+}
+
+// Index returns the (nullable) element subschema for array index access, carrying
+// the same root $defs. Always nullable because the index may be out of bounds.
+func (s Schema) Index() (Schema, error) {
+	return s.subSchema(inferIndex(s.node, s.defs))
+}
+
+// subSchema wraps the result of a one-step navigation as a Schema carrying the
+// same root $defs, so a sub-node stays resolvable/validatable. It threads through
+// the navigation error unchanged.
+func (s Schema) subSchema(node *SchemaNode, err error) (Schema, error) {
+	if err != nil {
+		return Schema{}, err
+	}
+	return Schema{node: node, defs: s.defs}, nil
+}
+
 // IsSubset reports whether every value valid under s is also valid under super.
 // Both schemas must be normalized.
 func (s Schema) IsSubset(super Schema) bool {
-	return IsSubset(s.node, super.node)
+	return isSubset(s.node, super.node)
 }
 
 // WithDef returns a new Schema with the given definition added under $defs.
@@ -243,27 +272,27 @@ func (s Schema) WithDef(name string, def Schema) Schema {
 // IsSecret reports whether this schema (the value at the root) is marked secret,
 // looking through nullable / single-variant union wrappers.
 func (s Schema) IsSecret() bool {
-	return IsSecret(s.node)
+	return isSecret(s.node)
 }
 
 // SecretAt reports whether the value at path is secret — either the path passes
 // through a node marked secret, or it ends at one. Reading from inside a secret
 // object is itself secret. Returns false if the path cannot be resolved.
 func (s Schema) SecretAt(path string) bool {
-	return PathHitsSecret(s.node, s.defs, path)
+	return pathHitsSecret(s.node, s.defs, path)
 }
 
 // Redact returns data with every field whose schema is marked secret replaced by
 // "***", descending via the same navigation the type inference uses.
 func (s Schema) Redact(data any) any {
-	return Redact(data, s.node, s.defs)
+	return redact(data, s.node, s.defs)
 }
 
 // CollectSecrets returns the string form of every value in data whose schema is
 // marked secret — the gather half of log redaction.
 func (s Schema) CollectSecrets(data any) []string {
 	var out []string
-	CollectSecrets(data, s.node, s.defs, &out)
+	collectSecrets(data, s.node, s.defs, &out)
 	return out
 }
 

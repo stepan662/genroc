@@ -82,7 +82,7 @@ func walkSecretRefs(n ast.Node, root *schema.SchemaNode, defs map[string]*schema
 	if n == nil {
 		return false
 	}
-	if path := nodePath(n); path != "" && schema.PathHitsSecret(root, defs, path) {
+	if path := nodePath(n); path != "" && schema.Wrap(root, defs).SecretAt(path) {
 		return true
 	}
 	switch x := n.(type) {
@@ -117,7 +117,8 @@ func inferNode(node ast.Node, ictx inferCtx) (*schema.SchemaNode, error) {
 		if s, ok := ictx.guards[n.Value]; ok {
 			return s, nil
 		}
-		return schema.LookupProperty(ictx.s, n.Value, ictx.defs)
+		sub, err := schema.Wrap(ictx.s, ictx.defs).Property(n.Value)
+		return sub.Node(), err
 	case *ast.MemberNode:
 		return inferMember(n, ictx)
 	case *ast.BinaryNode:
@@ -151,9 +152,11 @@ func inferMember(n *ast.MemberNode, ictx inferCtx) (*schema.SchemaNode, error) {
 	}
 	switch prop := n.Property.(type) {
 	case *ast.StringNode:
-		return schema.LookupProperty(base, prop.Value, ictx.defs)
+		sub, err := schema.Wrap(base, ictx.defs).Property(prop.Value)
+		return sub.Node(), err
 	case *ast.IntegerNode:
-		return schema.InferIndex(base, ictx.defs)
+		sub, err := schema.Wrap(base, ictx.defs).Index()
+		return sub.Node(), err
 	default:
 		return nil, ErrUnsupported{Detail: "computed member access [expr]"}
 	}

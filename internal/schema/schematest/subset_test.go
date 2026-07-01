@@ -16,7 +16,7 @@ func assertSubset(t *testing.T, subJSON, superJSON string, want bool) {
 	if err := json.Unmarshal([]byte(superJSON), &super); err != nil {
 		t.Fatalf("invalid super schema: %v", err)
 	}
-	got := schema.IsSubset(&sub, &super)
+	got := schema.FromNode(&sub).IsSubset(schema.FromNode(&super))
 	if got != want {
 		t.Errorf("IsSubset(%s, %s) = %v, want %v", subJSON, superJSON, got, want)
 	}
@@ -32,8 +32,8 @@ func assertEquivalent(t *testing.T, aJSON, bJSON string, want bool) {
 	if err := json.Unmarshal([]byte(bJSON), &b); err != nil {
 		t.Fatalf("invalid schema b: %v", err)
 	}
-	aSubB := schema.IsSubset(&a, &b)
-	bSubA := schema.IsSubset(&b, &a)
+	aSubB := schema.FromNode(&a).IsSubset(schema.FromNode(&b))
+	bSubA := schema.FromNode(&b).IsSubset(schema.FromNode(&a))
 	got := aSubB && bSubA
 	if got != want {
 		t.Errorf("equivalent(%s, %s): a⊆b=%v b⊆a=%v, want equivalent=%v", aJSON, bJSON, aSubB, bSubA, want)

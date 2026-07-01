@@ -436,8 +436,12 @@ type ProcessDefinition struct {
 // Normalize normalizes InputSchema and all task OutputSchemas in-place using the
 // schema package (flattens $defs to root, removes unused definitions, rewrites $refs).
 func (d *ProcessDefinition) Normalize() error {
+	norm := func(n *schema.SchemaNode) (*schema.SchemaNode, error) {
+		out, err := schema.FromNode(n).Normalize()
+		return out.Node(), err
+	}
 	if d.InputSchema != nil {
-		normalized, err := schema.Normalize(d.InputSchema)
+		normalized, err := norm(d.InputSchema)
 		if err != nil {
 			return fmt.Errorf("input_schema: %w", err)
 		}
@@ -448,7 +452,7 @@ func (d *ProcessDefinition) Normalize() error {
 			continue
 		}
 		if s.Action.ResultSchema != nil {
-			normalized, err := schema.Normalize(s.Action.ResultSchema)
+			normalized, err := norm(s.Action.ResultSchema)
 			if err != nil {
 				return fmt.Errorf("task %q action.result_schema: %w", s.ID, err)
 			}
@@ -457,7 +461,7 @@ func (d *ProcessDefinition) Normalize() error {
 		if s.Action.Type == ActionTypeChildParallel {
 			for key, entry := range s.Action.Children {
 				if entry.ResultSchema != nil {
-					normalized, err := schema.Normalize(entry.ResultSchema)
+					normalized, err := norm(entry.ResultSchema)
 					if err != nil {
 						return fmt.Errorf("task %q action.children[%q].result_schema: %w", s.ID, key, err)
 					}
@@ -752,7 +756,7 @@ func checkSchemaDoc(field string, s *schema.SchemaNode) error {
 // (undeclared properties dropped, defaults filled). Returns input unchanged when
 // InputSchema is nil.
 func (d *ProcessDefinition) ValidateInput(input any) (any, error) {
-	return schema.Validate(d.InputSchema, input)
+	return schema.FromNode(d.InputSchema).Validate(input)
 }
 
 // ResolveConfig reads each config var declared in ConfigSchema from the OS
@@ -799,7 +803,7 @@ func (d *ProcessDefinition) ResolveConfig(lookup func(string) (string, bool)) (m
 		}
 		out[name] = val
 	}
-	if _, err := schema.Validate(d.ConfigSchema, out); err != nil {
+	if _, err := schema.FromNode(d.ConfigSchema).Validate(out); err != nil {
 		// Schema-validation errors (enum/range) can echo the offending value, so
 		// scrub any secret values that reach the message.
 		msg := err.Error()
@@ -926,7 +930,7 @@ func coerceConfigValue(name, typ, raw string, secret bool) (any, error) {
 // normalized value (undeclared properties dropped, defaults filled). Returns
 // output unchanged when ResultSchema is nil.
 func (c *Action) ValidateOutput(output any) (any, error) {
-	return schema.Validate(c.ResultSchema, output)
+	return schema.FromNode(c.ResultSchema).Validate(output)
 }
 
 // v is the shared validator, configured to report JSON field names in errors.

@@ -45,11 +45,11 @@ func normalizedSchema(t *testing.T, raw string) *schema.SchemaNode {
 	if err := json.Unmarshal([]byte(raw), &n); err != nil {
 		t.Fatalf("parse schema: %v", err)
 	}
-	out, err := schema.Normalize(&n)
+	out, err := schema.FromNode(&n).Normalize()
 	if err != nil {
 		t.Fatalf("normalize schema: %v", err)
 	}
-	return out
+	return out.Node()
 }
 
 // childDef builds a minimal child ProcessDefinition whose InputSchema is the

@@ -6,10 +6,10 @@ input_schema:
   properties:
     blob:
       type: string
-      secret: true
+      default: abcd
     sleep:
       type: integer
-  required: [blob, sleep]
+  required: [sleep]
 
 tasks:
   - id: first

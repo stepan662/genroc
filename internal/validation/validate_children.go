@@ -32,9 +32,7 @@ func ValidateChildProcessRefs(def *model.ProcessDefinition, currentVersion int, 
 			continue
 		}
 		ctx := contextSchema(required[s.ID], optional[s.ID], tasks, processInput, configSchema, mustErr[s.ID], mayErr[s.ID])
-		if len(defs) > 0 {
-			ctx = withDefs(ctx, defs)
-		}
+		ctx = withDefs(ctx, defs)
 
 		switch s.Action.Type {
 		case model.ActionTypeChild:
@@ -92,15 +90,14 @@ func validateChildEntry(taskID string, label string, p model.ChildEntry, ctx *sc
 		inferred = &schema.SchemaNode{Type: schema.SchemaType{"object"}}
 	}
 
-	if len(defs) > 0 {
-		inferred = withDefs(inferred, defs)
-	}
-	inferred, err := schema.Normalize(inferred)
+	inferred = withDefs(inferred, defs)
+	normalized, err := schema.FromNode(inferred).Normalize()
 	if err != nil {
 		return fmt.Errorf("%s: normalize inferred input: %w", prefix, err)
 	}
+	inferred = normalized.Node()
 
-	if !schema.IsSubset(inferred, child.InputSchema) {
+	if !schema.FromNode(inferred).IsSubset(schema.FromNode(child.InputSchema)) {
 		return fmt.Errorf("%s: input is not compatible with %q v%d input_schema", prefix, p.Name, childVersion)
 	}
 	return nil
