@@ -9,7 +9,8 @@
 //	genctl run      <process> [--channel C | --version N] [--input <json|-> | -f file] [--set k=v ...] [-q]
 //	genctl resolve  <token> [--result <json|-> | -f file] [--set k=v ...] [-q]
 //	genctl signal   <instance-id> --task <task-id> [--result <json|-> | -f file] [--set k=v ...] [-q]
-//	genctl instances [--status <status>] [--sort updated|created] [--limit <n>] [--all]
+//	genctl instances [--status <status>] [--sort updated|created] [--limit <n>] [--all] [--json]
+//	genctl external-tasks [--process <name>] [--version <n>] [--task <id>] [--limit <n>] [--all] [--json]
 //	genctl get      <instance-id> [--json]
 //	genctl logs     [--level <level>] [--since <ms>] [--limit <n>] [--recursive] [--mode basic|detail|json] <instance-id>
 //	genctl cancel   <instance-id>
@@ -49,6 +50,33 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// genctl command conventions
+//
+// Keep new list/get commands consistent so the surface stays predictable:
+//
+//   - Naming. A resource collection is the plural noun (`instances`,
+//     `external-tasks`); a single item takes its id/key as the first positional
+//     (`get <id>`). Add a get only when there is something to show beyond the row.
+//   - Server & errors. Every command takes `--server` (overrides $GENROC_SERVER and
+//     the config file). All failures go through fatal() ("genctl: ..."); surface a
+//     server-side validation message via serverErrorDetail/resultValidationError.
+//   - List output. Default to a tabwriter table with an UPPERCASE header and
+//     shortTime() for timestamps; print "no <things>" when empty. Filters are
+//     `--<field>` flags mapped 1:1 to the endpoint's query params. Paging is
+//     `--limit <n>` (one page) + `--all` (follow cursors via listAll); fetch the
+//     table via callGet + page[T] / listAll[T].
+//   - Single-item output. Default to a `Key:\tvalue` tabwriter block using
+//     longTime() for timestamps.
+//   - --json is the one machine-readable form. On a list it prints the raw items as
+//     a JSON array via printListJSON (lossless, honoring --limit/--all); on a single
+//     item it prints the raw server object (get: callGet into json.RawMessage, then
+//     indent). Never invent a per-command machine format.
+//
+// Deliberate exceptions (special-purpose, not resource list/get — leave them):
+//   - `logs` keeps `--mode basic|detail|json`; it has three views and its json is
+//     JSONL (one object per line, streaming), not a {items,page} array.
+//   - `channel list` prints plain `name -> vN` pointer lines (a projection, not a
+//     resource object), and `status` is a coherence report, not a listing.
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -88,6 +116,8 @@ func main() {
 		runStatusCmd(server, args)
 	case "instances":
 		runInstancesCmd(server, args)
+	case "external-tasks":
+		runExternalTasksCmd(server, args)
 	case "logs":
 		runLogsCmd(server, args)
 	case "cancel":
@@ -536,6 +566,7 @@ func runInstancesCmd(server string, args []string) {
 	sortFlag := fs.String("sort", "created", "sort key: created (newest first) or updated (most recently active)")
 	limitFlag := fs.Int("limit", 20, "max instances to show (server caps a page at 100; use --all for more)")
 	allFlag := fs.Bool("all", false, "list every instance (follow all pages)")
+	jsonFlag := fs.Bool("json", false, "print the raw items as a JSON array (honors --limit/--all)")
 	fs.Parse(args)
 
 	q := url.Values{}
@@ -548,6 +579,11 @@ func runInstancesCmd(server string, args []string) {
 		q.Set("limit", strconv.Itoa(*limitFlag))
 	}
 	u := *serverFlag + "/instances?" + q.Encode()
+
+	if *jsonFlag {
+		printListJSON(u, *allFlag)
+		return
+	}
 
 	type instanceRow struct {
 		ID        string `json:"id"`
@@ -587,6 +623,80 @@ func runInstancesCmd(server string, args []string) {
 		fmt.Fprintf(w, "%s\t%s\t%s@v%d\t%s\t%s\t%s\n",
 			r.ID, r.Status, r.Process, r.Version,
 			shortTime(r.UpdatedAt), shortTime(r.CreatedAt), errMsg)
+	}
+	w.Flush()
+}
+
+func runExternalTasksCmd(server string, args []string) {
+	fs := flag.NewFlagSet("external-tasks", flag.ExitOnError)
+	serverFlag := fs.String("server", server, "genroc server base URL ($GENROC_SERVER)")
+	processFlag := fs.String("process", "", "filter by process name")
+	versionFlag := fs.Int("version", 0, "filter by process version (0 = any)")
+	taskFlag := fs.String("task", "", "filter by task id")
+	limitFlag := fs.Int("limit", 20, "max tasks to show (server caps a page at 100; use --all for more)")
+	allFlag := fs.Bool("all", false, "list every waiting task (follow all pages)")
+	jsonFlag := fs.Bool("json", false, "print the raw items as a JSON array (includes each task's input and result_schema)")
+	fs.Parse(args)
+
+	q := url.Values{}
+	if *processFlag != "" {
+		q.Set("process", *processFlag)
+	}
+	if *versionFlag != 0 {
+		q.Set("version", strconv.Itoa(*versionFlag))
+	}
+	if *taskFlag != "" {
+		q.Set("task", *taskFlag)
+	}
+	if !*allFlag {
+		q.Set("limit", strconv.Itoa(*limitFlag))
+	}
+	u := *serverFlag + "/external-tasks"
+	if enc := q.Encode(); enc != "" {
+		u += "?" + enc
+	}
+
+	if *jsonFlag {
+		printListJSON(u, *allFlag)
+		return
+	}
+
+	// The queue never exposes process context, so these fields mirror ExternalTaskResp.
+	// The table shows only the addressable columns; --json carries input + result_schema.
+	type taskRow struct {
+		Token        string `json:"token"`
+		Process      string `json:"process"`
+		Version      int    `json:"version"`
+		TaskID       string `json:"task_id"`
+		WaitingSince string `json:"waiting_since"`
+	}
+
+	var rows []taskRow
+	var err error
+	if *allFlag {
+		rows, err = listAll[taskRow](u)
+	} else {
+		var p page[taskRow]
+		if err = callGet(u, &p); err == nil {
+			rows = p.Items
+		}
+	}
+	if err != nil {
+		fatal("%v", err)
+	}
+
+	if len(rows) == 0 {
+		fmt.Println("no external tasks waiting")
+		return
+	}
+
+	// TOKEN goes last (it is long) and is what you pass to `genctl resolve`; use --json
+	// to inspect each task's input and result_schema.
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "WAITING\tPROCESS\tTASK\tTOKEN")
+	for _, r := range rows {
+		fmt.Fprintf(w, "%s\t%s@v%d\t%s\t%s\n",
+			shortTime(r.WaitingSince), r.Process, r.Version, r.TaskID, r.Token)
 	}
 	w.Flush()
 }
@@ -1009,6 +1119,36 @@ func listAll[T any](base string) ([]T, error) {
 	}
 }
 
+// printListJSON writes a list endpoint's items as an indented JSON array to stdout.
+// This is the one standard --json output shared by every list command: lossless
+// (each item verbatim from the server, not a re-marshaled subset) and honoring the
+// same paging as the table — a single --limit page, or every page when all is true.
+// See the "genctl command conventions" note above main.
+func printListJSON(u string, all bool) {
+	var items []json.RawMessage
+	var err error
+	if all {
+		items, err = listAll[json.RawMessage](u)
+	} else {
+		var p page[json.RawMessage]
+		if err = callGet(u, &p); err == nil {
+			items = p.Items
+		}
+	}
+	if err != nil {
+		fatal("%v", err)
+	}
+	if items == nil {
+		items = []json.RawMessage{} // render an empty result as [] rather than null
+	}
+	b, err := json.MarshalIndent(items, "", "  ")
+	if err != nil {
+		fatal("%v", err)
+	}
+	os.Stdout.Write(b)
+	os.Stdout.Write([]byte("\n"))
+}
+
 // call sends body as JSON to url and decodes the response into out.
 func call(url, method string, body any, out any) error {
 	payload, err := json.Marshal(body)
@@ -1279,7 +1419,8 @@ func usage() {
   genctl run      <process> [--channel C | --version N] [--input <json|-> | -f file] [--set k=v ...] [-q]
   genctl resolve  <token> [--result <json|-> | -f file] [--set k=v ...] [-q]
   genctl signal   <instance-id> --task <task-id> [--result <json|-> | -f file] [--set k=v ...] [-q]
-  genctl instances [--status <status>] [--sort updated|created] [--limit <n>] [--all]
+  genctl instances [--status <status>] [--sort updated|created] [--limit <n>] [--all] [--json]
+  genctl external-tasks [--process <name>] [--version <n>] [--task <id>] [--limit <n>] [--all] [--json]
   genctl get      <instance-id> [--json]
   genctl logs     [--level <level>] [--since <ms>] [--limit <n>] [--recursive] [--mode basic|detail|json] <instance-id>
   genctl cancel   <instance-id>
@@ -1301,6 +1442,8 @@ Flags:
   --task    the external task id to signal
   --set     input/result field key=value (repeatable; dotted keys nest, values type-inferred)
   --server  genroc server URL (overrides $GENROC_SERVER and config file)
+  --json    machine-readable output: a list (instances/external-tasks) prints its
+            raw items as a JSON array; get prints the raw instance object
   -q        with run, print only the new instance id (id=$(genctl run NAME -q));
             with resolve/signal, suppress the confirmation line
 
@@ -1309,9 +1452,10 @@ Instance id:
   started instance (recorded by run), or run "genctl last" to print it.
 
 External tasks:
-  resolve takes a task's resolve token (the "<instance-id>.<nonce>" from the
-  external-task queue, GET /external-tasks); signal addresses a task by instance id
-  + --task and buffers the result if the task is not armed yet.
+  external-tasks lists the queue of instances waiting on an external result.
+  resolve takes a task's resolve token (the "<instance-id>.<nonce>" TOKEN column
+  from that list); signal addresses a task by instance id + --task and buffers the
+  result if the task is not armed yet.
 
 Config keys:
   server    genroc server base URL`)

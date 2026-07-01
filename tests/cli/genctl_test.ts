@@ -375,6 +375,14 @@ test("instances — lists a freshly started instance", () => {
   // --sort updated is accepted too.
   const u = runCli(bin, ["instances", "--sort", "updated"]);
   expect(u.ok).toBe(true);
+
+  // --json emits the raw items as a JSON array — the standard machine format shared
+  // by every list command (parseable, lossless, no table).
+  const j = runCli(bin, ["instances", "--json"]);
+  expect(j.ok).toBe(true);
+  const arr = JSON.parse(j.stdout);
+  expect(Array.isArray(arr)).toBe(true);
+  expect(arr.some((it: { id: string }) => it.id === id)).toBe(true);
 });
 
 // ── run -q / @last / last ───────────────────────────────────────────────────────
@@ -462,6 +470,40 @@ test("status -- reports stale ref after child is advanced without updating paren
   expect(r.stdout).toContain("STALE");
   expect(r.stdout).toContain(parentName);
   expect(r.stdout).toContain(childName);
+});
+
+// ── external-tasks (queue listing) ──────────────────────────────────────────────
+
+test("external-tasks — lists a parked task with its resolve token", async () => {
+  const name = uid("ext");
+  runCli(bin, ["apply", "-f", writeDefs([externalDef(name)])]);
+  const id = startedID(runCli(bin, ["run", name]).stdout);
+  const token = await waitForExternalToken(id);
+
+  // Filter by process so the shared server's other parked tasks don't crowd the page.
+  const r = runCli(bin, ["external-tasks", "--process", name]);
+  expect(r.ok).toBe(true);
+  expect(r.stdout).toContain("TOKEN"); // header
+  expect(r.stdout).toContain("approval"); // the task id
+  expect(r.stdout).toContain(token); // the resolvable token
+  expect(r.stdout).toContain(`${name}@v1`);
+
+  // --json exposes each task's input snapshot and result_schema for inspection.
+  const j = runCli(bin, ["external-tasks", "--process", name, "--json"]);
+  expect(j.ok).toBe(true);
+  expect(j.stdout).toContain(`"token"`);
+  expect(j.stdout).toContain(`"result_schema"`);
+  expect(j.stdout).toContain("approve me"); // the task's input.msg
+
+  // Resolve it so the instance doesn't linger parked on the shared server.
+  runCli(bin, ["resolve", token, "--set", "approved=true"]);
+  expect(await waitForInstance(id)).toBe("completed");
+});
+
+test("external-tasks — reports an empty queue for an unmatched filter", () => {
+  const r = runCli(bin, ["external-tasks", "--process", uid("nope")]);
+  expect(r.ok).toBe(true);
+  expect(r.stdout).toContain("no external tasks waiting");
 });
 
 // ── resolve (external tasks) ────────────────────────────────────────────────────
