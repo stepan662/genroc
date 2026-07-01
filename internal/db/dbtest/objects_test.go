@@ -11,7 +11,7 @@ import (
 	"genroc/internal/model"
 )
 
-// bigString returns a value larger than the externalization threshold (8 KiB) so it
+// bigString returns a value larger than the externalization threshold (2 KiB) so it
 // is stored in process_objects rather than inline.
 func bigString(tag string) string {
 	return tag + ":" + strings.Repeat("x", 10*1024)

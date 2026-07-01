@@ -19,7 +19,13 @@ import (
 // whose serialized JSON exceeds this many bytes is externalized to process_objects
 // instead of being kept inline on the instance row. Below it, the value stays inline
 // (no extra row, no extra read), so the common small-value case is unaffected.
-const contextObjectThreshold = 8 * 1024
+//
+// Sized at ~2 KiB to align with Postgres's TOAST_TUPLE_THRESHOLD: above it an inline
+// value is TOAST-fetched (and deTOASTed) on every claim anyway, since ClaimInstances
+// RETURNs the context columns — so a compact ref is strictly cheaper on the hot path.
+// It also keeps SQLite instance rows (4 KiB pages) off overflow pages. One value serves
+// both engines.
+const contextObjectThreshold = 2 * 1024
 
 // logForeverMillis marks a log-referenced object that must never be GC'd — used when
 // log retention is disabled (logs are kept forever, so their objects must be too).
