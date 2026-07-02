@@ -7,33 +7,62 @@ import (
 	"genroc/internal/schema"
 )
 
-func canonJSON(t *testing.T, n *schema.SchemaNode) string {
+// canonJSON canonicalizes s and returns its JSON, asserting idempotence.
+func canonJSON(t *testing.T, s schema.Schema) string {
 	t.Helper()
-	got := schema.Canonicalize(n)
+	got := s.Canonicalize()
 	b, err := json.Marshal(got)
 	if err != nil {
 		t.Fatalf("marshal canonical: %v", err)
 	}
 	// Idempotence: canonicalizing again must not change the JSON.
-	b2, _ := json.Marshal(schema.Canonicalize(got))
+	b2, _ := json.Marshal(got.Canonicalize())
 	if string(b) != string(b2) {
 		t.Fatalf("Canonicalize not idempotent:\n  once: %s\n twice: %s", b, b2)
 	}
 	return string(b)
 }
 
-func prim(types ...string) *schema.SchemaNode {
-	return &schema.SchemaNode{Type: schema.SchemaType(types)}
+// ── shape builders shared by the canonical/join tests ──────────────────────────
+
+func prim(types ...string) schema.Schema { return schema.Type(types...) }
+
+func oneOf(vs ...schema.Schema) schema.Schema { return schema.OneOf(vs...) }
+
+func anyOf(vs ...schema.Schema) schema.Schema { return schema.AnyOf(vs...) }
+
+// allOf has no public builder — it is never accepted from user JSON and exists
+// only as normalization's internal bundling vehicle — so the tests assemble it
+// through Load, which tolerates the internal field.
+func allOf(vs ...schema.Schema) schema.Schema {
+	ms := make([]any, len(vs))
+	for i, v := range vs {
+		ms[i] = v.AsMap()
+	}
+	return schema.Load(map[string]any{"allOf": ms})
 }
 
-func oneOf(vs ...*schema.SchemaNode) *schema.SchemaNode {
-	return &schema.SchemaNode{OneOf: vs}
+func obj(req []string, props map[string]schema.Schema) schema.Schema {
+	inReq := make(map[string]bool, len(req))
+	for _, r := range req {
+		inReq[r] = true
+	}
+	s := schema.Object()
+	for name, v := range props {
+		s = s.WithProperty(name, v, inReq[name])
+	}
+	return s
+}
+
+// objP builds {type:object, properties:{name: v}, required:[name]}.
+func objP(name string, v schema.Schema) schema.Schema {
+	return obj([]string{name}, map[string]schema.Schema{name: v})
 }
 
 func TestCanonicalize_EqualTypesProduceEqualJSON(t *testing.T) {
 	tests := []struct {
 		name string
-		a, b *schema.SchemaNode
+		a, b schema.Schema
 	}{
 		{"oneOf order-insensitive",
 			oneOf(prim("integer"), prim("string")),
@@ -54,13 +83,13 @@ func TestCanonicalize_EqualTypesProduceEqualJSON(t *testing.T) {
 			oneOf(oneOf(prim("integer"), prim("string")), prim("boolean")),
 			prim("boolean", "integer", "string")},
 		{"property values are canonicalized",
-			&schema.SchemaNode{Type: schema.SchemaType{"object"},
-				Properties: map[string]*schema.SchemaNode{"x": oneOf(prim("integer"), prim("string"))}},
-			&schema.SchemaNode{Type: schema.SchemaType{"object"},
-				Properties: map[string]*schema.SchemaNode{"x": prim("string", "integer")}}},
+			objP("x", oneOf(prim("integer"), prim("string"))),
+			objP("x", prim("string", "integer"))},
 		{"required is sorted and deduped",
-			&schema.SchemaNode{Type: schema.SchemaType{"object"}, Required: []string{"b", "a", "b"}},
-			&schema.SchemaNode{Type: schema.SchemaType{"object"}, Required: []string{"a", "b"}}},
+			// Built via Load: the builders dedup required themselves, and this case
+			// must present a genuinely duplicated, unsorted list to Canonicalize.
+			schema.Load(map[string]any{"type": "object", "required": []any{"b", "a", "b"}}),
+			schema.Load(map[string]any{"type": "object", "required": []any{"a", "b"}})},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -82,30 +111,16 @@ func TestCanonicalize_DistinctTypesStayDistinct(t *testing.T) {
 	// A nullable object stays a union (object is not a simple type), with the
 	// null variant preserved and the object canonicalized.
 	nullableObj := oneOf(
-		&schema.SchemaNode{Type: schema.SchemaType{"object"},
-			Properties: map[string]*schema.SchemaNode{"x": oneOf(prim("integer"), prim("integer"))}},
+		objP("x", oneOf(prim("integer"), prim("integer"))),
 		prim("null"),
 	)
 	got := canonJSON(t, nullableObj)
-	want := mustJSON(t, &schema.SchemaNode{OneOf: []*schema.SchemaNode{
-		prim("null"),
-		{Type: schema.SchemaType{"object"}, Properties: map[string]*schema.SchemaNode{"x": prim("integer")}},
-	}})
 	// Order of oneOf variants is canonical (sorted by JSON); compare as canonical.
-	wantCanon := canonJSON(t, &schema.SchemaNode{OneOf: []*schema.SchemaNode{
+	wantCanon := canonJSON(t, oneOf(
 		prim("null"),
-		{Type: schema.SchemaType{"object"}, Properties: map[string]*schema.SchemaNode{"x": prim("integer")}},
-	}})
+		objP("x", prim("integer")),
+	))
 	if got != wantCanon {
-		t.Errorf("nullable object canonical mismatch:\n  got:  %s\n  want: %s (raw %s)", got, wantCanon, want)
+		t.Errorf("nullable object canonical mismatch:\n  got:  %s\n  want: %s", got, wantCanon)
 	}
-}
-
-func mustJSON(t *testing.T, n *schema.SchemaNode) string {
-	t.Helper()
-	b, err := json.Marshal(n)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
 }

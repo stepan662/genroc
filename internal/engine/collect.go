@@ -82,9 +82,11 @@ func (e *Engine) buildParallelChildOutput(siblings []*model.ProcessInstance) (an
 // and validates the child output against it, returning the normalized output
 // (undeclared keys dropped, defaults filled).
 func validateChildOutput(schemaRaw string, output any) (any, error) {
-	sc, err := schema.Parse([]byte(schemaRaw))
+	raw, err := schema.Parse([]byte(schemaRaw))
 	if err != nil {
 		return nil, fmt.Errorf("schema validation error: %w", err)
 	}
-	return sc.Validate(output)
+	// The stored schema was normalized before the spawn marshaled it, so it can be
+	// used directly without a re-normalize pass per collected child.
+	return raw.AssumeNormalized().Validate(output)
 }

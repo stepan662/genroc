@@ -55,7 +55,7 @@ func parsePath(path string) ([]pathStep, error) {
 
 // navigate navigates a dot-path expression from the root of s, resolving $refs
 // against defs, and returns the subschema at the end of the path.
-func navigate(s *SchemaNode, defs map[string]*SchemaNode, path string) (*SchemaNode, error) {
+func navigate(s *node, defs map[string]*node, path string) (*node, error) {
 	steps, err := parsePath(path)
 	if err != nil {
 		return nil, err
@@ -65,15 +65,15 @@ func navigate(s *SchemaNode, defs map[string]*SchemaNode, path string) (*SchemaN
 
 // lookupProperty returns the subschema for a single named property within s.
 // Optional properties are returned wrapped as nullable.
-func lookupProperty(s *SchemaNode, name string, defs map[string]*SchemaNode) (*SchemaNode, error) {
-	resolved, err := Deref(s, defs)
+func lookupProperty(s *node, name string, defs map[string]*node) (*node, error) {
+	resolved, err := deref(s, defs)
 	if err != nil {
 		return nil, err
 	}
 
 	for _, kw := range []struct {
 		name     string
-		variants []*SchemaNode
+		variants []*node
 	}{
 		{"anyOf", resolved.AnyOf},
 		{"oneOf", resolved.OneOf},
@@ -81,14 +81,14 @@ func lookupProperty(s *SchemaNode, name string, defs map[string]*SchemaNode) (*S
 		if kw.variants == nil {
 			continue
 		}
-		results := make([]*SchemaNode, 0, len(kw.variants))
+		results := make([]*node, 0, len(kw.variants))
 		hadNull := false
 		hadMiss := false
 		for i, v := range kw.variants {
 			if v == nil {
 				return nil, fmt.Errorf("cannot access .%s: %s[%d] is nil", name, kw.name, i)
 			}
-			if IsNullType(v) {
+			if isNullType(v) {
 				hadNull = true
 				continue
 			}
@@ -104,22 +104,22 @@ func lookupProperty(s *SchemaNode, name string, defs map[string]*SchemaNode) (*S
 			if hadMiss {
 				return nil, fmt.Errorf("field %q not found in any %s variant", name, kw.name)
 			}
-			return &SchemaNode{Type: SchemaType{"null"}}, nil
+			return &node{Type: SchemaType{"null"}}, nil
 		}
-		var result *SchemaNode
+		var result *node
 		if allSame(results) {
 			result = results[0]
 		} else {
-			cp := make([]*SchemaNode, len(results))
+			cp := make([]*node, len(results))
 			copy(cp, results)
 			if kw.name == "oneOf" {
-				result = &SchemaNode{OneOf: cp}
+				result = &node{OneOf: cp}
 			} else {
-				result = &SchemaNode{AnyOf: cp}
+				result = &node{AnyOf: cp}
 			}
 		}
 		if hadNull {
-			return WithNull(result), nil
+			return withNull(result), nil
 		}
 		return result, nil
 	}
@@ -131,36 +131,36 @@ func lookupProperty(s *SchemaNode, name string, defs map[string]*SchemaNode) (*S
 	if !ok {
 		return nil, fmt.Errorf("field %q not found in schema", name)
 	}
-	result, err := Deref(prop, defs)
+	result, err := deref(prop, defs)
 	if err != nil {
 		return nil, err
 	}
 	if !isRequired(resolved, name) {
-		return WithNull(result), nil
+		return withNull(result), nil
 	}
 	return result, nil
 }
 
 // inferIndex returns the (nullable) element type for array index access on s.
 // Always nullable because the index may be out of bounds at runtime.
-func inferIndex(s *SchemaNode, defs map[string]*SchemaNode) (*SchemaNode, error) {
-	resolved, err := Deref(s, defs)
+func inferIndex(s *node, defs map[string]*node) (*node, error) {
+	resolved, err := deref(s, defs)
 	if err != nil {
 		return nil, err
 	}
-	resolved = StripNull(resolved)
+	resolved = stripNull(resolved)
 
-	for _, variants := range [][]*SchemaNode{resolved.AnyOf, resolved.OneOf} {
+	for _, variants := range [][]*node{resolved.AnyOf, resolved.OneOf} {
 		if variants == nil {
 			continue
 		}
-		results := make([]*SchemaNode, 0, len(variants))
+		results := make([]*node, 0, len(variants))
 		hadNull := false
 		for _, v := range variants {
 			if v == nil {
 				continue
 			}
-			if IsNullType(v) {
+			if isNullType(v) {
 				hadNull = true
 				continue
 			}
@@ -172,16 +172,16 @@ func inferIndex(s *SchemaNode, defs map[string]*SchemaNode) (*SchemaNode, error)
 			results = append(results, r)
 		}
 		if len(results) == 0 {
-			return &SchemaNode{Type: SchemaType{"null"}}, nil
+			return &node{Type: SchemaType{"null"}}, nil
 		}
-		var result *SchemaNode
+		var result *node
 		if allSame(results) {
 			result = results[0]
 		} else {
-			result = &SchemaNode{AnyOf: results}
+			result = &node{AnyOf: results}
 		}
-		if hadNull && !HasNullType(result) {
-			return WithNull(result), nil
+		if hadNull && !hasNullType(result) {
+			return withNull(result), nil
 		}
 		return result, nil
 	}
@@ -194,14 +194,14 @@ func inferIndex(s *SchemaNode, defs map[string]*SchemaNode) (*SchemaNode, error)
 		return nil, fmt.Errorf("index access [n] requires an array schema, got type %q", t)
 	}
 	if resolved.Items == nil {
-		return &SchemaNode{}, nil
+		return &node{}, nil
 	}
-	return WithNull(resolved.Items), nil
+	return withNull(resolved.Items), nil
 }
 
-// Deref follows a $ref pointer if present, looking it up in defs.
+// deref follows a $ref pointer if present, looking it up in defs.
 // Returns s unchanged if no $ref is present.
-func Deref(s *SchemaNode, defs map[string]*SchemaNode) (*SchemaNode, error) {
+func deref(s *node, defs map[string]*node) (*node, error) {
 	if s == nil || s.Ref == "" {
 		return s, nil
 	}
@@ -222,7 +222,7 @@ func Deref(s *SchemaNode, defs map[string]*SchemaNode) (*SchemaNode, error) {
 // isSecret reports whether s is a secret value (marked secret:true), looking
 // through nullable / single-variant union wrappers so an optional or wrapped
 // secret is still recognised.
-func isSecret(s *SchemaNode) bool {
+func isSecret(s *node) bool {
 	if s == nil {
 		return false
 	}
@@ -244,9 +244,9 @@ func isSecret(s *SchemaNode) bool {
 
 // Taint returns a copy of s marked secret:true. It is used to taint the result of
 // an expression that reads a secret value (conservatively, the whole value).
-func Taint(s *SchemaNode) *SchemaNode {
+func taintNode(s *node) *node {
 	if s == nil {
-		return &SchemaNode{Secret: true}
+		return &node{Secret: true}
 	}
 	if s.Secret {
 		return s
@@ -259,12 +259,12 @@ func Taint(s *SchemaNode) *SchemaNode {
 // pathHitsSecret reports whether navigating path from s passes through (or ends
 // at) a node marked secret — reading from inside a secret object is itself
 // secret. Returns false if the path cannot be resolved.
-func pathHitsSecret(s *SchemaNode, defs map[string]*SchemaNode, path string) bool {
+func pathHitsSecret(s *node, defs map[string]*node, path string) bool {
 	steps, err := parsePath(path)
 	if err != nil {
 		return false
 	}
-	cur, err := Deref(s, defs)
+	cur, err := deref(s, defs)
 	if err != nil {
 		return false
 	}
@@ -293,11 +293,11 @@ func pathHitsSecret(s *SchemaNode, defs map[string]*SchemaNode, path string) boo
 // wrappers, and oneOf/anyOf/allOf combinators — so the walk cannot drift from the
 // schema navigation. It is the gather half of log redaction: the collected values
 // are then scrubbed from free-form log text.
-func collectSecrets(value any, node *SchemaNode, defs map[string]*SchemaNode, out *[]string) {
+func collectSecrets(value any, node *node, defs map[string]*node, out *[]string) {
 	if node == nil || value == nil {
 		return
 	}
-	resolved, err := Deref(node, defs)
+	resolved, err := deref(node, defs)
 	if err != nil {
 		return
 	}
@@ -330,11 +330,11 @@ func collectSecrets(value any, node *SchemaNode, defs map[string]*SchemaNode, ou
 // nullable, and combinator handling lives in one place. Non-secret values pass
 // through unchanged. Used to scrub secret-derived values before they cross a public
 // boundary (API, logs).
-func redact(value any, node *SchemaNode, defs map[string]*SchemaNode) any {
+func redact(value any, node *node, defs map[string]*node) any {
 	if node == nil || value == nil {
 		return value
 	}
-	resolved, err := Deref(node, defs)
+	resolved, err := deref(node, defs)
 	if err != nil {
 		return value
 	}
@@ -382,13 +382,13 @@ func SecretString(v any) string {
 	return fmt.Sprintf("%v", v)
 }
 
-// IsNullType reports whether s is exactly {type:"null"}.
-func IsNullType(s *SchemaNode) bool {
+// isNullType reports whether s is exactly {type:"null"}.
+func isNullType(s *node) bool {
 	return s != nil && len(s.Type) == 1 && s.Type[0] == "null"
 }
 
-// HasNullType reports whether null is a possible type for s.
-func HasNullType(s *SchemaNode) bool {
+// hasNullType reports whether null is a possible type for s.
+func hasNullType(s *node) bool {
 	if s == nil {
 		return false
 	}
@@ -396,21 +396,86 @@ func HasNullType(s *SchemaNode) bool {
 		return true
 	}
 	for _, v := range s.OneOf {
-		if IsNullType(v) {
+		if isNullType(v) {
 			return true
 		}
 	}
 	for _, v := range s.AnyOf {
-		if IsNullType(v) {
+		if isNullType(v) {
 			return true
 		}
 	}
 	return false
 }
 
+// IsType reports whether s resolves to exactly the given type: its type list is
+// non-empty with every entry equal to typ, or it is a oneOf/anyOf all of whose
+// variants themselves resolve to typ. It is the "is this uniformly type X" gate
+// used, e.g., to require a switch expression to be boolean.
+func (s Schema) IsType(typ string) bool { return nodeIsType(s.n, typ) }
+
+func nodeIsType(s *node, typ string) bool {
+	if s == nil {
+		return false
+	}
+	if len(s.Type) > 0 {
+		for _, t := range s.Type {
+			if t != typ {
+				return false
+			}
+		}
+		return true
+	}
+	for _, variants := range [][]*node{s.OneOf, s.AnyOf} {
+		if variants == nil {
+			continue
+		}
+		for _, v := range variants {
+			if !nodeIsType(v, typ) {
+				return false
+			}
+		}
+		return len(variants) > 0
+	}
+	return false
+}
+
+// TypeName returns a readable name for s's type — a single type ("string"), a
+// union ("string|null"), or "unknown" when it can't be determined. Intended for
+// error messages.
+func (s Schema) TypeName() string { return nodeTypeName(s.n) }
+
+func nodeTypeName(s *node) string {
+	if s == nil {
+		return "unknown"
+	}
+	if len(s.Type) > 0 {
+		return strings.Join([]string(s.Type), "|")
+	}
+	for _, variants := range [][]*node{s.OneOf, s.AnyOf} {
+		if variants == nil {
+			continue
+		}
+		seen := make(map[string]bool, len(variants))
+		var parts []string
+		for _, v := range variants {
+			if v == nil {
+				continue
+			}
+			name := nodeTypeName(v)
+			if !seen[name] {
+				seen[name] = true
+				parts = append(parts, name)
+			}
+		}
+		return strings.Join(parts, "|")
+	}
+	return "unknown"
+}
+
 // WithNull makes s nullable. Simple types produce {type:[T,"null"]};
 // complex schemas are wrapped in {oneOf:[s,{type:"null"}]}.
-func WithNull(s *SchemaNode) *SchemaNode {
+func withNull(s *node) *node {
 	if s == nil || isEmptyNode(s) {
 		return s
 	}
@@ -418,12 +483,12 @@ func WithNull(s *SchemaNode) *SchemaNode {
 		return s
 	}
 	for _, v := range s.OneOf {
-		if IsNullType(v) {
+		if isNullType(v) {
 			return s
 		}
 	}
 	for _, v := range s.AnyOf {
-		if IsNullType(v) {
+		if isNullType(v) {
 			return s
 		}
 	}
@@ -435,11 +500,11 @@ func WithNull(s *SchemaNode) *SchemaNode {
 		n.Type[len(s.Type)] = "null"
 		return &n
 	}
-	return &SchemaNode{OneOf: []*SchemaNode{s, {Type: SchemaType{"null"}}}}
+	return &node{OneOf: []*node{s, {Type: SchemaType{"null"}}}}
 }
 
 // StripNull removes null from a schema's possible types.
-func StripNull(s *SchemaNode) *SchemaNode {
+func stripNull(s *node) *node {
 	if s == nil {
 		return s
 	}
@@ -458,9 +523,9 @@ func StripNull(s *SchemaNode) *SchemaNode {
 		return &n
 	}
 	if len(s.OneOf) > 0 {
-		var nonNull []*SchemaNode
+		var nonNull []*node
 		for _, v := range s.OneOf {
-			if !IsNullType(v) {
+			if !isNullType(v) {
 				nonNull = append(nonNull, v)
 			}
 		}
@@ -475,9 +540,9 @@ func StripNull(s *SchemaNode) *SchemaNode {
 		return &n
 	}
 	if len(s.AnyOf) > 0 {
-		var nonNull []*SchemaNode
+		var nonNull []*node
 		for _, v := range s.AnyOf {
-			if !IsNullType(v) {
+			if !isNullType(v) {
 				nonNull = append(nonNull, v)
 			}
 		}
@@ -494,15 +559,18 @@ func StripNull(s *SchemaNode) *SchemaNode {
 	return s
 }
 
-func isEmptyNode(s *SchemaNode) bool {
+// isEmptyNode reports whether s constrains nothing. Root $defs are deliberately
+// ignored: a node carrying only a resolution context (as sub-schemas returned by
+// navigation do) still accepts any value.
+func isEmptyNode(s *node) bool {
 	return s == nil || (len(s.Type) == 0 && s.Properties == nil && s.Required == nil &&
 		s.Items == nil && s.OneOf == nil && s.AnyOf == nil && s.AllOf == nil &&
-		s.Enum == nil && s.Ref == "" && s.Defs == nil && s.Minimum == nil &&
+		s.Enum == nil && s.Ref == "" && s.Minimum == nil &&
 		s.Maximum == nil && s.MinLength == nil && s.MaxLength == nil &&
 		s.MinItems == nil && s.MaxItems == nil)
 }
 
-func navigateSchema(s *SchemaNode, defs map[string]*SchemaNode, steps []pathStep) (*SchemaNode, error) {
+func navigateSchema(s *node, defs map[string]*node, steps []pathStep) (*node, error) {
 	current := s
 	for _, step := range steps {
 		var err error
@@ -518,7 +586,7 @@ func navigateSchema(s *SchemaNode, defs map[string]*SchemaNode, steps []pathStep
 	return current, nil
 }
 
-func isRequired(s *SchemaNode, name string) bool {
+func isRequired(s *node, name string) bool {
 	for _, r := range s.Required {
 		if r == name {
 			return true
@@ -527,7 +595,7 @@ func isRequired(s *SchemaNode, name string) bool {
 	return false
 }
 
-func allSame(schemas []*SchemaNode) bool {
+func allSame(schemas []*node) bool {
 	if len(schemas) == 0 {
 		return true
 	}

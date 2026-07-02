@@ -147,9 +147,9 @@ func TestValidateDecisionMatchesGojsonschema(t *testing.T) {
 			schema: `{"type":"object","properties":{"item":{"$ref":"#/$defs/Item"}},"required":["item"],"$defs":{"Item":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}}}`,
 			docs: []string{
 				`{"item":{"id":1}}`,
-				`{"item":{"id":"x"}}`,       // ref target wrong type
-				`{"item":{}}`,               // ref target missing required
-				`{"item":{"id":1,"z":9}}`,   // extra inside ref (both accept)
+				`{"item":{"id":"x"}}`,     // ref target wrong type
+				`{"item":{}}`,             // ref target missing required
+				`{"item":{"id":1,"z":9}}`, // extra inside ref (both accept)
 			},
 		},
 	}
@@ -159,10 +159,11 @@ func TestValidateDecisionMatchesGojsonschema(t *testing.T) {
 		if err != nil {
 			t.Fatalf("[%s] gojsonschema failed to compile schema: %v", tc.name, err)
 		}
-		sc, err := schema.Parse([]byte(tc.schema))
+		rawSc, err := schema.Parse([]byte(tc.schema))
 		if err != nil {
 			t.Fatalf("[%s] schema.Parse failed: %v", tc.name, err)
 		}
+		sc := rawSc.AssumeNormalized()
 
 		for _, doc := range tc.docs {
 			var data any

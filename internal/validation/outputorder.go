@@ -15,8 +15,8 @@ import (
 // reads another's output is inferred after it; mutually-recursive tasks (a cycle
 // of outputs.<id> references, including a single task referencing itself) are
 // resolved together by a joint fixpoint over the strongly-connected component.
-func inferOutputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, processInput, configSchema *schema.SchemaNode,
-	defs map[string]*schema.SchemaNode, required, optional map[string][]string, mustErr, mayErr map[string]bool) error {
+func inferOutputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, processInput, configSchema schema.Schema,
+	defs schema.Defs, required, optional map[string][]string, mustErr, mayErr map[string]bool) error {
 
 	taskByID := make(map[string]*model.Task, len(tasks))
 	isOutputMap := make(map[string]bool)
@@ -62,11 +62,10 @@ func inferOutputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proce
 		members := make([]sccMember, 0, len(scc))
 		for _, id := range scc {
 			base := contextSchema(required[id], optional[id], taskSchemas, processInput, configSchema, mustErr[id], mayErr[id])
-			base = withDefs(base, defs)
 			// The task loops iff it is its own predecessor: computeContextSets then
 			// lists its own output among its available (optional) outputs.
 			loops := slices.Contains(optional[id], id) || slices.Contains(required[id], id)
-			ctx := outputMapContext(base, actionResultType(taskByID[id]), id, loops)
+			ctx := outputMapContext(base, actionResultType(taskByID[id]), id, loops).WithDefs(defs)
 			members = append(members, sccMember{defName: id + "_output", node: taskByID[id].Output.Raw, ctx: ctx})
 		}
 		if err := inferOutputFixpoint(members, defs); err != nil {
@@ -82,19 +81,20 @@ func inferOutputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proce
 type sccMember struct {
 	defName string
 	node    any // the model.Shape.Raw for this output
-	ctx     *schema.SchemaNode
+	ctx     schema.Schema
 }
 
 // inferOutputFixpoint drives a joint fixpoint over an SCC of output maps. Each
 // member's def is seeded null (its value before the first iteration, which a
 // `?? default` base case resolves), re-fed as the running estimate (nullable)
 // each pass, joined and canonicalized, until every member stabilizes. defs is
-// finalized in place to each member's (non-null) inferred type. A single
-// non-recursive member converges in one pass.
-func inferOutputFixpoint(members []sccMember, defs map[string]*schema.SchemaNode) error {
-	est := make(map[string]*schema.SchemaNode, len(members))
+// mutated in place — every member's ctx shares the same handle, so estimate
+// updates are observed through their $refs — and is finalized to each member's
+// (non-null) inferred type. A single non-recursive member converges in one pass.
+func inferOutputFixpoint(members []sccMember, defs schema.Defs) error {
+	est := make(map[string]schema.Schema, len(members))
 	for _, m := range members {
-		defs[m.defName] = &schema.SchemaNode{Type: schema.SchemaType{"null"}}
+		defs.Set(m.defName, schema.Type("null"))
 	}
 	for pass := 0; pass < maxRecursivePasses; pass++ {
 		stable := true
@@ -103,14 +103,14 @@ func inferOutputFixpoint(members []sccMember, defs map[string]*schema.SchemaNode
 			if err != nil {
 				return err
 			}
-			cur = schema.Canonicalize(cur)
-			if schema.Size(cur) > maxOutputTypeBytes {
+			cur = cur.Canonicalize()
+			if cur.Size() > maxOutputTypeBytes {
 				return fmt.Errorf("output type for %q grew past %d bytes without converging — likely an unbounded recursion (e.g. accumulating self.previous without a base case)", m.defName, maxOutputTypeBytes)
 			}
 			next := cur
-			if prev := est[m.defName]; prev != nil {
-				next = schema.Join(prev, cur)
-				if !schema.Equal(next, prev) {
+			if prev, ok := est[m.defName]; ok {
+				next = prev.Join(cur)
+				if !next.Equal(prev) {
 					stable = false
 				}
 			} else {
@@ -119,11 +119,11 @@ func inferOutputFixpoint(members []sccMember, defs map[string]*schema.SchemaNode
 			est[m.defName] = next
 			// Feed the estimate back (nullable) so other members — and this one on
 			// the next pass — read it through their $refs.
-			defs[m.defName] = schema.WithNull(next)
+			defs.Set(m.defName, next.WithNull())
 		}
 		if stable {
 			for _, m := range members {
-				defs[m.defName] = est[m.defName] // exported output is non-null
+				defs.Set(m.defName, est[m.defName]) // exported output is non-null
 			}
 			return nil
 		}

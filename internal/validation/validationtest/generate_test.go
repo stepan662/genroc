@@ -12,13 +12,13 @@ func TestGenerate_NoSchemas(t *testing.T) {
 	if out.Process != "p" {
 		t.Errorf("metadata: got process=%q", out.Process)
 	}
-	if out.ProcessInput != nil {
+	if !out.ProcessInput.IsZero() {
 		t.Error("process_input should be absent")
 	}
 	if len(out.Tasks) != 0 {
 		t.Errorf("tasks should be empty, got %v", out.Tasks)
 	}
-	if len(out.Defs) != 0 {
+	if out.Defs.Len() != 0 {
 		t.Errorf("$defs should be empty, got %v", out.Defs)
 	}
 }
@@ -34,7 +34,7 @@ func TestGenerate_ProcessInput(t *testing.T) {
 		}
 	}`)
 	assertJSON(t, out.ProcessInput, `{"$ref": "#/$defs/input"}`)
-	assertJSON(t, out.Defs["input"], `{
+	assertJSON(t, defOf(out, "input"), `{
 		"type": "object",
 		"properties": { "order_id": { "type": "integer" } },
 		"required": ["order_id"]
@@ -73,7 +73,7 @@ func TestGenerate_TaskOutput(t *testing.T) {
   ]
 }`)
 	assertJSON(t, out.Tasks["charge"].Output, `{"$ref": "#/$defs/charge_output"}`)
-	assertJSON(t, out.Defs["charge_output"], `{
+	assertJSON(t, defOf(out, "charge_output"), `{
 		"type": "object",
 		"properties": { "charged": { "type": "boolean" } }
 	}`)
@@ -170,11 +170,11 @@ func TestGenerate_InnerDefsPromotedToRoot(t *testing.T) {
 		}
 	}`)
 	assertJSON(t, out.ProcessInput, `{"$ref": "#/$defs/input"}`)
-	assertJSON(t, out.Defs["input"], `{
+	assertJSON(t, defOf(out, "input"), `{
 		"type": "object",
 		"properties": { "addr": { "$ref": "#/$defs/Address" } }
 	}`)
-	assertJSON(t, out.Defs["Address"], `{
+	assertJSON(t, defOf(out, "Address"), `{
 		"type": "object",
 		"properties": { "street": { "type": "string" } }
 	}`)
@@ -231,10 +231,10 @@ func TestGenerate_InnerDefsConflictRenamed(t *testing.T) {
 }`)
 	// The two distinct recursive defs coexist: input's keeps the name "Item", the
 	// task's is carried under its output def name "charge_output" — no clobbering.
-	if out.Defs["Item"] == nil {
+	if !out.Defs.Has("Item") {
 		t.Errorf("input's recursive Item def should be present (keys: %v)", defKeys(out))
 	}
-	if out.Defs["charge_output"] == nil {
+	if !out.Defs.Has("charge_output") {
 		t.Errorf("charge's recursive output def should be present and distinct (keys: %v)", defKeys(out))
 	}
 }
@@ -266,10 +266,10 @@ func TestGenerate_Child_WithOutputSchema_ExposesTypedOutput(t *testing.T) {
   ]
 }`)
 	// spawn should appear in tasks with a typed output
-	if out.Tasks["spawn"].Output == nil {
+	if out.Tasks["spawn"].Output.IsZero() {
 		t.Fatal("spawn should have a typed output in tasks")
 	}
-	assertJSON(t, out.Defs["spawn_output"], `{
+	assertJSON(t, defOf(out, "spawn_output"), `{
 		"type": "object",
 		"properties": { "count": { "type": "integer" } },
 		"required": ["count"]
@@ -288,7 +288,7 @@ func TestGenerate_Child_WithoutOutputSchema_NoOutput(t *testing.T) {
 	if _, ok := out.Tasks["spawn"]; ok {
 		t.Error("spawn without result_schema should not appear in tasks")
 	}
-	if out.Defs["spawn_output"] != nil {
+	if out.Defs.Has("spawn_output") {
 		t.Error("spawn_output def should be absent")
 	}
 }
@@ -330,11 +330,11 @@ func TestGenerate_Child_OutputAvailableInDownstreamStep(t *testing.T) {
     }
   ]
 }`)
-	reportInput := out.Defs["report_input"]
-	if reportInput == nil || reportInput.Properties == nil {
+	reportInput := defOf(out, "report_input")
+	if reportInput.IsZero() || !reportInput.HasProperties() {
 		t.Fatal("report input should have properties")
 	}
-	assertJSON(t, reportInput.Properties["n"], `{"type": "integer"}`)
+	assertJSON(t, reportInput.Properties()["n"], `{"type": "integer"}`)
 }
 
 func TestGenerate_ChildParallel_WithOutputSchemas_ExposesKeyedOutput(t *testing.T) {
@@ -382,21 +382,21 @@ func TestGenerate_ChildParallel_WithOutputSchemas_ExposesKeyedOutput(t *testing.
   ]
 }`)
 	// spawn should appear in tasks
-	if out.Tasks["spawn"].Output == nil {
+	if out.Tasks["spawn"].Output.IsZero() {
 		t.Fatal("spawn should have a typed output in tasks")
 	}
 	// spawn_output should be an object with left/right keys
-	spawnOutput := out.Defs["spawn_output"]
-	if spawnOutput == nil {
+	spawnOutput := defOf(out, "spawn_output")
+	if spawnOutput.IsZero() {
 		t.Fatal("spawn_output def missing")
 	}
-	if spawnOutput.Properties == nil {
+	if !spawnOutput.HasProperties() {
 		t.Fatal("spawn_output should have properties")
 	}
-	if spawnOutput.Properties["left"] == nil {
+	if spawnOutput.Properties()["left"].IsZero() {
 		t.Error("spawn_output should have property 'left'")
 	}
-	if spawnOutput.Properties["right"] == nil {
+	if spawnOutput.Properties()["right"].IsZero() {
 		t.Error("spawn_output should have property 'right'")
 	}
 }
@@ -457,12 +457,12 @@ func TestGenerate_ChildParallel_KeyedOutputAvailableInDownstreamStep(t *testing.
     }
   ]
 }`)
-	aggInput := out.Defs["aggregate_input"]
-	if aggInput == nil || aggInput.Properties == nil {
+	aggInput := defOf(out, "aggregate_input")
+	if aggInput.IsZero() || !aggInput.HasProperties() {
 		t.Fatal("aggregate input should have properties")
 	}
-	assertJSON(t, aggInput.Properties["a"], `{"type": "integer"}`)
-	assertJSON(t, aggInput.Properties["b"], `{"type": "integer"}`)
+	assertJSON(t, aggInput.Properties()["a"], `{"type": "integer"}`)
+	assertJSON(t, aggInput.Properties()["b"], `{"type": "integer"}`)
 }
 
 func TestGenerate_ChildParallel_MixedOutputSchemas_UntypedKeyIsObject(t *testing.T) {
@@ -499,14 +499,14 @@ func TestGenerate_ChildParallel_MixedOutputSchemas_UntypedKeyIsObject(t *testing
     }
   ]
 }`)
-	spawnOutput := out.Defs["spawn_output"]
-	if spawnOutput == nil || spawnOutput.Properties == nil {
+	spawnOutput := defOf(out, "spawn_output")
+	if spawnOutput.IsZero() || !spawnOutput.HasProperties() {
 		t.Fatal("spawn_output def missing or has no properties")
 	}
-	if spawnOutput.Properties["typed"] == nil {
+	if spawnOutput.Properties()["typed"].IsZero() {
 		t.Error("spawn_output should have property 'typed'")
 	}
-	if spawnOutput.Properties["untyped"] == nil {
+	if spawnOutput.Properties()["untyped"].IsZero() {
 		t.Error("spawn_output should have property 'untyped' even without result_schema")
 	}
 }
@@ -524,10 +524,10 @@ func TestGenerate_UnusedDefsRemoved(t *testing.T) {
 		},
 		"tasks": [{"id":"s1","action":{"type":"rest","endpoint":"http://x"}}]
 	}`)
-	if out.Defs["Used"] == nil {
+	if !out.Defs.Has("Used") {
 		t.Error("Used def should be present in $defs")
 	}
-	if out.Defs["Unused"] != nil {
+	if out.Defs.Has("Unused") {
 		t.Error("Unused def should have been removed")
 	}
 }

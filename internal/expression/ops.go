@@ -18,13 +18,13 @@ func (e ErrUnsupported) Error() string {
 
 // binOp pairs the type-inference and runtime-evaluation behaviour of a binary operator.
 type binOp struct {
-	infer func(left, right *schema.SchemaNode) (*schema.SchemaNode, error)
+	infer func(left, right schema.Schema) (schema.Schema, error)
 	eval  func(left, right any) (any, error)
 }
 
 // unOp pairs the type-inference and runtime-evaluation behaviour of a unary operator.
 type unOp struct {
-	infer func(operand *schema.SchemaNode) (*schema.SchemaNode, error)
+	infer func(operand schema.Schema) (schema.Schema, error)
 	eval  func(operand any) (any, error)
 }
 
@@ -53,56 +53,56 @@ var unaryOps = map[string]unOp{
 
 // ---- infer helpers ----
 
-func alwaysBoolean(_, _ *schema.SchemaNode) (*schema.SchemaNode, error) {
+func alwaysBoolean(_, _ schema.Schema) (schema.Schema, error) {
 	return typeSchema("boolean"), nil
 }
 
-func inferOrderingCmp(left, right *schema.SchemaNode) (*schema.SchemaNode, error) {
-	if schema.HasNullType(left) || schema.HasNullType(right) {
-		return nil, fmt.Errorf("comparison requires non-nullable operands")
+func inferOrderingCmp(left, right schema.Schema) (schema.Schema, error) {
+	if left.HasNull() || right.HasNull() {
+		return schema.Schema{}, fmt.Errorf("comparison requires non-nullable operands")
 	}
 	lt, ok := concreteTypeOf(left)
 	if !ok {
-		return nil, fmt.Errorf("comparison requires an unambiguous operand")
+		return schema.Schema{}, fmt.Errorf("comparison requires an unambiguous operand")
 	}
 	rt, ok := concreteTypeOf(right)
 	if !ok {
-		return nil, fmt.Errorf("comparison requires an unambiguous operand")
+		return schema.Schema{}, fmt.Errorf("comparison requires an unambiguous operand")
 	}
 	if !isNumeric(lt) || !isNumeric(rt) {
-		return nil, fmt.Errorf("comparison requires numeric operands, got %q and %q", lt, rt)
+		return schema.Schema{}, fmt.Errorf("comparison requires numeric operands, got %q and %q", lt, rt)
 	}
 	return typeSchema("boolean"), nil
 }
 
-func inferLogical(left, right *schema.SchemaNode) (*schema.SchemaNode, error) {
-	if schema.HasNullType(left) || schema.HasNullType(right) {
-		return nil, fmt.Errorf("logical operator requires non-nullable boolean operands")
+func inferLogical(left, right schema.Schema) (schema.Schema, error) {
+	if left.HasNull() || right.HasNull() {
+		return schema.Schema{}, fmt.Errorf("logical operator requires non-nullable boolean operands")
 	}
 	lt, ok := concreteTypeOf(left)
 	if !ok {
-		return nil, fmt.Errorf("logical operator requires an unambiguous operand")
+		return schema.Schema{}, fmt.Errorf("logical operator requires an unambiguous operand")
 	}
 	rt, ok := concreteTypeOf(right)
 	if !ok {
-		return nil, fmt.Errorf("logical operator requires an unambiguous operand")
+		return schema.Schema{}, fmt.Errorf("logical operator requires an unambiguous operand")
 	}
 	if lt != "boolean" || rt != "boolean" {
-		return nil, fmt.Errorf("logical operator requires boolean operands, got %q and %q", lt, rt)
+		return schema.Schema{}, fmt.Errorf("logical operator requires boolean operands, got %q and %q", lt, rt)
 	}
 	return typeSchema("boolean"), nil
 }
 
-func inferNot(operand *schema.SchemaNode) (*schema.SchemaNode, error) {
-	if schema.HasNullType(operand) {
-		return nil, fmt.Errorf("! requires a non-nullable boolean operand")
+func inferNot(operand schema.Schema) (schema.Schema, error) {
+	if operand.HasNull() {
+		return schema.Schema{}, fmt.Errorf("! requires a non-nullable boolean operand")
 	}
 	t, ok := concreteTypeOf(operand)
 	if !ok {
-		return nil, fmt.Errorf("! requires an unambiguous operand")
+		return schema.Schema{}, fmt.Errorf("! requires an unambiguous operand")
 	}
 	if t != "boolean" {
-		return nil, fmt.Errorf("! requires a boolean operand, got %q", t)
+		return schema.Schema{}, fmt.Errorf("! requires a boolean operand, got %q", t)
 	}
 	return typeSchema("boolean"), nil
 }
@@ -115,14 +115,14 @@ func evalNot(v any) (any, error) {
 	return !b, nil
 }
 
-func inferAdd(left, right *schema.SchemaNode) (*schema.SchemaNode, error) {
-	if schema.HasNullType(left) || schema.HasNullType(right) {
-		return nil, fmt.Errorf("operator requires non-nullable operands")
+func inferAdd(left, right schema.Schema) (schema.Schema, error) {
+	if left.HasNull() || right.HasNull() {
+		return schema.Schema{}, fmt.Errorf("operator requires non-nullable operands")
 	}
 	lt, ltOK := concreteTypeOf(left)
 	rt, rtOK := concreteTypeOf(right)
 	if !ltOK || !rtOK {
-		return nil, fmt.Errorf("operator requires an unambiguous operand")
+		return schema.Schema{}, fmt.Errorf("operator requires an unambiguous operand")
 	}
 	if lt == "string" && rt == "string" {
 		return typeSchema("string"), nil
@@ -130,17 +130,17 @@ func inferAdd(left, right *schema.SchemaNode) (*schema.SchemaNode, error) {
 	return inferArith(left, right)
 }
 
-func inferArith(left, right *schema.SchemaNode) (*schema.SchemaNode, error) {
-	if schema.HasNullType(left) || schema.HasNullType(right) {
-		return nil, fmt.Errorf("operator requires non-nullable operands")
+func inferArith(left, right schema.Schema) (schema.Schema, error) {
+	if left.HasNull() || right.HasNull() {
+		return schema.Schema{}, fmt.Errorf("operator requires non-nullable operands")
 	}
 	lt, ltOK := concreteTypeOf(left)
 	rt, rtOK := concreteTypeOf(right)
 	if !ltOK || !rtOK {
-		return nil, fmt.Errorf("operator requires an unambiguous numeric operand")
+		return schema.Schema{}, fmt.Errorf("operator requires an unambiguous numeric operand")
 	}
 	if !isNumeric(lt) || !isNumeric(rt) {
-		return nil, fmt.Errorf("operator requires numeric operands, got %q and %q", lt, rt)
+		return schema.Schema{}, fmt.Errorf("operator requires numeric operands, got %q and %q", lt, rt)
 	}
 	if lt == "integer" && rt == "integer" {
 		return typeSchema("integer"), nil
@@ -148,55 +148,55 @@ func inferArith(left, right *schema.SchemaNode) (*schema.SchemaNode, error) {
 	return typeSchema("number"), nil
 }
 
-func inferMod(left, right *schema.SchemaNode) (*schema.SchemaNode, error) {
-	if schema.HasNullType(left) || schema.HasNullType(right) {
-		return nil, fmt.Errorf("%% requires non-nullable operands")
+func inferMod(left, right schema.Schema) (schema.Schema, error) {
+	if left.HasNull() || right.HasNull() {
+		return schema.Schema{}, fmt.Errorf("%% requires non-nullable operands")
 	}
 	lt, ltOK := concreteTypeOf(left)
 	rt, rtOK := concreteTypeOf(right)
 	if !ltOK || !rtOK {
-		return nil, fmt.Errorf("%% requires an unambiguous integer operand")
+		return schema.Schema{}, fmt.Errorf("%% requires an unambiguous integer operand")
 	}
 	if lt != "integer" || rt != "integer" {
-		return nil, fmt.Errorf("%% requires integer operands, got %q and %q", lt, rt)
+		return schema.Schema{}, fmt.Errorf("%% requires integer operands, got %q and %q", lt, rt)
 	}
 	return typeSchema("integer"), nil
 }
 
-func inferDiv(left, right *schema.SchemaNode) (*schema.SchemaNode, error) {
-	if schema.HasNullType(left) || schema.HasNullType(right) {
-		return nil, fmt.Errorf("/ requires non-nullable operands")
+func inferDiv(left, right schema.Schema) (schema.Schema, error) {
+	if left.HasNull() || right.HasNull() {
+		return schema.Schema{}, fmt.Errorf("/ requires non-nullable operands")
 	}
 	lt, ltOK := concreteTypeOf(left)
 	rt, rtOK := concreteTypeOf(right)
 	if !ltOK || !rtOK {
-		return nil, fmt.Errorf("/ requires an unambiguous numeric operand")
+		return schema.Schema{}, fmt.Errorf("/ requires an unambiguous numeric operand")
 	}
 	if !isNumeric(lt) || !isNumeric(rt) {
-		return nil, fmt.Errorf("/ requires numeric operands, got %q and %q", lt, rt)
+		return schema.Schema{}, fmt.Errorf("/ requires numeric operands, got %q and %q", lt, rt)
 	}
 	return typeSchema("number"), nil
 }
 
-func numericPassthrough(operand *schema.SchemaNode) (*schema.SchemaNode, error) {
-	if schema.HasNullType(operand) {
-		return nil, fmt.Errorf("unary operator requires a non-nullable numeric operand")
+func numericPassthrough(operand schema.Schema) (schema.Schema, error) {
+	if operand.HasNull() {
+		return schema.Schema{}, fmt.Errorf("unary operator requires a non-nullable numeric operand")
 	}
 	t, ok := concreteTypeOf(operand)
 	if !ok {
-		return nil, fmt.Errorf("unary operator requires an unambiguous numeric operand")
+		return schema.Schema{}, fmt.Errorf("unary operator requires an unambiguous numeric operand")
 	}
 	if !isNumeric(t) {
-		return nil, fmt.Errorf("unary operator requires a numeric operand, got %q", t)
+		return schema.Schema{}, fmt.Errorf("unary operator requires a numeric operand, got %q", t)
 	}
 	return operand, nil
 }
 
-func inferNullCoalesce(left, right *schema.SchemaNode) (*schema.SchemaNode, error) {
-	if schema.IsNullType(left) {
+func inferNullCoalesce(left, right schema.Schema) (schema.Schema, error) {
+	if left.IsNull() {
 		return right, nil
 	}
-	nonNullLeft := schema.StripNull(left)
+	nonNullLeft := left.StripNull()
 	if schemasEqual(left, nonNullLeft) {
 		return left, nil
 	}
@@ -211,7 +211,7 @@ func inferNullCoalesce(left, right *schema.SchemaNode) (*schema.SchemaNode, erro
 		}
 		return typeSchema("number"), nil
 	}
-	return &schema.SchemaNode{OneOf: []*schema.SchemaNode{nonNullLeft, right}}, nil
+	return schema.OneOf(nonNullLeft, right), nil
 }
 
 // ---- eval helpers ----
@@ -302,88 +302,70 @@ func requireNum(v any) (any, error) {
 
 // ---- schema helpers ----
 
-func typeSchema(t string) *schema.SchemaNode {
-	return &schema.SchemaNode{Type: schema.SchemaType{t}}
+func typeSchema(t string) schema.Schema {
+	return schema.Type(t)
 }
 
 func isNumeric(t string) bool {
 	return t == "integer" || t == "number"
 }
 
-// withNull makes s nullable. Simple types produce {type:[T,"null"]};
-// complex schemas are wrapped in {oneOf:[s,{type:"null"}]}.
-func withNull(s *schema.SchemaNode) *schema.SchemaNode {
-	if s == nil {
-		return s
-	}
-	if result, ok := tryNullable(s, typeSchema("null")); ok {
-		return result
-	}
-	return &schema.SchemaNode{OneOf: []*schema.SchemaNode{s, typeSchema("null")}}
-}
-
-func nullableSchema(a, b *schema.SchemaNode) (*schema.SchemaNode, bool) {
+func nullableSchema(a, b schema.Schema) (schema.Schema, bool) {
 	if s, ok := tryNullable(a, b); ok {
 		return s, true
 	}
 	return tryNullable(b, a)
 }
 
-// tryNullable checks if other is {type:"null"} and self can be made nullable.
-// Schemas with properties are excluded (they need oneOf wrapping by withNull).
-func tryNullable(self, other *schema.SchemaNode) (*schema.SchemaNode, bool) {
-	if !schema.IsNullType(other) {
-		return nil, false
+// tryNullable checks if other is {type:"null"} and self can be made nullable in
+// place. Schemas with properties are excluded (they need the oneOf wrapper the
+// caller builds).
+func tryNullable(self, other schema.Schema) (schema.Schema, bool) {
+	if !other.IsNull() {
+		return schema.Schema{}, false
 	}
-	if schema.HasNullType(self) {
+	if self.HasNull() {
 		return self, true
 	}
-	if self.Properties != nil {
-		return nil, false
+	if self.HasProperties() {
+		return schema.Schema{}, false
 	}
-	if len(self.Type) == 1 && self.Type[0] != "null" {
-		n := *self
-		n.Type = schema.SchemaType{self.Type[0], "null"}
-		return &n, true
+	if t := self.Type(); len(t) == 1 && t[0] != "null" {
+		// WithNull widens the type list in place ({type:[T,"null"]}), preserving
+		// any other constraints on the schema.
+		return self.WithNull(), true
 	}
-	return nil, false
+	return schema.Schema{}, false
 }
 
 // concreteTypeOf extracts a single effective type string from a schema.
-func concreteTypeOf(s *schema.SchemaNode) (string, bool) {
-	if s == nil {
+func concreteTypeOf(s schema.Schema) (string, bool) {
+	if t := s.Type(); len(t) == 1 {
+		return t[0], true
+	}
+	variants := s.Variants()
+	if variants == nil {
 		return "", false
 	}
-	if len(s.Type) == 1 {
-		return s.Type[0], true
-	}
-	for _, variants := range [][]*schema.SchemaNode{s.AnyOf, s.OneOf} {
-		if variants == nil {
-			continue
-		}
-		var types []string
-		for _, v := range variants {
-			if v == nil {
-				return "", false
-			}
-			if schema.IsNullType(v) {
-				return "", false
-			}
-			if len(v.Type) != 1 {
-				return "", false
-			}
-			types = append(types, v.Type[0])
-		}
-		if len(types) == 0 {
+	var types []string
+	for _, v := range variants {
+		if v.IsZero() || v.IsNull() {
 			return "", false
 		}
-		if allEqual(types) {
-			return types[0], true
+		vt := v.Type()
+		if len(vt) != 1 {
+			return "", false
 		}
-		if allSatisfy(types, isNumeric) {
-			return "number", true
-		}
+		types = append(types, vt[0])
+	}
+	if len(types) == 0 {
 		return "", false
+	}
+	if allEqual(types) {
+		return types[0], true
+	}
+	if allSatisfy(types, isNumeric) {
+		return "number", true
 	}
 	return "", false
 }
@@ -408,34 +390,30 @@ func allSatisfy(ss []string, fn func(string) bool) bool {
 
 // unwrapSingleVariant simplifies a oneOf/anyOf schema that has exactly one
 // non-null variant into that variant directly.
-func unwrapSingleVariant(s *schema.SchemaNode) *schema.SchemaNode {
-	if s == nil {
+func unwrapSingleVariant(s schema.Schema) schema.Schema {
+	variants := s.Variants()
+	if variants == nil {
 		return s
 	}
-	for _, variants := range [][]*schema.SchemaNode{s.AnyOf, s.OneOf} {
-		if variants == nil {
-			continue
+	var nonNull []schema.Schema
+	for _, v := range variants {
+		if v.IsZero() || v.IsNull() {
+			return s
 		}
-		var nonNull []*schema.SchemaNode
-		for _, v := range variants {
-			if v == nil {
-				return s
-			}
-			if schema.IsNullType(v) {
-				return s
-			}
-			nonNull = append(nonNull, v)
-		}
-		if len(nonNull) == 1 {
-			return nonNull[0]
-		}
+		nonNull = append(nonNull, v)
+	}
+	if len(nonNull) == 1 {
+		return nonNull[0]
 	}
 	return s
 }
 
-func schemasEqual(a, b *schema.SchemaNode) bool {
-	aj, err1 := json.Marshal(a)
-	bj, err2 := json.Marshal(b)
+// schemasEqual compares two schemas structurally, ignoring the root $defs each
+// may carry (navigation attaches the shared resolution context; two identical
+// types must compare equal whether or not they were reached via navigation).
+func schemasEqual(a, b schema.Schema) bool {
+	aj, err1 := json.Marshal(a.WithoutDefs())
+	bj, err2 := json.Marshal(b.WithoutDefs())
 	return err1 == nil && err2 == nil && string(aj) == string(bj)
 }
 

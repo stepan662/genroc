@@ -73,6 +73,10 @@ func (a actionDef) envelope(r *http.Request) (Envelope, error) {
 	return Envelope{Action: a.Name, Payload: payload}, nil
 }
 
+// schemaPtr adapts a built schema value to the pointer fields on model structs
+// (nil pointer = field absent).
+func schemaPtr(s schema.Schema) *schema.Schema { return &s }
+
 // registry is the authoritative list of all actions.
 // Order here determines order in Swagger.
 var registry = func() []actionDef {
@@ -86,25 +90,16 @@ var registry = func() []actionDef {
 			Tags:    []string{"Definitions"},
 			Req: model.ProcessDefinition{
 				Name: "order_pipeline",
-				InputSchema: &schema.SchemaNode{
-					Type: schema.SchemaType{"object"},
-					Properties: map[string]*schema.SchemaNode{
-						"order_id": {Type: schema.SchemaType{"integer"}},
-					},
-					Required: []string{"order_id"},
-				},
+				InputSchema: schemaPtr(schema.Object().
+					WithProperty("order_id", schema.Type("integer"), true)),
 				Tasks: []*model.Task{
 					{
 						ID: "charge",
 						Action: &model.Action{
 							Type:     model.ActionTypeREST,
 							Endpoint: "http://localhost:9001/charge",
-							ResultSchema: &schema.SchemaNode{
-								Type: schema.SchemaType{"object"},
-								Properties: map[string]*schema.SchemaNode{
-									"charged": {Type: schema.SchemaType{"boolean"}},
-								},
-							},
+							ResultSchema: schemaPtr(schema.Object().
+								WithProperty("charged", schema.Type("boolean"), false)),
 						},
 						TimeoutMs: 5000, OnError: []model.ErrorCase{{Retries: 3}},
 						Switch: model.SwitchMap{

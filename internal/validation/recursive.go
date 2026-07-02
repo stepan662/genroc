@@ -18,22 +18,23 @@ const maxOutputTypeBytes = 64 * 1024
 
 // InferRecursiveOutput infers the type of a single self-referential output map.
 // In ctx, both outputs.<id> and self.previous resolve via $ref to selfDef (the
-// recursive placeholder in ctx.$defs). It is the one-member case of the joint
-// fixpoint used for mutually-recursive output maps; ctx.$defs is mutated in place
-// so the running estimate is observed through those $refs, and selfDef ends up
-// holding the inferred (non-null) type, which is returned.
-func InferRecursiveOutput(exprs map[string]string, ctx *schema.SchemaNode, selfDef string) (*schema.SchemaNode, error) {
-	defs := ctx.Defs
-	if defs == nil {
-		defs = map[string]*schema.SchemaNode{}
-		ctx = withDefs(ctx, defs)
+// recursive placeholder in ctx's $defs). It is the one-member case of the joint
+// fixpoint used for mutually-recursive output maps; ctx's defs handle is mutated
+// in place so the running estimate is observed through those $refs, and selfDef
+// ends up holding the inferred (non-null) type, which is returned.
+func InferRecursiveOutput(exprs map[string]string, ctx schema.Schema, selfDef string) (schema.Schema, error) {
+	defs := ctx.DefsHandle()
+	if defs.IsZero() {
+		defs = schema.NewDefs()
+		ctx = ctx.WithDefs(defs)
 	}
 	node := make(map[string]any, len(exprs))
 	for k, v := range exprs {
 		node[k] = v
 	}
 	if err := inferOutputFixpoint([]sccMember{{defName: selfDef, node: node, ctx: ctx}}, defs); err != nil {
-		return nil, err
+		return schema.Schema{}, err
 	}
-	return defs[selfDef], nil
+	out, _ := defs.Get(selfDef)
+	return out, nil
 }

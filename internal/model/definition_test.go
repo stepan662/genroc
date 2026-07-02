@@ -6,6 +6,17 @@ import (
 	"genroc/internal/schema"
 )
 
+// mustSchemaPtr parses a JSON schema fixture as-is (unnormalized — Normalize
+// tests rely on nested $defs surviving the parse), panicking on error.
+func mustSchemaPtr(src string) *schema.Schema {
+	raw, err := schema.Parse([]byte(src))
+	if err != nil {
+		panic(err)
+	}
+	s := raw.AssumeNormalized()
+	return &s
+}
+
 func TestProcessDefinition_Normalize(t *testing.T) {
 	validTask := func(id string) *Task {
 		return &Task{ID: id, Action: &Action{Type: ActionTypeREST, Endpoint: "http://localhost/x"}}
@@ -21,15 +32,12 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 	t.Run("simple InputSchema without refs is unchanged", func(t *testing.T) {
 		d := ProcessDefinition{
 			Name: "p", Tasks: []*Task{validTask("s1")},
-			InputSchema: &schema.SchemaNode{
-				Type:       schema.SchemaType{"object"},
-				Properties: map[string]*schema.SchemaNode{"id": {Type: schema.SchemaType{"integer"}}},
-			},
+			InputSchema: mustSchemaPtr(`{"type":"object","properties":{"id":{"type":"integer"}}}`),
 		}
 		if err := d.Normalize(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if d.InputSchema.Properties == nil {
+		if !d.InputSchema.HasProperties() {
 			t.Fatal("properties missing after normalize")
 		}
 	})
@@ -37,80 +45,60 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 	t.Run("InputSchema $defs are flattened to root", func(t *testing.T) {
 		d := ProcessDefinition{
 			Name: "p", Tasks: []*Task{validTask("s1")},
-			InputSchema: &schema.SchemaNode{
-				Type: schema.SchemaType{"object"},
-				Properties: map[string]*schema.SchemaNode{
-					"addr": {Ref: "#/$defs/Address"},
-				},
-				Defs: map[string]*schema.SchemaNode{
-					"Address": {
-						Type: schema.SchemaType{"object"},
-						Properties: map[string]*schema.SchemaNode{
-							"street": {Type: schema.SchemaType{"string"}},
-						},
-					},
-				},
-			},
+			InputSchema: mustSchemaPtr(`{
+				"type": "object",
+				"properties": {"addr": {"$ref": "#/$defs/Address"}},
+				"$defs": {"Address": {"type": "object", "properties": {"street": {"type": "string"}}}}
+			}`),
 		}
 		if err := d.Normalize(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if d.InputSchema.Defs == nil || d.InputSchema.Defs["Address"] == nil {
+		if !d.InputSchema.DefsHandle().Has("Address") {
 			t.Fatal("$defs/Address missing after normalize")
 		}
-		if d.InputSchema.Properties == nil {
+		if !d.InputSchema.HasProperties() {
 			t.Fatal("properties missing after normalize")
 		}
 	})
 
 	t.Run("task action.result_schema $defs are flattened to root", func(t *testing.T) {
 		task := validTask("charge")
-		task.Action.ResultSchema = &schema.SchemaNode{
-			Type: schema.SchemaType{"object"},
-			Defs: map[string]*schema.SchemaNode{
-				"Result": {
-					Type:       schema.SchemaType{"object"},
-					Properties: map[string]*schema.SchemaNode{"ok": {Type: schema.SchemaType{"boolean"}}},
-				},
-			},
-			Properties: map[string]*schema.SchemaNode{
-				"result": {Ref: "#/$defs/Result"},
-			},
-		}
+		task.Action.ResultSchema = mustSchemaPtr(`{
+			"type": "object",
+			"$defs": {"Result": {"type": "object", "properties": {"ok": {"type": "boolean"}}}},
+			"properties": {"result": {"$ref": "#/$defs/Result"}}
+		}`)
 		d := ProcessDefinition{Name: "p", Tasks: []*Task{task}}
 		if err := d.Normalize(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if task.Action.ResultSchema.Defs == nil || task.Action.ResultSchema.Defs["Result"] == nil {
+		if !task.Action.ResultSchema.DefsHandle().Has("Result") {
 			t.Fatal("$defs/Result missing in action.result_schema after normalize")
 		}
 	})
 
 	t.Run("all task action.result_schemas are normalized", func(t *testing.T) {
 		step1 := validTask("charge")
-		step1.Action.ResultSchema = &schema.SchemaNode{
-			Type: schema.SchemaType{"object"},
-			Defs: map[string]*schema.SchemaNode{"Tracking": {Type: schema.SchemaType{"object"}}},
-			Properties: map[string]*schema.SchemaNode{
-				"tracking": {Ref: "#/$defs/Tracking"},
-			},
-		}
+		step1.Action.ResultSchema = mustSchemaPtr(`{
+			"type": "object",
+			"$defs": {"Tracking": {"type": "object"}},
+			"properties": {"tracking": {"$ref": "#/$defs/Tracking"}}
+		}`)
 		step2 := validTask("notify")
-		step2.Action.ResultSchema = &schema.SchemaNode{
-			Type: schema.SchemaType{"object"},
-			Defs: map[string]*schema.SchemaNode{"Result": {Type: schema.SchemaType{"object"}}},
-			Properties: map[string]*schema.SchemaNode{
-				"result": {Ref: "#/$defs/Result"},
-			},
-		}
+		step2.Action.ResultSchema = mustSchemaPtr(`{
+			"type": "object",
+			"$defs": {"Result": {"type": "object"}},
+			"properties": {"result": {"$ref": "#/$defs/Result"}}
+		}`)
 		d := ProcessDefinition{Name: "p", Tasks: []*Task{step1, step2}}
 		if err := d.Normalize(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if step1.Action.ResultSchema.Defs == nil || step1.Action.ResultSchema.Defs["Tracking"] == nil {
+		if !step1.Action.ResultSchema.DefsHandle().Has("Tracking") {
 			t.Fatal("step1 $defs/Tracking missing after normalize")
 		}
-		if step2.Action.ResultSchema.Defs == nil || step2.Action.ResultSchema.Defs["Result"] == nil {
+		if !step2.Action.ResultSchema.DefsHandle().Has("Result") {
 			t.Fatal("step2 $defs/Result missing after normalize")
 		}
 	})
@@ -118,10 +106,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 	t.Run("invalid $ref in InputSchema returns error", func(t *testing.T) {
 		d := ProcessDefinition{
 			Name: "p", Tasks: []*Task{validTask("s1")},
-			InputSchema: &schema.SchemaNode{
-				Type:       schema.SchemaType{"object"},
-				Properties: map[string]*schema.SchemaNode{"x": {Ref: "#/$defs/Missing"}},
-			},
+			InputSchema: mustSchemaPtr(`{"type":"object","properties":{"x":{"$ref":"#/$defs/Missing"}}}`),
 		}
 		if err := d.Normalize(); err == nil {
 			t.Fatal("expected error for unresolved $ref, got nil")
@@ -130,10 +115,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 
 	t.Run("invalid $ref in task action.result_schema returns error with task ID", func(t *testing.T) {
 		task := validTask("charge")
-		task.Action.ResultSchema = &schema.SchemaNode{
-			Type:       schema.SchemaType{"object"},
-			Properties: map[string]*schema.SchemaNode{"x": {Ref: "#/$defs/Missing"}},
-		}
+		task.Action.ResultSchema = mustSchemaPtr(`{"type":"object","properties":{"x":{"$ref":"#/$defs/Missing"}}}`)
 		d := ProcessDefinition{Name: "p", Tasks: []*Task{task}}
 		err := d.Normalize()
 		if err == nil {
@@ -150,13 +132,11 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 			Action: &Action{
 				Type: ActionTypeChildParallel,
 				Children: map[string]ChildEntry{
-					"a": {Name: "worker", ResultSchema: &schema.SchemaNode{
-						Type: schema.SchemaType{"object"},
-						Defs: map[string]*schema.SchemaNode{
-							"Result": {Type: schema.SchemaType{"object"}},
-						},
-						Properties: map[string]*schema.SchemaNode{"r": {Ref: "#/$defs/Result"}},
-					}},
+					"a": {Name: "worker", ResultSchema: mustSchemaPtr(`{
+						"type": "object",
+						"$defs": {"Result": {"type": "object"}},
+						"properties": {"r": {"$ref": "#/$defs/Result"}}
+					}`)},
 				},
 			},
 			Switch: SwitchMap{{Goto: GotoEnd}},
@@ -166,7 +146,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		entry := task.Action.Children["a"]
-		if entry.ResultSchema == nil || entry.ResultSchema.Defs == nil || entry.ResultSchema.Defs["Result"] == nil {
+		if entry.ResultSchema == nil || !entry.ResultSchema.DefsHandle().Has("Result") {
 			t.Fatal("$defs/Result missing in children[a].result_schema after normalize")
 		}
 	})
@@ -174,24 +154,19 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 	t.Run("unused $defs are removed from InputSchema", func(t *testing.T) {
 		d := ProcessDefinition{
 			Name: "p", Tasks: []*Task{validTask("s1")},
-			InputSchema: &schema.SchemaNode{
-				Type: schema.SchemaType{"object"},
-				Defs: map[string]*schema.SchemaNode{
-					"Used":   {Type: schema.SchemaType{"string"}},
-					"Unused": {Type: schema.SchemaType{"integer"}},
-				},
-				Properties: map[string]*schema.SchemaNode{
-					"name": {Ref: "#/$defs/Used"},
-				},
-			},
+			InputSchema: mustSchemaPtr(`{
+				"type": "object",
+				"$defs": {"Used": {"type": "string"}, "Unused": {"type": "integer"}},
+				"properties": {"name": {"$ref": "#/$defs/Used"}}
+			}`),
 		}
 		if err := d.Normalize(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if d.InputSchema.Defs == nil || d.InputSchema.Defs["Used"] == nil {
+		if !d.InputSchema.DefsHandle().Has("Used") {
 			t.Fatal("$defs/Used should be present")
 		}
-		if d.InputSchema.Defs["Unused"] != nil {
+		if d.InputSchema.DefsHandle().Has("Unused") {
 			t.Fatal("$defs/Unused should have been removed as unused")
 		}
 	})
@@ -566,7 +541,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
 					ID:      "charge",
-					Action:    &Action{Type: ActionTypeREST, Endpoint: "http://x"},
+					Action:  &Action{Type: ActionTypeREST, Endpoint: "http://x"},
 					Switch:  SwitchMap{{Goto: GotoEnd}},
 					OnError: []ErrorCase{{Code: []string{"http.%"}, Retries: 3}},
 				},
@@ -598,14 +573,14 @@ func TestProcessDefinition_Validate(t *testing.T) {
 func TestProcessDefinition_ValidateInput_Nullable(t *testing.T) {
 	def := ProcessDefinition{
 		Name: "p",
-		InputSchema: &schema.SchemaNode{
-			Type:     schema.SchemaType{"object"},
-			Required: []string{"id"},
-			Properties: map[string]*schema.SchemaNode{
-				"id":      {Type: schema.SchemaType{"integer"}},
-				"comment": {Type: schema.SchemaType{"string", "null"}},
-			},
-		},
+		InputSchema: mustSchemaPtr(`{
+			"type": "object",
+			"required": ["id"],
+			"properties": {
+				"id":      {"type": "integer"},
+				"comment": {"type": ["string", "null"]}
+			}
+		}`),
 		Tasks: []*Task{{ID: "s", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"}}},
 	}
 
@@ -662,14 +637,14 @@ func TestStep_ValidateOutput_Nullable(t *testing.T) {
 		Action: &Action{
 			Type:     ActionTypeREST,
 			Endpoint: "http://x",
-			ResultSchema: &schema.SchemaNode{
-				Type:     schema.SchemaType{"object"},
-				Required: []string{"charged"},
-				Properties: map[string]*schema.SchemaNode{
-					"charged": {Type: schema.SchemaType{"boolean"}},
-					"receipt": {Type: schema.SchemaType{"string", "null"}},
-				},
-			},
+			ResultSchema: mustSchemaPtr(`{
+				"type": "object",
+				"required": ["charged"],
+				"properties": {
+					"charged": {"type": "boolean"},
+					"receipt": {"type": ["string", "null"]}
+				}
+			}`),
 		},
 	}
 

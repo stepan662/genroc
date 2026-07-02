@@ -39,17 +39,17 @@ func TestValidateDecisionMatchesGojsonschemaDirected(t *testing.T) {
 		if err != nil {
 			t.Fatalf("schema[%d] gojsonschema compile: %v", si, err)
 		}
-		sc, err := schema.Parse([]byte(schemaJSON))
+		rawSc, err := schema.Parse([]byte(schemaJSON))
 		if err != nil {
 			t.Fatalf("schema[%d] schema.Parse: %v", si, err)
 		}
-		node := sc.Node()
+		sc := rawSc.AssumeNormalized()
 
 		r := rand.New(rand.NewSource(int64(seed) + int64(si)))
 		var nValid, nInvalid int
 		for i := 0; i < itersPerSchema; i++ {
 			// Round-trip so both validators see identical JSON typing.
-			raw, err := json.Marshal(genFromSchema(r, node, node.Defs, 4))
+			raw, err := json.Marshal(genFromSchema(r, sc, 4))
 			if err != nil {
 				continue
 			}
@@ -84,38 +84,36 @@ func TestValidateDecisionMatchesGojsonschemaDirected(t *testing.T) {
 	}
 }
 
-// genFromSchema builds a value shaped by node. It is deliberately imperfect: it
+// genFromSchema builds a value shaped by s. It is deliberately imperfect: it
 // straddles numeric/length/item bounds and occasionally drops a required property
 // or emits a wrong-typed value, so the corpus spans valid, boundary, and invalid.
-func genFromSchema(r *rand.Rand, node *schema.SchemaNode, defs map[string]*schema.SchemaNode, depth int) any {
-	node, err := schema.Deref(node, defs)
-	if err != nil || node == nil {
+func genFromSchema(r *rand.Rand, s schema.Schema, depth int) any {
+	resolved, err := s.Resolve()
+	if err != nil || resolved.IsZero() {
 		return randScalar(r)
 	}
 	// ~1 in 12: emit a wrong-shaped value to force a type error at this node.
 	if r.Intn(12) == 0 {
 		return randScalar(r)
 	}
-	if len(node.OneOf) > 0 {
-		return genFromSchema(r, node.OneOf[r.Intn(len(node.OneOf))], defs, depth)
+	if variants := resolved.Variants(); len(variants) > 0 {
+		return genFromSchema(r, variants[r.Intn(len(variants))], depth)
 	}
-	if len(node.AnyOf) > 0 {
-		return genFromSchema(r, node.AnyOf[r.Intn(len(node.AnyOf))], defs, depth)
-	}
-	if len(node.Enum) > 0 {
+	if enum := resolved.Enum(); len(enum) > 0 {
 		if r.Intn(4) == 0 {
 			return "definitely-not-in-enum"
 		}
-		return node.Enum[r.Intn(len(node.Enum))]
+		return enum[r.Intn(len(enum))]
 	}
 
 	typ := "object"
 	switch {
-	case len(node.Type) > 0:
-		typ = node.Type[r.Intn(len(node.Type))]
-	case node.Properties != nil:
+	case len(resolved.Type()) > 0:
+		ts := resolved.Type()
+		typ = ts[r.Intn(len(ts))]
+	case resolved.HasProperties():
 		typ = "object"
-	case node.Items != nil:
+	case resolved.HasItems():
 		typ = "array"
 	default:
 		return randScalar(r)
@@ -127,24 +125,25 @@ func genFromSchema(r *rand.Rand, node *schema.SchemaNode, defs map[string]*schem
 	case "boolean":
 		return r.Intn(2) == 0
 	case "integer":
-		return genBoundedInt(r, node)
+		return genBoundedInt(r, resolved)
 	case "number":
-		return float64(genBoundedInt(r, node)) + 0.5*float64(r.Intn(2))
+		return float64(genBoundedInt(r, resolved)) + 0.5*float64(r.Intn(2))
 	case "string":
-		return genBoundedString(r, node)
+		return genBoundedString(r, resolved)
 	case "array":
-		return genArray(r, node, defs, depth)
+		return genArray(r, resolved, depth)
 	default: // object
-		return genObject(r, node, defs, depth)
+		return genObject(r, resolved, depth)
 	}
 }
 
-func genObject(r *rand.Rand, node *schema.SchemaNode, defs map[string]*schema.SchemaNode, depth int) any {
+func genObject(r *rand.Rand, s schema.Schema, depth int) any {
 	obj := map[string]any{}
-	for name, prop := range node.Properties {
-		required := contains(node.Required, name)
-		include := required || r.Intn(2) == 0
-		if required && r.Intn(10) == 0 {
+	required := s.Required()
+	for name, prop := range s.Properties() {
+		req := contains(required, name)
+		include := req || r.Intn(2) == 0
+		if req && r.Intn(10) == 0 {
 			include = false // occasionally drop a required field → invalid
 		}
 		if !include {
@@ -153,7 +152,7 @@ func genObject(r *rand.Rand, node *schema.SchemaNode, defs map[string]*schema.Sc
 		if depth <= 0 {
 			obj[name] = randScalar(r)
 		} else {
-			obj[name] = genFromSchema(r, prop, defs, depth-1)
+			obj[name] = genFromSchema(r, prop, depth-1)
 		}
 	}
 	if r.Intn(3) == 0 {
@@ -162,13 +161,13 @@ func genObject(r *rand.Rand, node *schema.SchemaNode, defs map[string]*schema.Sc
 	return obj
 }
 
-func genArray(r *rand.Rand, node *schema.SchemaNode, defs map[string]*schema.SchemaNode, depth int) any {
+func genArray(r *rand.Rand, s schema.Schema, depth int) any {
 	lo, hi := 0, 3
-	if node.MinItems != nil {
-		lo = *node.MinItems - 1
+	if min, ok := s.MinItems(); ok {
+		lo = min - 1
 	}
-	if node.MaxItems != nil {
-		hi = *node.MaxItems + 1
+	if max, ok := s.MaxItems(); ok {
+		hi = max + 1
 	}
 	if lo < 0 {
 		lo = 0
@@ -178,11 +177,12 @@ func genArray(r *rand.Rand, node *schema.SchemaNode, defs map[string]*schema.Sch
 	}
 	n := lo + r.Intn(hi-lo+1)
 	arr := make([]any, n)
+	items := s.Items()
 	for i := range arr {
 		if depth <= 0 {
 			arr[i] = randScalar(r)
 		} else {
-			arr[i] = genFromSchema(r, node.Items, defs, depth-1)
+			arr[i] = genFromSchema(r, items, depth-1)
 		}
 	}
 	return arr
@@ -190,13 +190,13 @@ func genArray(r *rand.Rand, node *schema.SchemaNode, defs map[string]*schema.Sch
 
 // genBoundedInt returns an int that straddles [minimum, maximum] so off-by-one
 // boundary cases (which must decide identically on both sides) show up often.
-func genBoundedInt(r *rand.Rand, node *schema.SchemaNode) int {
+func genBoundedInt(r *rand.Rand, s schema.Schema) int {
 	lo, hi := -4, 14
-	if node.Minimum != nil {
-		lo = int(*node.Minimum) - 2
+	if min, ok := s.Minimum(); ok {
+		lo = int(min) - 2
 	}
-	if node.Maximum != nil {
-		hi = int(*node.Maximum) + 2
+	if max, ok := s.Maximum(); ok {
+		hi = int(max) + 2
 	}
 	if hi <= lo {
 		hi = lo + 1
@@ -205,13 +205,13 @@ func genBoundedInt(r *rand.Rand, node *schema.SchemaNode) int {
 }
 
 // genBoundedString returns a string whose length straddles [minLength, maxLength].
-func genBoundedString(r *rand.Rand, node *schema.SchemaNode) string {
+func genBoundedString(r *rand.Rand, s schema.Schema) string {
 	lo, hi := 0, 6
-	if node.MinLength != nil {
-		lo = *node.MinLength - 1
+	if min, ok := s.MinLength(); ok {
+		lo = min - 1
 	}
-	if node.MaxLength != nil {
-		hi = *node.MaxLength + 1
+	if max, ok := s.MaxLength(); ok {
+		hi = max + 1
 	}
 	if lo < 0 {
 		lo = 0
@@ -239,13 +239,4 @@ func randScalar(r *rand.Rand) any {
 	default:
 		return []any{r.Intn(3)}
 	}
-}
-
-func contains(xs []string, v string) bool {
-	for _, x := range xs {
-		if x == v {
-			return true
-		}
-	}
-	return false
 }

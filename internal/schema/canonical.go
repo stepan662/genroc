@@ -2,6 +2,7 @@ package schema
 
 import (
 	"encoding/json"
+	"math"
 	"sort"
 )
 
@@ -18,21 +19,21 @@ import (
 // nullable case — merges them into one sorted {type:[...]} array (allOf is an
 // intersection and is never merged this way). Type and Required arrays are
 // sorted and deduped. It is idempotent.
-func Canonicalize(s *SchemaNode) *SchemaNode {
+func canonicalizeNode(s *node) *node {
 	if s == nil {
 		return nil
 	}
 	n := *s
 
 	if s.Properties != nil {
-		props := make(map[string]*SchemaNode, len(s.Properties))
+		props := make(map[string]*node, len(s.Properties))
 		for k, v := range s.Properties {
-			props[k] = Canonicalize(v)
+			props[k] = canonicalizeNode(v)
 		}
 		n.Properties = props
 	}
 	if s.Items != nil {
-		n.Items = Canonicalize(s.Items)
+		n.Items = canonicalizeNode(s.Items)
 	}
 	n.Type = SchemaType(sortDedupStrings([]string(s.Type)))
 	n.Required = sortDedupStrings(s.Required)
@@ -54,13 +55,13 @@ const (
 // canonVariants canonicalizes each variant, flattens a variant that is itself a
 // pure composition of the same kind (oneOf-in-oneOf, allOf-in-allOf, …), then
 // dedups and sorts by canonical JSON for a stable order.
-func canonVariants(vs []*SchemaNode, kind compositionKind) []*SchemaNode {
+func canonVariants(vs []*node, kind compositionKind) []*node {
 	if len(vs) == 0 {
 		return nil
 	}
-	flat := make([]*SchemaNode, 0, len(vs))
+	flat := make([]*node, 0, len(vs))
 	for _, v := range vs {
-		cv := Canonicalize(v)
+		cv := canonicalizeNode(v)
 		if cv == nil {
 			continue
 		}
@@ -71,7 +72,7 @@ func canonVariants(vs []*SchemaNode, kind compositionKind) []*SchemaNode {
 		}
 	}
 	seen := make(map[string]struct{}, len(flat))
-	out := make([]*SchemaNode, 0, len(flat))
+	out := make([]*node, 0, len(flat))
 	for _, v := range flat {
 		key := nodeCanonJSON(v)
 		if _, dup := seen[key]; dup {
@@ -89,7 +90,7 @@ func canonVariants(vs []*SchemaNode, kind compositionKind) []*SchemaNode {
 // for a union (oneOf/anyOf) whose variants are all simple primitives — including
 // "null" — the variants merge into one sorted {type:[...]} array. An allOf is an
 // intersection, so it only unwraps a singleton.
-func collapse(n *SchemaNode) *SchemaNode {
+func collapse(n *node) *node {
 	// Unions (oneOf/anyOf): a singleton unwraps and an all-simple union merges into
 	// a {type:[...]} array; otherwise n already carries the canonical variants.
 	if vs, ok := pureComposition(n, kindOneOf); ok {
@@ -108,7 +109,7 @@ func collapse(n *SchemaNode) *SchemaNode {
 	return n
 }
 
-func collapseUnion(n *SchemaNode, variants []*SchemaNode) *SchemaNode {
+func collapseUnion(n *node, variants []*node) *node {
 	if len(variants) == 1 {
 		return variants[0]
 	}
@@ -120,7 +121,7 @@ func collapseUnion(n *SchemaNode, variants []*SchemaNode) *SchemaNode {
 
 // pureComposition returns the variants of s if s carries exactly the given
 // composition keyword and no other type-constraining fields, else (nil, false).
-func pureComposition(s *SchemaNode, kind compositionKind) ([]*SchemaNode, bool) {
+func pureComposition(s *node, kind compositionKind) ([]*node, bool) {
 	if s == nil {
 		return nil, false
 	}
@@ -149,7 +150,7 @@ func pureComposition(s *SchemaNode, kind compositionKind) ([]*SchemaNode, bool) 
 // mergeSimpleVariants merges a union whose every variant is one or more primitive
 // types with no other constraints into one {type:[...]} node (sorted, deduped).
 // Returns (nil, false) if any variant is not simple.
-func mergeSimpleVariants(variants []*SchemaNode) (*SchemaNode, bool) {
+func mergeSimpleVariants(variants []*node) (*node, bool) {
 	types := make([]string, 0, len(variants))
 	for _, v := range variants {
 		if !isSimpleType(v) {
@@ -157,13 +158,13 @@ func mergeSimpleVariants(variants []*SchemaNode) (*SchemaNode, bool) {
 		}
 		types = append(types, v.Type...)
 	}
-	return &SchemaNode{Type: SchemaType(sortDedupStrings(types))}, true
+	return &node{Type: SchemaType(sortDedupStrings(types))}, true
 }
 
 // isSimpleType reports whether s is one or more primitive types with no other
 // type-constraining fields (the shape mergeSimpleVariants can fold into a type
 // array — including an already-merged multi-entry {type:[...]}).
-func isSimpleType(s *SchemaNode) bool {
+func isSimpleType(s *node) bool {
 	if s == nil || len(s.Type) == 0 {
 		return false
 	}
@@ -189,14 +190,20 @@ func sortDedupStrings(in []string) []string {
 	return out
 }
 
-func nodeCanonJSON(s *SchemaNode) string {
+func nodeCanonJSON(s *node) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
 
 // Size is the byte length of s's canonical JSON — a cheap proxy for type
 // complexity, used to bound the recursive-inference fixpoint against a
-// non-converging type that grows without limit.
-func Size(s *SchemaNode) int {
-	return len(nodeCanonJSON(Canonicalize(s)))
+// non-converging type that grows without limit. A schema that cannot be
+// marshaled (e.g. a reference cycle) is treated as infinitely large rather than
+// empty, so the growth bound fails loudly instead of masking the problem.
+func nodeSize(s *node) int {
+	b, err := json.Marshal(canonicalizeNode(s))
+	if err != nil {
+		return math.MaxInt
+	}
+	return len(b)
 }

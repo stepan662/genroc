@@ -180,13 +180,15 @@ func TestValidateEmptySchemaPassesThrough(t *testing.T) {
 	assertNormalized(t, `{}`, `{"anything":[1,2,3]}`, `{"anything":[1,2,3]}`)
 }
 
-func TestValidateNilSchema(t *testing.T) {
-	got, err := schema.FromNode(nil).Validate(mustData(t, `{"a":1}`))
+func TestValidateZeroSchema(t *testing.T) {
+	// The zero Schema (no underlying document) accepts anything unchanged.
+	var zero schema.Schema
+	got, err := zero.Validate(mustData(t, `{"a":1}`))
 	if err != nil {
-		t.Fatalf("nil schema: %v", err)
+		t.Fatalf("zero schema: %v", err)
 	}
 	if !reflect.DeepEqual(got, mustData(t, `{"a":1}`)) {
-		t.Errorf("nil schema should pass data through, got %v", got)
+		t.Errorf("zero schema should pass data through, got %v", got)
 	}
 }
 

@@ -36,10 +36,10 @@ const (
 
 // ChildEntry describes a single named child process in a "child_parallel" call.
 type ChildEntry struct {
-	Name         string             `json:"name"                    description:"Name of the child process to invoke."`
-	Version      int                `json:"version,omitempty"       description:"Version to run; 0 means latest published version."`
-	Input        *Shape             `json:"input,omitempty"         description:"Templated value (a string expression or nested object of expressions) evaluated against the current context to build the child's input payload."`
-	ResultSchema *schema.SchemaNode `json:"result_schema,omitempty" description:"JSON Schema to validate and expose this child's output."`
+	Name         string         `json:"name"                    description:"Name of the child process to invoke."`
+	Version      int            `json:"version,omitempty"       description:"Version to run; 0 means latest published version."`
+	Input        *Shape         `json:"input,omitempty"         description:"Templated value (a string expression or nested object of expressions) evaluated against the current context to build the child's input payload."`
+	ResultSchema *schema.Schema `json:"result_schema,omitempty" description:"JSON Schema to validate and expose this child's output."`
 }
 
 // Action describes how to invoke a task's action. It is a discriminated union on Type.
@@ -61,16 +61,16 @@ type ChildEntry struct {
 //
 // AcceptedStatus (rest only): HTTP status patterns treated as non-errors. Defaults to any 2xx.
 type Action struct {
-	Type           ActionType               `json:"type"`
-	Endpoint       string                 `json:"endpoint,omitempty"`        // rest
-	Headers        map[string]string      `json:"headers,omitempty"`         // rest, values are expressions
-	AcceptedStatus []string               `json:"accepted_status,omitempty"` // rest: HTTP status patterns accepted as non-errors
-	ResultSchema   *schema.SchemaNode     `json:"result_schema,omitempty"`   // rest/child: validate & persist output
-	Name           string                 `json:"name,omitempty"`            // child
-	Version        int                    `json:"version,omitempty"`         // child
-	Input          *Shape                 `json:"input,omitempty"`           // rest/child: templated input payload
-	Children       map[string]ChildEntry  `json:"children,omitempty"`        // child_parallel
-	Ms             string                 `json:"ms,omitempty"`              // delay: milliseconds to pause, as an expression
+	Type           ActionType            `json:"type"`
+	Endpoint       string                `json:"endpoint,omitempty"`        // rest
+	Headers        map[string]string     `json:"headers,omitempty"`         // rest, values are expressions
+	AcceptedStatus []string              `json:"accepted_status,omitempty"` // rest: HTTP status patterns accepted as non-errors
+	ResultSchema   *schema.Schema        `json:"result_schema,omitempty"`   // rest/child: validate & persist output
+	Name           string                `json:"name,omitempty"`            // child
+	Version        int                   `json:"version,omitempty"`         // child
+	Input          *Shape                `json:"input,omitempty"`           // rest/child: templated input payload
+	Children       map[string]ChildEntry `json:"children,omitempty"`        // child_parallel
+	Ms             string                `json:"ms,omitempty"`              // delay: milliseconds to pause, as an expression
 }
 
 // JSONSchemaBytes returns the JSON Schema for Action as a discriminated union
@@ -351,10 +351,10 @@ func checkShape(n any) error {
 // Rules are evaluated in order; the first match applies.
 // An empty Code list is a catch-all matching any error.
 type ErrorCase struct {
-	Code        []string `json:"code,omitempty"        description:"SQL LIKE patterns matched against the error code. '%' = any chars, '_' = one char. Empty = catch-all. Known codes — REST: http.NNN (e.g. http.500), http.timeout, pre.error, pre.timeout, output.parse, output.invalid; Script: script.N (exit code, e.g. script.1), script.timeout, pre.exec, output.parse; Child process: output.invalid. pre.* codes mean the call never reached the remote. Note: child.failed cannot be caught here — handle errors inside the child process and communicate them via return data."`
-	Retries     int      `json:"retries,omitempty"     description:"Number of retries before following goto or failing. 0 = no retries. On only_once:true tasks only pre.* codes (or rules with not_reached:true) may have retries > 0."`
-	Goto        string   `json:"goto,omitempty"        description:"Task to route to when retries are exhausted. '$task-id' or 'end'. Omit to fail the instance."`
-	NotReached  *bool    `json:"not_reached,omitempty" description:"Assert that this error code means the remote call was never reached. When true, retries are allowed even on only_once:true tasks. Omit to use the engine's default classification (pre.* = not reached, everything else = potentially reached)."`
+	Code       []string `json:"code,omitempty"        description:"SQL LIKE patterns matched against the error code. '%' = any chars, '_' = one char. Empty = catch-all. Known codes — REST: http.NNN (e.g. http.500), http.timeout, pre.error, pre.timeout, output.parse, output.invalid; Script: script.N (exit code, e.g. script.1), script.timeout, pre.exec, output.parse; Child process: output.invalid. pre.* codes mean the call never reached the remote. Note: child.failed cannot be caught here — handle errors inside the child process and communicate them via return data."`
+	Retries    int      `json:"retries,omitempty"     description:"Number of retries before following goto or failing. 0 = no retries. On only_once:true tasks only pre.* codes (or rules with not_reached:true) may have retries > 0."`
+	Goto       string   `json:"goto,omitempty"        description:"Task to route to when retries are exhausted. '$task-id' or 'end'. Omit to fail the instance."`
+	NotReached *bool    `json:"not_reached,omitempty" description:"Assert that this error code means the remote call was never reached. When true, retries are allowed even on only_once:true tasks. Omit to use the engine's default classification (pre.* = not reached, everything else = potentially reached)."`
 }
 
 func (e ErrorCase) MarshalJSON() ([]byte, error) {
@@ -414,31 +414,31 @@ func (e *ErrorCase) UnmarshalJSON(data []byte) error {
 // "end" terminates the instance; "next" advances to the next task in the list
 // (invalid on the last task — use "end" instead); "$task-id" jumps to a named task.
 type Task struct {
-	ID        string            `json:"id"                 validate:"required" description:"Unique task identifier. 'end' and 'next' are reserved and cannot be used."`
-	Action      *Action             `json:"action,omitempty"                        description:"Describes the action to perform. Omit for switch-only (routing) tasks."`
-	TimeoutMs int               `json:"timeout_ms,omitempty"                  description:"Maximum execution time in milliseconds. 0 means no timeout."`
-	OnlyOnce  *bool             `json:"only_once,omitempty"                   description:"When true, the engine guarantees at-most-once execution: retries are only allowed for pre.* errors (remote never reached) or on_error rules with not_reached:true. Defaults to false (retryable)."`
-	OnError   []ErrorCase       `json:"on_error,omitempty"                    description:"Ordered error-routing rules evaluated when the call fails. First match wins."`
-	Output    *Shape            `json:"output,omitempty"                      description:"Templated value that remaps this task's output. Evaluated against the context plus self.result (the action's raw result) and self.previous (this task's prior output). When set, this value is stored as outputs.taskID and seen by the switch as self.output; the raw result is not exported."`
-	Switch    SwitchMap         `json:"switch"                                description:"Required. Routing declaration: scalar shorthand (\"next\", \"end\", \"$task-id\") or an ordered list of conditional cases. The last case must be a catch-all (omit 'case')."`
+	ID        string      `json:"id"                 validate:"required" description:"Unique task identifier. 'end' and 'next' are reserved and cannot be used."`
+	Action    *Action     `json:"action,omitempty"                        description:"Describes the action to perform. Omit for switch-only (routing) tasks."`
+	TimeoutMs int         `json:"timeout_ms,omitempty"                  description:"Maximum execution time in milliseconds. 0 means no timeout."`
+	OnlyOnce  *bool       `json:"only_once,omitempty"                   description:"When true, the engine guarantees at-most-once execution: retries are only allowed for pre.* errors (remote never reached) or on_error rules with not_reached:true. Defaults to false (retryable)."`
+	OnError   []ErrorCase `json:"on_error,omitempty"                    description:"Ordered error-routing rules evaluated when the call fails. First match wins."`
+	Output    *Shape      `json:"output,omitempty"                      description:"Templated value that remaps this task's output. Evaluated against the context plus self.result (the action's raw result) and self.previous (this task's prior output). When set, this value is stored as outputs.taskID and seen by the switch as self.output; the raw result is not exported."`
+	Switch    SwitchMap   `json:"switch"                                description:"Required. Routing declaration: scalar shorthand (\"next\", \"end\", \"$task-id\") or an ordered list of conditional cases. The last case must be a catch-all (omit 'case')."`
 }
 
 // ProcessDefinition is the immutable versioned blueprint for a process.
 // Versions are assigned by the server on apply; never include a version when submitting definitions.
 type ProcessDefinition struct {
-	Name         string             `json:"name"         validate:"required" description:"Unique process identifier."`
-	Tasks        []*Task            `json:"tasks"        validate:"required,min=1,dive" description:"Ordered list of execution tasks. Control advances linearly unless a switch case redirects."`
-	InputSchema  *schema.SchemaNode `json:"input_schema,omitempty"          description:"JSON Schema used to validate the input payload when starting a new instance."`
-	ConfigSchema *schema.SchemaNode `json:"config_schema,omitempty"         description:"JSON Schema — a flat object whose properties are primitive values (string/integer/number/boolean) — declaring configuration variables. Each is resolved at runtime from GENROC_<PROCESS>_<NAME> (falling back to GENROC_GLOBAL_<NAME>) in the server environment, coerced to its declared type, and exposed to expressions as config.<NAME>. A property may set secret:true to redact its value from logs."`
-	Output       *Shape             `json:"output,omitempty"                description:"Templated value (a string expression or nested object of expressions) evaluated at completion to produce the process output."`
+	Name         string         `json:"name"         validate:"required" description:"Unique process identifier."`
+	Tasks        []*Task        `json:"tasks"        validate:"required,min=1,dive" description:"Ordered list of execution tasks. Control advances linearly unless a switch case redirects."`
+	InputSchema  *schema.Schema `json:"input_schema,omitempty"          description:"JSON Schema used to validate the input payload when starting a new instance."`
+	ConfigSchema *schema.Schema `json:"config_schema,omitempty"         description:"JSON Schema — a flat object whose properties are primitive values (string/integer/number/boolean) — declaring configuration variables. Each is resolved at runtime from GENROC_<PROCESS>_<NAME> (falling back to GENROC_GLOBAL_<NAME>) in the server environment, coerced to its declared type, and exposed to expressions as config.<NAME>. A property may set secret:true to redact its value from logs."`
+	Output       *Shape         `json:"output,omitempty"                description:"Templated value (a string expression or nested object of expressions) evaluated at completion to produce the process output."`
 }
 
 // Normalize normalizes InputSchema and all task OutputSchemas in-place using the
 // schema package (flattens $defs to root, removes unused definitions, rewrites $refs).
 func (d *ProcessDefinition) Normalize() error {
-	norm := func(n *schema.SchemaNode) (*schema.SchemaNode, error) {
-		out, err := schema.FromNode(n).Normalize()
-		return out.Node(), err
+	norm := func(s *schema.Schema) (*schema.Schema, error) {
+		out, err := s.Normalize()
+		return &out, err
 	}
 	if d.InputSchema != nil {
 		normalized, err := norm(d.InputSchema)
@@ -697,25 +697,26 @@ var configNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // combinators, or $ref. Property names must be identifiers (used as config.<name>
 // in expressions) and must not collide once normalized to their environment
 // variable suffix. A required property may not also carry a default.
-func validateConfigSchema(cs *schema.SchemaNode) error {
+func validateConfigSchema(cs *schema.Schema) error {
 	if cs == nil {
 		return nil
 	}
-	if len(cs.Type) != 1 || !cs.Type.Contains("object") {
+	if t := cs.Type(); len(t) != 1 || !t.Contains("object") {
 		return errors.New("config_schema must be type \"object\"")
 	}
-	if len(cs.OneOf)+len(cs.AnyOf)+len(cs.AllOf) > 0 || cs.Ref != "" || len(cs.Defs) > 0 {
+	if cs.HasCombinators() || cs.HasRef() || cs.HasDefs() {
 		return errors.New("config_schema must not use oneOf/anyOf/allOf/$ref/$defs")
 	}
-	required := make(map[string]bool, len(cs.Required))
-	for _, r := range cs.Required {
-		if _, ok := cs.Properties[r]; !ok {
+	props := cs.Properties()
+	required := make(map[string]bool, len(cs.Required()))
+	for _, r := range cs.Required() {
+		if _, ok := props[r]; !ok {
 			return fmt.Errorf("config_schema: required lists unknown property %q", r)
 		}
 		required[r] = true
 	}
-	envKeys := make(map[string]string, len(cs.Properties))
-	for name, prop := range cs.Properties {
+	envKeys := make(map[string]string, len(props))
+	for name, prop := range props {
 		if !configNameRe.MatchString(name) {
 			return fmt.Errorf("config %q: name must be a valid identifier [A-Za-z_][A-Za-z0-9_]*", name)
 		}
@@ -724,29 +725,30 @@ func validateConfigSchema(cs *schema.SchemaNode) error {
 			return fmt.Errorf("config %q and %q both map to the same environment variable suffix %q", name, prev, key)
 		}
 		envKeys[key] = name
-		if prop == nil || len(prop.Type) != 1 {
+		pt := prop.Type()
+		if len(pt) != 1 {
 			return fmt.Errorf("config %q: must declare a single primitive type (string, integer, number, or boolean)", name)
 		}
-		switch prop.Type[0] {
+		switch pt[0] {
 		case "string", "integer", "number", "boolean":
 		default:
-			return fmt.Errorf("config %q: unsupported type %q (use string, integer, number, or boolean)", name, prop.Type[0])
+			return fmt.Errorf("config %q: unsupported type %q (use string, integer, number, or boolean)", name, pt[0])
 		}
-		if len(prop.Properties) > 0 || prop.Items != nil || len(prop.OneOf)+len(prop.AnyOf)+len(prop.AllOf) > 0 || prop.Ref != "" {
+		if prop.HasProperties() || prop.HasItems() || prop.HasCombinators() || prop.HasRef() {
 			return fmt.Errorf("config %q: must be a primitive value (no nested objects, arrays, combinators, or $ref)", name)
 		}
-		if required[name] && prop.Default != nil {
+		if required[name] && prop.Default() != nil {
 			return fmt.Errorf("config %q: cannot be both required and have a default", name)
 		}
 	}
 	return nil
 }
 
-func checkSchemaDoc(field string, s *schema.SchemaNode) error {
+func checkSchemaDoc(field string, s *schema.Schema) error {
 	if s == nil {
 		return nil
 	}
-	if err := schema.CheckDoc(s); err != nil {
+	if err := s.CheckDoc(); err != nil {
 		return fmt.Errorf("%s is not a valid JSON Schema: %w", field, err)
 	}
 	return nil
@@ -756,7 +758,10 @@ func checkSchemaDoc(field string, s *schema.SchemaNode) error {
 // (undeclared properties dropped, defaults filled). Returns input unchanged when
 // InputSchema is nil.
 func (d *ProcessDefinition) ValidateInput(input any) (any, error) {
-	return schema.FromNode(d.InputSchema).Validate(input)
+	if d.InputSchema == nil {
+		return input, nil
+	}
+	return d.InputSchema.Validate(input)
 }
 
 // ResolveConfig reads each config var declared in ConfigSchema from the OS
@@ -776,20 +781,21 @@ func (d *ProcessDefinition) ResolveConfig(lookup func(string) (string, bool)) (m
 	}
 	procPrefix := "GENROC_" + envToken(d.Name) + "_"
 	const globalPrefix = "GENROC_GLOBAL_"
-	required := make(map[string]bool, len(d.ConfigSchema.Required))
-	for _, r := range d.ConfigSchema.Required {
+	required := make(map[string]bool, len(d.ConfigSchema.Required()))
+	for _, r := range d.ConfigSchema.Required() {
 		required[r] = true
 	}
-	out := make(map[string]any, len(d.ConfigSchema.Properties))
-	for name, prop := range d.ConfigSchema.Properties {
+	props := d.ConfigSchema.Properties()
+	out := make(map[string]any, len(props))
+	for name, prop := range props {
 		key := envToken(name) // declared name (any case) → UPPER_SNAKE env suffix
 		raw, ok := lookup(procPrefix + key)
 		if !ok || raw == "" {
 			raw, ok = lookup(globalPrefix + key)
 		}
 		if !ok || raw == "" {
-			if prop.Default != nil {
-				out[name] = prop.Default
+			if def := prop.Default(); def != nil {
+				out[name] = def
 				continue
 			}
 			if required[name] {
@@ -797,13 +803,13 @@ func (d *ProcessDefinition) ResolveConfig(lookup func(string) (string, bool)) (m
 			}
 			continue
 		}
-		val, err := coerceConfigValue(name, propType(prop), raw, prop.Secret)
+		val, err := coerceConfigValue(name, propType(prop), raw, prop.IsSecret())
 		if err != nil {
 			return nil, err
 		}
 		out[name] = val
 	}
-	if _, err := schema.FromNode(d.ConfigSchema).Validate(out); err != nil {
+	if _, err := d.ConfigSchema.Validate(out); err != nil {
 		// Schema-validation errors (enum/range) can echo the offending value, so
 		// scrub any secret values that reach the message.
 		msg := err.Error()
@@ -817,9 +823,9 @@ func (d *ProcessDefinition) ResolveConfig(lookup func(string) (string, bool)) (m
 
 // propType returns the single declared type of a primitive config property, or ""
 // (treated as string) when none is set.
-func propType(prop *schema.SchemaNode) string {
-	if prop != nil && len(prop.Type) > 0 {
-		return prop.Type[0]
+func propType(prop schema.Schema) string {
+	if t := prop.Type(); len(t) > 0 {
+		return t[0]
 	}
 	return ""
 }
@@ -875,8 +881,8 @@ func (d *ProcessDefinition) SecretConfigValues(resolved map[string]any) []string
 		return nil
 	}
 	var secrets []string
-	for name, prop := range d.ConfigSchema.Properties {
-		if prop == nil || !prop.Secret {
+	for name, prop := range d.ConfigSchema.Properties() {
+		if !prop.IsSecret() {
 			continue
 		}
 		if v, ok := resolved[name]; ok {
@@ -930,7 +936,10 @@ func coerceConfigValue(name, typ, raw string, secret bool) (any, error) {
 // normalized value (undeclared properties dropped, defaults filled). Returns
 // output unchanged when ResultSchema is nil.
 func (c *Action) ValidateOutput(output any) (any, error) {
-	return schema.FromNode(c.ResultSchema).Validate(output)
+	if c.ResultSchema == nil {
+		return output, nil
+	}
+	return c.ResultSchema.Validate(output)
 }
 
 // v is the shared validator, configured to report JSON field names in errors.
@@ -975,4 +984,3 @@ func describeFieldErr(fe validator.FieldError) string {
 		return fe.Error()
 	}
 }
-

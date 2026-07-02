@@ -3,8 +3,8 @@ package schema
 import "sort"
 
 // Equal reports whether a and b denote the same type, compared in canonical form.
-func Equal(a, b *SchemaNode) bool {
-	return nodeCanonJSON(Canonicalize(a)) == nodeCanonJSON(Canonicalize(b))
+func nodesEqual(a, b *node) bool {
+	return nodeCanonJSON(canonicalizeNode(a)) == nodeCanonJSON(canonicalizeNode(b))
 }
 
 // Join returns the least upper bound of a and b: the narrowest type that admits
@@ -13,49 +13,49 @@ func Equal(a, b *SchemaNode) bool {
 // else becomes a union. Nullability is preserved (the result is nullable if
 // either input is). The result is canonical, which — together with Equal — gives
 // the recursive-inference fixpoint a monotone, terminating accumulation step.
-func Join(a, b *SchemaNode) *SchemaNode {
+func joinNodes(a, b *node) *node {
 	if a == nil {
-		return Canonicalize(b)
+		return canonicalizeNode(b)
 	}
 	if b == nil {
-		return Canonicalize(a)
+		return canonicalizeNode(a)
 	}
-	if Equal(a, b) {
-		return Canonicalize(a)
+	if nodesEqual(a, b) {
+		return canonicalizeNode(a)
 	}
 	// A pure-null operand only contributes nullability; stripping it would leave an
 	// empty schema, so handle it directly: join(x, null) = x made nullable.
-	if IsNullType(a) {
-		return Canonicalize(WithNull(b))
+	if isNullType(a) {
+		return canonicalizeNode(withNull(b))
 	}
-	if IsNullType(b) {
-		return Canonicalize(WithNull(a))
+	if isNullType(b) {
+		return canonicalizeNode(withNull(a))
 	}
 
-	nullable := HasNullType(a) || HasNullType(b)
-	na, nb := StripNull(a), StripNull(b)
+	nullable := hasNullType(a) || hasNullType(b)
+	na, nb := stripNull(a), stripNull(b)
 
-	var res *SchemaNode
+	var res *node
 	switch {
 	case isObjectType(na) && isObjectType(nb):
 		res = joinObjects(na, nb)
 	default:
-		res = &SchemaNode{OneOf: []*SchemaNode{na, nb}}
+		res = &node{OneOf: []*node{na, nb}}
 	}
 	if nullable {
-		res = WithNull(res)
+		res = withNull(res)
 	}
-	return Canonicalize(res)
+	return canonicalizeNode(res)
 }
 
-func isObjectType(s *SchemaNode) bool {
+func isObjectType(s *node) bool {
 	return s != nil && (s.Type.Contains("object") || s.Properties != nil)
 }
 
 // joinObjects merges two object schemas property-wise. A key present on both is
 // joined; a key on only one side is kept but made nullable (it can be absent in
 // the other). A property is required only when both sides require it.
-func joinObjects(a, b *SchemaNode) *SchemaNode {
+func joinObjects(a, b *node) *node {
 	keys := make(map[string]struct{}, len(a.Properties)+len(b.Properties))
 	for k := range a.Properties {
 		keys[k] = struct{}{}
@@ -64,16 +64,16 @@ func joinObjects(a, b *SchemaNode) *SchemaNode {
 		keys[k] = struct{}{}
 	}
 
-	props := make(map[string]*SchemaNode, len(keys))
+	props := make(map[string]*node, len(keys))
 	for k := range keys {
 		av, bv := a.Properties[k], b.Properties[k]
 		switch {
 		case av == nil:
-			props[k] = WithNull(Canonicalize(bv))
+			props[k] = withNull(canonicalizeNode(bv))
 		case bv == nil:
-			props[k] = WithNull(Canonicalize(av))
+			props[k] = withNull(canonicalizeNode(av))
 		default:
-			props[k] = Join(av, bv)
+			props[k] = joinNodes(av, bv)
 		}
 	}
 
@@ -85,7 +85,7 @@ func joinObjects(a, b *SchemaNode) *SchemaNode {
 	}
 	sort.Strings(required)
 
-	out := &SchemaNode{Type: SchemaType{"object"}, Properties: props}
+	out := &node{Type: SchemaType{"object"}, Properties: props}
 	if len(required) > 0 {
 		out.Required = required
 	}

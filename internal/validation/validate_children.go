@@ -31,8 +31,7 @@ func ValidateChildProcessRefs(def *model.ProcessDefinition, currentVersion int, 
 		if s.Action == nil {
 			continue
 		}
-		ctx := contextSchema(required[s.ID], optional[s.ID], tasks, processInput, configSchema, mustErr[s.ID], mayErr[s.ID])
-		ctx = withDefs(ctx, defs)
+		ctx := contextSchema(required[s.ID], optional[s.ID], tasks, processInput, configSchema, mustErr[s.ID], mayErr[s.ID]).WithDefs(defs)
 
 		switch s.Action.Type {
 		case model.ActionTypeChild:
@@ -51,7 +50,7 @@ func ValidateChildProcessRefs(def *model.ProcessDefinition, currentVersion int, 
 	return nil
 }
 
-func validateChildEntry(taskID string, label string, p model.ChildEntry, ctx *schema.SchemaNode, defs map[string]*schema.SchemaNode, current *model.ProcessDefinition, currentVersion int, getter DefinitionGetter) error {
+func validateChildEntry(taskID string, label string, p model.ChildEntry, ctx schema.Schema, defs schema.Defs, current *model.ProcessDefinition, currentVersion int, getter DefinitionGetter) error {
 	prefix := fmt.Sprintf("task %q: %s", taskID, label)
 
 	var child *model.ProcessDefinition
@@ -79,7 +78,7 @@ func validateChildEntry(taskID string, label string, p model.ChildEntry, ctx *sc
 		return nil
 	}
 
-	var inferred *schema.SchemaNode
+	var inferred schema.Schema
 	if p.Input.Present() {
 		var err error
 		inferred, err = inferShape(p.Input.Raw, ctx, fmt.Sprintf("%s input", prefix))
@@ -87,17 +86,18 @@ func validateChildEntry(taskID string, label string, p model.ChildEntry, ctx *sc
 			return err
 		}
 	} else {
-		inferred = &schema.SchemaNode{Type: schema.SchemaType{"object"}}
+		inferred = schema.Object()
 	}
 
-	inferred = withDefs(inferred, defs)
-	normalized, err := schema.FromNode(inferred).Normalize()
+	// Attach the shared defs so the inferred shape's $refs resolve, then normalize:
+	// the flatten inlines/retains exactly the definitions the shape uses, giving a
+	// self-contained schema the subset check can compare against the child's.
+	normalized, err := inferred.WithDefs(defs).Normalize()
 	if err != nil {
 		return fmt.Errorf("%s: normalize inferred input: %w", prefix, err)
 	}
-	inferred = normalized.Node()
 
-	if !schema.FromNode(inferred).IsSubset(schema.FromNode(child.InputSchema)) {
+	if !normalized.IsSubset(*child.InputSchema) {
 		return fmt.Errorf("%s: input is not compatible with %q v%d input_schema", prefix, p.Name, childVersion)
 	}
 	return nil

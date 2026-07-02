@@ -20,14 +20,14 @@ func TestSecretFlowsToOutput(t *testing.T) {
 		],
 		"output": { "token": "{{ config.api_key }}", "name": "static" }
 	}`)
-	def := out.Defs["output"]
-	if def == nil {
+	def := defOf(out, "output")
+	if def.IsZero() {
 		t.Fatalf("no \"output\" def; have %v", defKeys(out))
 	}
-	if def.Properties["token"] == nil || !def.Properties["token"].Secret {
-		t.Errorf("output.token should be marked secret, got %+v", def.Properties["token"])
+	if def.Properties()["token"].IsZero() || !def.Properties()["token"].IsSecret() {
+		t.Errorf("output.token should be marked secret, got %+v", def.Properties()["token"])
 	}
-	if def.Properties["name"] != nil && def.Properties["name"].Secret {
+	if !def.Properties()["name"].IsZero() && def.Properties()["name"].IsSecret() {
 		t.Errorf("output.name should not be secret")
 	}
 }

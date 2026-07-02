@@ -17,7 +17,7 @@ func TestCanonicalize_CrossKindNesting_EqualPairs(t *testing.T) {
 
 	tests := []struct {
 		name string
-		a, b *schema.SchemaNode
+		a, b schema.Schema
 	}{
 		{
 			"oneOf-of-objects nested in anyOf",
@@ -64,8 +64,8 @@ func TestCanonicalize_CrossKindNesting_EqualPairs(t *testing.T) {
 func TestCanonicalize_CrossKindNesting_SimpleCollapse(t *testing.T) {
 	tests := []struct {
 		name string
-		in   *schema.SchemaNode
-		want *schema.SchemaNode
+		in   schema.Schema
+		want schema.Schema
 	}{
 		{
 			"oneOf-of-simple nested in anyOf merges to a flat type array",

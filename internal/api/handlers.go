@@ -169,13 +169,13 @@ type ListExternalTasksReq struct {
 // snapshotted input + the result_schema the resolver must satisfy, plus the resolve
 // token — never the process context.
 type ExternalTaskResp struct {
-	Token        string             `json:"token"` // pass back to /external-tasks/resolve
-	Process      string             `json:"process"`
-	Version      int                `json:"version"`
-	TaskID       string             `json:"task_id"`
-	Input        any                `json:"input"`                   // the task's evaluated input snapshot
-	ResultSchema *schema.SchemaNode `json:"result_schema,omitempty"` // JSON Schema the submitted result must satisfy
-	WaitingSince string             `json:"waiting_since"`           // RFC3339 park time
+	Token        string         `json:"token"` // pass back to /external-tasks/resolve
+	Process      string         `json:"process"`
+	Version      int            `json:"version"`
+	TaskID       string         `json:"task_id"`
+	Input        any            `json:"input"`                   // the task's evaluated input snapshot
+	ResultSchema *schema.Schema `json:"result_schema,omitempty"` // JSON Schema the submitted result must satisfy
+	WaitingSince string         `json:"waiting_since"`           // RFC3339 park time
 }
 
 type ResolveExternalTaskReq struct {
@@ -589,7 +589,7 @@ func (h *Handlers) listExternalTasks(raw json.RawMessage) Reply {
 func externalTaskToResp(inst *model.ProcessInstance, task *model.Task) ExternalTaskResp {
 	ext, _ := inst.ContextData[model.CtxExternal].(map[string]any)
 	token, _ := ext["token"].(string)
-	var resultSchema *schema.SchemaNode
+	var resultSchema *schema.Schema
 	if task.Action != nil {
 		resultSchema = task.Action.ResultSchema
 	}

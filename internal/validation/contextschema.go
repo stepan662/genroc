@@ -38,33 +38,25 @@ func ContextSchema(def *model.ProcessDefinition) (schema.Schema, error) {
 // SchemaFile, avoiding a re-run of Generate on hot paths (a caller that already
 // holds the SchemaFile — e.g. cached per process version — reuses it here).
 func SchemaFileContext(sf SchemaFile) schema.Schema {
-	props := make(map[string]*schema.SchemaNode, 3)
-	var required []string
-
-	if sf.ProcessInput != nil {
-		props["input"] = sf.ProcessInput
-		required = append(required, "input")
+	ctx := schema.Object()
+	if !sf.ProcessInput.IsZero() {
+		ctx = ctx.WithProperty("input", sf.ProcessInput, true)
 	}
 	if len(sf.Tasks) > 0 {
-		outProps := make(map[string]*schema.SchemaNode, len(sf.Tasks))
+		outputs := schema.Object()
+		n := 0
 		for tid, ts := range sf.Tasks {
-			if ts.Output != nil {
-				outProps[tid] = ts.Output
+			if !ts.Output.IsZero() {
+				outputs = outputs.WithProperty(tid, ts.Output, false)
+				n++
 			}
 		}
-		if len(outProps) > 0 {
-			props["outputs"] = &schema.SchemaNode{Type: schema.SchemaType{"object"}, Properties: outProps}
+		if n > 0 {
+			ctx = ctx.WithProperty("outputs", outputs, false)
 		}
 	}
-	if sf.ProcessOutput != nil {
-		props["output"] = sf.ProcessOutput
+	if !sf.ProcessOutput.IsZero() {
+		ctx = ctx.WithProperty("output", sf.ProcessOutput, false)
 	}
-
-	root := &schema.SchemaNode{
-		Type:       schema.SchemaType{"object"},
-		Properties: props,
-		Required:   required,
-		Defs:       sf.Defs,
-	}
-	return schema.FromNode(root)
+	return ctx.WithDefs(sf.Defs)
 }

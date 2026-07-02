@@ -15,7 +15,7 @@ func mustParse(t *testing.T, s string) schema.Schema {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	return sc
+	return sc.AssumeNormalized()
 }
 
 // assertRaw marshals sc and checks it equals the expected JSON string.
@@ -44,11 +44,11 @@ func assertRaw(t *testing.T, sc schema.Schema, want string) {
 func TestLoad(t *testing.T) {
 	raw := map[string]any{"type": "string"}
 	sc := schema.Load(raw)
-	if sc.Raw() == nil {
+	if sc.AsMap() == nil {
 		t.Fatal("Raw() returned nil")
 	}
-	if sc.Raw()["type"] != "string" {
-		t.Errorf("type = %v, want \"string\"", sc.Raw()["type"])
+	if sc.AsMap()["type"] != "string" {
+		t.Errorf("type = %v, want \"string\"", sc.AsMap()["type"])
 	}
 }
 
@@ -57,8 +57,8 @@ func TestParse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if sc.Raw()["type"] != "integer" {
-		t.Errorf("type = %v, want \"integer\"", sc.Raw()["type"])
+	if sc.AssumeNormalized().AsMap()["type"] != "integer" {
+		t.Errorf("type = %v, want \"integer\"", sc.AssumeNormalized().AsMap()["type"])
 	}
 }
 
@@ -93,7 +93,7 @@ func TestNormalizeFlattens(t *testing.T) {
 		t.Fatalf("Normalize: %v", err)
 	}
 	// $defs must appear at root in normalized output
-	defs, ok := norm.Raw()["$defs"].(map[string]any)
+	defs, ok := norm.AsMap()["$defs"].(map[string]any)
 	if !ok {
 		t.Fatal("normalized schema has no $defs")
 	}
@@ -114,7 +114,7 @@ func TestNormalizeDoesNotMutateOriginal(t *testing.T) {
 		t.Fatalf("Normalize: %v", err)
 	}
 	// Original schema's $defs entry should not have been stripped of $id by the clone.
-	defs, _ := sc.Raw()["$defs"].(map[string]any)
+	defs, _ := sc.AsMap()["$defs"].(map[string]any)
 	x, _ := defs["X"].(map[string]any)
 	if x["$id"] == nil {
 		t.Error("Normalize mutated the original schema (stripped $id from source)")
@@ -262,7 +262,13 @@ func TestInferWithRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Infer: %v", err)
 	}
-	assertRaw(t, sub, `{"type":"integer"}`)
+	// A sub-schema is self-contained: it carries the root $defs so any $ref inside
+	// it stays resolvable. WithoutDefs drops them for embedding/comparison.
+	assertRaw(t, sub, `{
+		"type": "integer",
+		"$defs": {"User": {"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}}
+	}`)
+	assertRaw(t, sub.WithoutDefs(), `{"type":"integer"}`)
 }
 
 func TestInferUnknownProperty(t *testing.T) {
@@ -357,7 +363,7 @@ func TestWithDefAddsDefinition(t *testing.T) {
 	composed := base.WithDef("User", userDef)
 
 	// The new schema should have $defs.User
-	defs, ok := composed.Raw()["$defs"].(map[string]any)
+	defs, ok := composed.AsMap()["$defs"].(map[string]any)
 	if !ok {
 		t.Fatal("WithDef did not add $defs")
 	}
@@ -372,7 +378,7 @@ func TestWithDefDoesNotMutateOriginal(t *testing.T) {
 	_ = base.WithDef("Foo", def)
 
 	// Original should still have no $defs.
-	if base.Raw()["$defs"] != nil {
+	if base.AsMap()["$defs"] != nil {
 		t.Error("WithDef mutated the original schema")
 	}
 }
@@ -397,8 +403,9 @@ func TestWithDefThenNormalize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Infer after WithDef+Normalize: %v", err)
 	}
-	// user is optional (not in required), so user.name is nullable
-	assertRaw(t, sub, `{"type":["string","null"]}`)
+	// user is optional (not in required), so user.name is nullable. The sub-schema
+	// carries the root $defs; drop them to compare the bare type.
+	assertRaw(t, sub.WithoutDefs(), `{"type":["string","null"]}`)
 }
 
 // ---- MarshalJSON ----

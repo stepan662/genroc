@@ -26,7 +26,7 @@ import (
 // $refs resolve against the schema's own $defs, so the schema should be
 // normalized (defs flattened to the root) before calling.
 func (s Schema) Validate(data any) (any, error) {
-	return conform(s.node, s.defs, data, "")
+	return conform(s.n, s.rootDefs(), data, "")
 }
 
 // ValidateAt validates data against the subschema at path (e.g. "outputs.taskA")
@@ -43,8 +43,8 @@ func (s Schema) ValidateAt(path string, data any) (any, error) {
 
 // conform is the recursive validator/normalizer. path is the dotted location of
 // data within the root value (empty at the root), used only for error messages.
-func conform(node *SchemaNode, defs map[string]*SchemaNode, data any, path string) (any, error) {
-	resolved, err := Deref(node, defs)
+func conform(nd *node, defs map[string]*node, data any, path string) (any, error) {
+	resolved, err := deref(nd, defs)
 	if err != nil {
 		return nil, err
 	}
@@ -91,13 +91,13 @@ func conform(node *SchemaNode, defs map[string]*SchemaNode, data any, path strin
 
 // conformObject keeps only declared properties, fills defaults for absent
 // optionals, errors on absent required, and recurses into present values.
-func conformObject(node *SchemaNode, defs map[string]*SchemaNode, v map[string]any, path string) (any, error) {
-	required := make(map[string]bool, len(node.Required))
-	for _, r := range node.Required {
+func conformObject(nd *node, defs map[string]*node, v map[string]any, path string) (any, error) {
+	required := make(map[string]bool, len(nd.Required))
+	for _, r := range nd.Required {
 		required[r] = true
 	}
-	out := make(map[string]any, len(node.Properties))
-	for name, prop := range node.Properties {
+	out := make(map[string]any, len(nd.Properties))
+	for name, prop := range nd.Properties {
 		val, present := v[name]
 		if !present {
 			if required[name] {
@@ -118,16 +118,16 @@ func conformObject(node *SchemaNode, defs map[string]*SchemaNode, v map[string]a
 }
 
 // conformArray validates length bounds and recurses into each element.
-func conformArray(node *SchemaNode, defs map[string]*SchemaNode, arr []any, path string) (any, error) {
-	if node.MinItems != nil && len(arr) < *node.MinItems {
-		return nil, fmt.Errorf("%sarray has %d items, fewer than minItems %d", at(path), len(arr), *node.MinItems)
+func conformArray(nd *node, defs map[string]*node, arr []any, path string) (any, error) {
+	if nd.MinItems != nil && len(arr) < *nd.MinItems {
+		return nil, fmt.Errorf("%sarray has %d items, fewer than minItems %d", at(path), len(arr), *nd.MinItems)
 	}
-	if node.MaxItems != nil && len(arr) > *node.MaxItems {
-		return nil, fmt.Errorf("%sarray has %d items, more than maxItems %d", at(path), len(arr), *node.MaxItems)
+	if nd.MaxItems != nil && len(arr) > *nd.MaxItems {
+		return nil, fmt.Errorf("%sarray has %d items, more than maxItems %d", at(path), len(arr), *nd.MaxItems)
 	}
 	out := make([]any, len(arr))
 	for i, el := range arr {
-		norm, err := conform(node.Items, defs, el, fmt.Sprintf("%s[%d]", path, i))
+		norm, err := conform(nd.Items, defs, el, fmt.Sprintf("%s[%d]", path, i))
 		if err != nil {
 			return nil, err
 		}
@@ -139,7 +139,7 @@ func conformArray(node *SchemaNode, defs map[string]*SchemaNode, arr []any, path
 // conformUnion normalizes data against a oneOf/anyOf. anyOf returns the first
 // branch that validates; oneOf requires exactly one branch to validate (matching
 // zero or several is an error).
-func conformUnion(branches []*SchemaNode, defs map[string]*SchemaNode, data any, path string, exactlyOne bool) (any, error) {
+func conformUnion(branches []*node, defs map[string]*node, data any, path string, exactlyOne bool) (any, error) {
 	var (
 		firstErr error
 		match    any
@@ -170,16 +170,16 @@ func conformUnion(branches []*SchemaNode, defs map[string]*SchemaNode, data any,
 
 // checkType verifies data's JSON type is permitted by node.Type. An empty Type is
 // unconstrained. "integer" accepts an integral number; "number" accepts any number.
-func checkType(node *SchemaNode, data any, path string) error {
-	if len(node.Type) == 0 {
+func checkType(nd *node, data any, path string) error {
+	if len(nd.Type) == 0 {
 		return nil
 	}
-	for _, t := range node.Type {
+	for _, t := range nd.Type {
 		if valueHasType(data, t) {
 			return nil
 		}
 	}
-	return fmt.Errorf("%sexpected type %s, got %s", at(path), strings.Join(node.Type, "|"), jsonTypeName(data))
+	return fmt.Errorf("%sexpected type %s, got %s", at(path), strings.Join(nd.Type, "|"), jsonTypeName(data))
 }
 
 func valueHasType(data any, t string) bool {
@@ -209,22 +209,22 @@ func valueHasType(data any, t string) bool {
 }
 
 // checkScalar applies the scalar constraints: numeric range and string length.
-func checkScalar(node *SchemaNode, data any, path string) error {
+func checkScalar(nd *node, data any, path string) error {
 	if f, ok := asFloat(data); ok {
-		if node.Minimum != nil && f < *node.Minimum {
-			return fmt.Errorf("%svalue %v is less than minimum %v", at(path), f, *node.Minimum)
+		if nd.Minimum != nil && f < *nd.Minimum {
+			return fmt.Errorf("%svalue %v is less than minimum %v", at(path), f, *nd.Minimum)
 		}
-		if node.Maximum != nil && f > *node.Maximum {
-			return fmt.Errorf("%svalue %v is greater than maximum %v", at(path), f, *node.Maximum)
+		if nd.Maximum != nil && f > *nd.Maximum {
+			return fmt.Errorf("%svalue %v is greater than maximum %v", at(path), f, *nd.Maximum)
 		}
 	}
 	if s, ok := data.(string); ok {
 		n := utf8.RuneCountInString(s)
-		if node.MinLength != nil && n < *node.MinLength {
-			return fmt.Errorf("%sstring length %d is less than minLength %d", at(path), n, *node.MinLength)
+		if nd.MinLength != nil && n < *nd.MinLength {
+			return fmt.Errorf("%sstring length %d is less than minLength %d", at(path), n, *nd.MinLength)
 		}
-		if node.MaxLength != nil && n > *node.MaxLength {
-			return fmt.Errorf("%sstring length %d is greater than maxLength %d", at(path), n, *node.MaxLength)
+		if nd.MaxLength != nil && n > *nd.MaxLength {
+			return fmt.Errorf("%sstring length %d is greater than maxLength %d", at(path), n, *nd.MaxLength)
 		}
 	}
 	return nil
@@ -232,7 +232,7 @@ func checkScalar(node *SchemaNode, data any, path string) error {
 
 // propDefault returns the default for a property, following a lone $ref to its
 // target if the property node itself carries none.
-func propDefault(prop *SchemaNode, defs map[string]*SchemaNode) any {
+func propDefault(prop *node, defs map[string]*node) any {
 	if prop == nil {
 		return nil
 	}
@@ -240,7 +240,7 @@ func propDefault(prop *SchemaNode, defs map[string]*SchemaNode) any {
 		return prop.Default
 	}
 	if prop.Ref != "" {
-		if target, err := Deref(prop, defs); err == nil && target != nil {
+		if target, err := deref(prop, defs); err == nil && target != nil {
 			return target.Default
 		}
 	}
@@ -249,8 +249,8 @@ func propDefault(prop *SchemaNode, defs map[string]*SchemaNode) any {
 
 // isObjectSchema reports whether node describes an object (so a map value should
 // be pruned to declared properties rather than passed through).
-func isObjectSchema(node *SchemaNode) bool {
-	return node.Type.Contains("object") || node.Properties != nil || node.Required != nil
+func isObjectSchema(nd *node) bool {
+	return nd.Type.Contains("object") || nd.Properties != nil || nd.Required != nil
 }
 
 // enumContains reports whether data equals any enum member, comparing by

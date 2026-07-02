@@ -8,17 +8,19 @@ import (
 	"genroc/internal/validation"
 )
 
-func mustMarshal(n *schema.SchemaNode) string {
-	b, _ := json.Marshal(n)
+func mustMarshal(v any) string {
+	b, _ := json.Marshal(v)
 	return string(b)
 }
 
-func sprim(types ...string) *schema.SchemaNode {
-	return &schema.SchemaNode{Type: schema.SchemaType(types)}
-}
-
-func sobj(req []string, props map[string]*schema.SchemaNode) *schema.SchemaNode {
-	return &schema.SchemaNode{Type: schema.SchemaType{"object"}, Properties: props, Required: req}
+// mustSchema parses a JSON schema fixture as-is, failing the test on error.
+func mustSchema(t *testing.T, src string) schema.Schema {
+	t.Helper()
+	raw, err := schema.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("parse schema: %v", err)
+	}
+	return raw.AssumeNormalized()
 }
 
 // recCtx builds the schema context exactly as the validation pipeline would have
@@ -26,72 +28,73 @@ func sobj(req []string, props map[string]*schema.SchemaNode) *schema.SchemaNode 
 // self.previous are $refs to $defs[<selfID>_output] (the recursive placeholder),
 // and any sibling task outputs are always-available (required). This represents
 // the process "in that state" without standing up the whole pipeline.
-func recCtx(selfID string, siblings map[string]*schema.SchemaNode) (*schema.SchemaNode, string) {
+func recCtx(t *testing.T, selfID string, siblings map[string]schema.Schema) (schema.Schema, string) {
+	t.Helper()
 	selfDef := selfID + "_output"
-	ref := &schema.SchemaNode{Ref: "#/$defs/" + selfDef}
+	ref := schema.Ref(selfDef)
 
-	outProps := map[string]*schema.SchemaNode{selfID: ref} // self output is NOT required (nullable previous)
-	var outReq []string
+	outputs := schema.Object().WithProperty(selfID, ref, false) // self output is NOT required (nullable previous)
 	for k, v := range siblings {
-		outProps[k] = v
-		outReq = append(outReq, k)
+		outputs = outputs.WithProperty(k, v, true)
 	}
 
-	ctx := &schema.SchemaNode{
-		Type:     schema.SchemaType{"object"},
-		Required: []string{"outputs", "self"},
-		Properties: map[string]*schema.SchemaNode{
-			"outputs": {Type: schema.SchemaType{"object"}, Properties: outProps, Required: outReq},
-			"self": {Type: schema.SchemaType{"object"}, Properties: map[string]*schema.SchemaNode{
-				"previous": ref,
-			}},
-		},
-		Defs: map[string]*schema.SchemaNode{
-			selfDef: {Type: schema.SchemaType{"null"}}, // placeholder; the fixpoint rebinds it
-		},
-	}
+	ctx := schema.Object().
+		WithProperty("outputs", outputs, true).
+		WithProperty("self", schema.Object().WithProperty("previous", ref, false), true).
+		WithDef(selfDef, mustSchema(t, `{"type":"null"}`)) // placeholder; the fixpoint rebinds it
 	return ctx, selfDef
 }
 
 func TestInferRecursiveOutput(t *testing.T) {
+	// sobj builds the expected {type:object, required, properties} JSON for a flat
+	// output type whose fields are all primitives.
+	sobj := func(props map[string]string, req ...string) string {
+		p := make(map[string]any, len(props))
+		for k, typ := range props {
+			p[k] = map[string]any{"type": typ}
+		}
+		b, _ := json.Marshal(map[string]any{"type": "object", "properties": p, "required": req})
+		return string(b)
+	}
+
 	tests := []struct {
 		name     string
 		exprs    map[string]string
-		siblings map[string]*schema.SchemaNode
+		siblings map[string]string // sibling task id -> schema JSON
 		selfID   string
-		want     *schema.SchemaNode
+		want     string // schema JSON
 		wantErr  bool
 	}{
 		{
 			name:   "counter via outputs.<self>",
 			exprs:  map[string]string{"n": "{{ (outputs.count.n ?? 0) + 1 }}"},
 			selfID: "count",
-			want:   sobj([]string{"n"}, map[string]*schema.SchemaNode{"n": sprim("integer")}),
+			want:   sobj(map[string]string{"n": "integer"}, "n"),
 		},
 		{
 			name:   "counter via self.previous",
 			exprs:  map[string]string{"n": "{{ (self.previous.n ?? 0) + 1 }}"},
 			selfID: "count",
-			want:   sobj([]string{"n"}, map[string]*schema.SchemaNode{"n": sprim("integer")}),
+			want:   sobj(map[string]string{"n": "integer"}, "n"),
 		},
 		{
 			name:   "string accumulator",
 			exprs:  map[string]string{"s": `{{ (outputs.cat.s ?? "") + "x" }}`},
 			selfID: "cat",
-			want:   sobj([]string{"s"}, map[string]*schema.SchemaNode{"s": sprim("string")}),
+			want:   sobj(map[string]string{"s": "string"}, "s"),
 		},
 		{
 			name:   "boolean toggle via self.previous",
 			exprs:  map[string]string{"f": "{{ !(self.previous.f ?? false) }}"},
 			selfID: "tog",
-			want:   sobj([]string{"f"}, map[string]*schema.SchemaNode{"f": sprim("boolean")}),
+			want:   sobj(map[string]string{"f": "boolean"}, "f"),
 		},
 		{
 			name:     "sum folding a sibling output",
 			exprs:    map[string]string{"total": "{{ (outputs.acc.total ?? 0) + outputs.item.value }}"},
-			siblings: map[string]*schema.SchemaNode{"item": sobj([]string{"value"}, map[string]*schema.SchemaNode{"value": sprim("number")})},
+			siblings: map[string]string{"item": sobj(map[string]string{"value": "number"}, "value")},
 			selfID:   "acc",
-			want:     sobj([]string{"total"}, map[string]*schema.SchemaNode{"total": sprim("number")}),
+			want:     sobj(map[string]string{"total": "number"}, "total"),
 		},
 		{
 			name: "multiple fields mixing both self references",
@@ -100,10 +103,7 @@ func TestInferRecursiveOutput(t *testing.T) {
 				"f": "{{ !(self.previous.f ?? false) }}",
 			},
 			selfID: "s",
-			want: sobj([]string{"f", "n"}, map[string]*schema.SchemaNode{
-				"n": sprim("integer"),
-				"f": sprim("boolean"),
-			}),
+			want:   sobj(map[string]string{"n": "integer", "f": "boolean"}, "f", "n"),
 		},
 		{
 			name:    "no base case (no ?? default) is rejected",
@@ -115,7 +115,11 @@ func TestInferRecursiveOutput(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, selfDef := recCtx(tt.selfID, tt.siblings)
+			siblings := make(map[string]schema.Schema, len(tt.siblings))
+			for k, src := range tt.siblings {
+				siblings[k] = mustSchema(t, src)
+			}
+			ctx, selfDef := recCtx(t, tt.selfID, siblings)
 			got, err := validation.InferRecursiveOutput(tt.exprs, ctx, selfDef)
 			if tt.wantErr {
 				if err == nil {
@@ -126,9 +130,10 @@ func TestInferRecursiveOutput(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if !schema.Equal(got, tt.want) {
+			want := mustSchema(t, tt.want)
+			if !got.Equal(want) {
 				t.Errorf("type mismatch:\n  got:  %s\n  want: %s",
-					mustMarshal(schema.Canonicalize(got)), mustMarshal(schema.Canonicalize(tt.want)))
+					mustMarshal(got.Canonicalize()), mustMarshal(want.Canonicalize()))
 			}
 		})
 	}

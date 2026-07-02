@@ -7,8 +7,8 @@ import (
 
 // isSubset reports whether every value valid under sub is also valid under super.
 // Both schemas must be normalized (flat $defs at root, only #/$defs/<name> refs).
-func isSubset(sub, super *SchemaNode) bool {
-	var subDefs, superDefs map[string]*SchemaNode
+func isSubset(sub, super *node) bool {
+	var subDefs, superDefs map[string]*node
 	if sub != nil {
 		subDefs = sub.Defs
 	}
@@ -24,12 +24,12 @@ func isSubset(sub, super *SchemaNode) bool {
 }
 
 type subsetCtx struct {
-	subDefs   map[string]*SchemaNode
-	superDefs map[string]*SchemaNode
+	subDefs   map[string]*node
+	superDefs map[string]*node
 	visiting  map[string]bool
 }
 
-func (ctx *subsetCtx) check(sub, super *SchemaNode) bool {
+func (ctx *subsetCtx) check(sub, super *node) bool {
 	// Cycle detection before any deref.
 	subRef := ""
 	superRef := ""
@@ -61,7 +61,7 @@ func (ctx *subsetCtx) check(sub, super *SchemaNode) bool {
 	}
 
 	// Composition in sub (anyOf / oneOf): every variant must be ⊆ super.
-	for _, variants := range [][]*SchemaNode{sub.AnyOf, sub.OneOf} {
+	for _, variants := range [][]*node{sub.AnyOf, sub.OneOf} {
 		if variants == nil {
 			continue
 		}
@@ -84,7 +84,7 @@ func (ctx *subsetCtx) check(sub, super *SchemaNode) bool {
 	}
 
 	// Composition in super (anyOf / oneOf): sub must fit at least one variant.
-	for _, variants := range [][]*SchemaNode{super.AnyOf, super.OneOf} {
+	for _, variants := range [][]*node{super.AnyOf, super.OneOf} {
 		if variants == nil {
 			continue
 		}
@@ -159,7 +159,7 @@ func typeAllowed(subType string, superTypes SchemaType) bool {
 	return false
 }
 
-func (ctx *subsetCtx) checkObject(sub, super *SchemaNode) bool {
+func (ctx *subsetCtx) checkObject(sub, super *node) bool {
 	superReq := stringSet(super.Required)
 	subReq := stringSet(sub.Required)
 
@@ -170,7 +170,7 @@ func (ctx *subsetCtx) checkObject(sub, super *SchemaNode) bool {
 	}
 
 	if super.Properties != nil {
-		var subProps map[string]*SchemaNode
+		var subProps map[string]*node
 		if sub.Properties != nil {
 			subProps = sub.Properties
 		}
@@ -191,7 +191,7 @@ func (ctx *subsetCtx) checkObject(sub, super *SchemaNode) bool {
 	return true
 }
 
-func (ctx *subsetCtx) checkArray(sub, super *SchemaNode) bool {
+func (ctx *subsetCtx) checkArray(sub, super *node) bool {
 	if super.Items == nil {
 		return true
 	}
@@ -201,7 +201,7 @@ func (ctx *subsetCtx) checkArray(sub, super *SchemaNode) bool {
 	return ctx.check(sub.Items, super.Items)
 }
 
-func checkNumericBounds(sub, super *SchemaNode) bool {
+func checkNumericBounds(sub, super *node) bool {
 	if super.Minimum != nil {
 		if sub.Minimum == nil || *sub.Minimum < *super.Minimum {
 			return false
@@ -215,7 +215,7 @@ func checkNumericBounds(sub, super *SchemaNode) bool {
 	return true
 }
 
-func checkStringLength(sub, super *SchemaNode) bool {
+func checkStringLength(sub, super *node) bool {
 	if super.MinLength != nil {
 		if sub.MinLength == nil || *sub.MinLength < *super.MinLength {
 			return false
@@ -229,7 +229,7 @@ func checkStringLength(sub, super *SchemaNode) bool {
 	return true
 }
 
-func checkEnum(sub, super *SchemaNode) bool {
+func checkEnum(sub, super *node) bool {
 	if super.Enum == nil {
 		return true
 	}
@@ -253,7 +253,7 @@ func jsonKey(v any) string {
 	return string(b)
 }
 
-func derefSubset(s *SchemaNode, defs map[string]*SchemaNode) *SchemaNode {
+func derefSubset(s *node, defs map[string]*node) *node {
 	if s == nil || s.Ref == "" || defs == nil {
 		return s
 	}

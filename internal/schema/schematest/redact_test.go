@@ -1,13 +1,9 @@
 package schematest
 
-import (
-	"testing"
-
-	"genroc/internal/schema"
-)
+import "testing"
 
 func TestCollectSecrets(t *testing.T) {
-	sc, err := schema.Parse([]byte(`{
+	sc := mustParse(t, `{
 		"type": "object",
 		"properties": {
 			"token":  { "type": "string", "secret": true },
@@ -17,10 +13,7 @@ func TestCollectSecrets(t *testing.T) {
 				"ok":  { "type": "string" }
 			} }
 		}
-	}`))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
+	}`)
 	val := map[string]any{
 		"token":  "s3cr3t",
 		"name":   "public",
@@ -47,15 +40,12 @@ func TestCollectSecrets(t *testing.T) {
 // A secret nested inside an array of objects (the common "list of records, one
 // field secret" shape) must be collected for every element.
 func TestCollectSecretsArrayOfObjects(t *testing.T) {
-	sc, err := schema.Parse([]byte(`{
+	sc := mustParse(t, `{
 		"type": "array",
 		"items": { "type": "object", "properties": {
 			"sleep": { "type": "number", "secret": true }
 		} }
-	}`))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
+	}`)
 	val := []any{
 		map[string]any{"sleep": float64(5)},
 		map[string]any{"sleep": float64(50)},
@@ -83,10 +73,7 @@ func TestCollectSecretsCombinators(t *testing.T) {
 		]}}}`,
 	}
 	for name, doc := range cases {
-		sc, err := schema.Parse([]byte(doc))
-		if err != nil {
-			t.Fatalf("%s: parse: %v", name, err)
-		}
+		sc := mustParse(t, doc)
 		val := map[string]any{"data": map[string]any{"token": "SEKRET"}}
 		var got []string
 		got = sc.CollectSecrets(val)
@@ -107,10 +94,7 @@ func TestCollectSecretsCombinators(t *testing.T) {
 // which never matches the "1000000" that json.Marshal writes into the log, so the
 // scrub would miss it.
 func TestCollectSecretsNumericFormatting(t *testing.T) {
-	sc, err := schema.Parse([]byte(`{"type":"array","items":{"type":"number","secret":true}}`))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
+	sc := mustParse(t, `{"type":"array","items":{"type":"number","secret":true}}`)
 	var got []string
 	got = sc.CollectSecrets([]any{float64(1000000), float64(0.0001)})
 	if len(got) != 2 || got[0] != "1000000" || got[1] != "0.0001" {
@@ -121,13 +105,10 @@ func TestCollectSecretsNumericFormatting(t *testing.T) {
 // Redact must also descend into combinator branches so a secret in a oneOf/allOf
 // variant is replaced, not just collected.
 func TestRedactCombinators(t *testing.T) {
-	sc, err := schema.Parse([]byte(`{"type":"object","properties":{"data":{"oneOf":[
+	sc := mustParse(t, `{"type":"object","properties":{"data":{"oneOf":[
 		{"type":"object","properties":{"a":{"type":"string"}}},
 		{"type":"object","properties":{"token":{"type":"string","secret":true},"ok":{"type":"string"}}}
-	]}}}`))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
+	]}}}`)
 	val := map[string]any{"data": map[string]any{"token": "SEKRET", "ok": "fine"}}
 	got := sc.Redact(val).(map[string]any)
 	data := got["data"].(map[string]any)
@@ -140,7 +121,7 @@ func TestRedactCombinators(t *testing.T) {
 }
 
 func TestRedact(t *testing.T) {
-	sc, err := schema.Parse([]byte(`{
+	sc := mustParse(t, `{
 		"type": "object",
 		"properties": {
 			"token": { "type": "string", "secret": true },
@@ -154,10 +135,7 @@ func TestRedact(t *testing.T) {
 			},
 			"list": { "type": "array", "items": { "type": "string", "secret": true } }
 		}
-	}`))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
+	}`)
 	val := map[string]any{
 		"token":  "s3cr3t",
 		"name":   "public",

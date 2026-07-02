@@ -1,7 +1,6 @@
 package validationtest
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -39,17 +38,17 @@ func (s stubGetter) LatestVersion(name string) (int, error) {
 
 // normalizedSchema parses a JSON schema string and normalises it, as the DB
 // would store it after a successful putDefinition call.
-func normalizedSchema(t *testing.T, raw string) *schema.SchemaNode {
+func normalizedSchema(t *testing.T, raw string) *schema.Schema {
 	t.Helper()
-	var n schema.SchemaNode
-	if err := json.Unmarshal([]byte(raw), &n); err != nil {
+	parsed, err := schema.Parse([]byte(raw))
+	if err != nil {
 		t.Fatalf("parse schema: %v", err)
 	}
-	out, err := schema.FromNode(&n).Normalize()
+	out, err := parsed.Normalize()
 	if err != nil {
 		t.Fatalf("normalize schema: %v", err)
 	}
-	return out.Node()
+	return &out
 }
 
 // childDef builds a minimal child ProcessDefinition whose InputSchema is the
@@ -238,12 +237,11 @@ func TestValidateChildProcessRefs_wrongFieldType(t *testing.T) {
 
 func TestValidateChildProcessRefs_additionalPropertiesRejectedAtParse(t *testing.T) {
 	// additionalProperties is not a supported keyword; schemas using it fail to parse.
-	var n schema.SchemaNode
-	err := json.Unmarshal([]byte(`{
+	_, err := schema.Parse([]byte(`{
 		"type": "object",
 		"properties": {"amount": {"type": "integer"}},
 		"additionalProperties": false
-	}`), &n)
+	}`))
 	if err == nil {
 		t.Fatal("expected parse error for additionalProperties, got nil")
 	}

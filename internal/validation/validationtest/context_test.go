@@ -40,11 +40,11 @@ func TestGenerate_ContextSets_LinearChain_RequiredOutputNonNullable(t *testing.T
   ]
 }`)
 	assertJSON(t, out.Tasks["B"].Input, `{"$ref": "#/$defs/B_input"}`)
-	bInput := out.Defs["B_input"]
-	if bInput == nil || bInput.Properties == nil {
+	bInput := defOf(out, "B_input")
+	if bInput.IsZero() || !bInput.HasProperties() {
 		t.Fatal("B input should have properties")
 	}
-	assertJSON(t, bInput.Properties["flag"], `{"type": "boolean"}`)
+	assertJSON(t, bInput.Properties()["flag"], `{"type": "boolean"}`)
 }
 
 func TestGenerate_ContextSets_ExclusiveBranch_SkippedStepOutputNullable(t *testing.T) {
@@ -113,11 +113,11 @@ func TestGenerate_ContextSets_ExclusiveBranch_SkippedStepOutputNullable(t *testi
   ]
 }`)
 	assertJSON(t, out.Tasks["merge"].Input, `{"$ref": "#/$defs/merge_input"}`)
-	mergeInput := out.Defs["merge_input"]
-	if mergeInput == nil || mergeInput.Properties == nil {
+	mergeInput := defOf(out, "merge_input")
+	if mergeInput.IsZero() || !mergeInput.HasProperties() {
 		t.Fatal("merge input should have properties")
 	}
-	assertJSON(t, mergeInput.Properties["s"], `{"type": ["number", "null"]}`)
+	assertJSON(t, mergeInput.Properties()["s"], `{"type": ["number", "null"]}`)
 }
 
 func TestGenerate_ContextSets_PreBranchStepRequiredAtAllMergePoints(t *testing.T) {
@@ -182,11 +182,11 @@ func TestGenerate_ContextSets_PreBranchStepRequiredAtAllMergePoints(t *testing.T
   ]
 }`)
 	assertJSON(t, out.Tasks["post"].Input, `{"$ref": "#/$defs/post_input"}`)
-	postInput := out.Defs["post_input"]
-	if postInput == nil || postInput.Properties == nil {
+	postInput := defOf(out, "post_input")
+	if postInput.IsZero() || !postInput.HasProperties() {
 		t.Fatal("post input should have properties")
 	}
-	assertJSON(t, postInput.Properties["pre_id"], `{"type": "integer"}`)
+	assertJSON(t, postInput.Properties()["pre_id"], `{"type": "integer"}`)
 }
 
 func TestGenerate_ContextSets_DefaultEndSwitch_SuccessorRequiredNotOptional(t *testing.T) {
@@ -234,11 +234,11 @@ func TestGenerate_ContextSets_DefaultEndSwitch_SuccessorRequiredNotOptional(t *t
   ]
 }`)
 	assertJSON(t, out.Tasks["work"].Input, `{"$ref": "#/$defs/work_input"}`)
-	workInput := out.Defs["work_input"]
-	if workInput == nil || workInput.Properties == nil {
+	workInput := defOf(out, "work_input")
+	if workInput.IsZero() || !workInput.HasProperties() {
 		t.Fatal("work input should have properties")
 	}
-	assertJSON(t, workInput.Properties["flag"], `{"type": "boolean"}`)
+	assertJSON(t, workInput.Properties()["flag"], `{"type": "boolean"}`)
 }
 
 func TestGenerate_OnError_MixedPath_FailingStepOutputNullable(t *testing.T) {
@@ -284,14 +284,14 @@ func TestGenerate_OnError_MixedPath_FailingStepOutputNullable(t *testing.T) {
     }
   ]
 }`)
-	finaleInput := out.Defs["finale_input"]
-	if finaleInput == nil || finaleInput.Properties == nil {
+	finaleInput := defOf(out, "finale_input")
+	if finaleInput.IsZero() || !finaleInput.HasProperties() {
 		t.Fatal("finale input should have properties")
 	}
 	// On the normal path start produced output; on the error path it did not.
-	assertJSON(t, finaleInput.Properties["val"], `{"type": ["boolean", "null"]}`)
+	assertJSON(t, finaleInput.Properties()["val"], `{"type": ["boolean", "null"]}`)
 	// error is only present on the error path, so it is nullable.
-	assertJSON(t, finaleInput.Properties["errCode"], `{"type": ["string", "null"]}`)
+	assertJSON(t, finaleInput.Properties()["errCode"], `{"type": ["string", "null"]}`)
 }
 
 func TestGenerate_OnError_ExclusivePath_ErrorRequiredOutputAbsent(t *testing.T) {
@@ -340,12 +340,12 @@ func TestGenerate_OnError_ExclusivePath_ErrorRequiredOutputAbsent(t *testing.T) 
     }
   ]
 }`)
-	handlerInput := out.Defs["handler_input"]
-	if handlerInput == nil || handlerInput.Properties == nil {
+	handlerInput := defOf(out, "handler_input")
+	if handlerInput.IsZero() || !handlerInput.HasProperties() {
 		t.Fatal("handler input should have properties")
 	}
 	// Every path to handler is an error path, so error.code is always a string.
-	assertJSON(t, handlerInput.Properties["code"], `{"type": "string"}`)
+	assertJSON(t, handlerInput.Properties()["code"], `{"type": "string"}`)
 }
 
 func TestGenerate_Switch_ScalarNext_CreatesSequentialEdge(t *testing.T) {
@@ -387,11 +387,11 @@ func TestGenerate_Switch_ScalarNext_CreatesSequentialEdge(t *testing.T) {
     }
   ]
 }`)
-	bInput := out.Defs["b_input"]
-	if bInput == nil || bInput.Properties == nil {
+	bInput := defOf(out, "b_input")
+	if bInput.IsZero() || !bInput.HasProperties() {
 		t.Fatal("b input should have properties")
 	}
-	assertJSON(t, bInput.Properties["flag"], `{"type": "boolean"}`)
+	assertJSON(t, bInput.Properties()["flag"], `{"type": "boolean"}`)
 }
 
 func TestGenerate_Switch_ScalarStepRef_CreatesJumpEdge(t *testing.T) {
@@ -439,11 +439,11 @@ func TestGenerate_Switch_ScalarStepRef_CreatesJumpEdge(t *testing.T) {
     }
   ]
 }`)
-	mergeInput := out.Defs["merge_input"]
-	if mergeInput == nil || mergeInput.Properties == nil {
+	mergeInput := defOf(out, "merge_input")
+	if mergeInput.IsZero() || !mergeInput.HasProperties() {
 		t.Fatal("merge input should have properties")
 	}
-	assertJSON(t, mergeInput.Properties["s"], `{"type": "number"}`)
+	assertJSON(t, mergeInput.Properties()["s"], `{"type": "number"}`)
 }
 
 func TestGenerate_OnError_EndTerminal_RecognisedAsTerminal(t *testing.T) {

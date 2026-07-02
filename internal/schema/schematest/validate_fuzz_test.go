@@ -40,10 +40,11 @@ func TestValidateDecisionMatchesGojsonschemaFuzz(t *testing.T) {
 		if err != nil {
 			t.Fatalf("schema[%d] gojsonschema compile: %v", si, err)
 		}
-		sc, err := schema.Parse([]byte(schemaJSON))
+		rawSc, err := schema.Parse([]byte(schemaJSON))
 		if err != nil {
 			t.Fatalf("schema[%d] schema.Parse: %v", si, err)
 		}
+		sc := rawSc.AssumeNormalized()
 
 		r := rand.New(rand.NewSource(int64(seed) + int64(si)))
 		var nValid, nInvalid int

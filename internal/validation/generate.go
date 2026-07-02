@@ -2,28 +2,28 @@
 package validation
 
 import (
-	"encoding/json"
 	"fmt"
 	"slices"
+	"sort"
 
 	"genroc/internal/model"
 	"genroc/internal/schema"
 )
 
-// TaskSchemas holds the schemas associated with a single task task.
+// TaskSchemas holds the schemas associated with a single task.
 type TaskSchemas struct {
-	ActionType model.ActionType   `json:"action_type"`
-	Input      *schema.SchemaNode `json:"input,omitempty"`
-	Output     *schema.SchemaNode `json:"output,omitempty"`
+	ActionType model.ActionType `json:"action_type"`
+	Input      schema.Schema    `json:"input,omitzero"`
+	Output     schema.Schema    `json:"output,omitzero"`
 }
 
 // SchemaFile is the top-level output.
 type SchemaFile struct {
-	Process       string                        `json:"process"`
-	ProcessInput  *schema.SchemaNode            `json:"process_input,omitempty"`
-	ProcessOutput *schema.SchemaNode            `json:"process_output,omitempty"`
-	Tasks         map[string]TaskSchemas        `json:"tasks,omitempty"`
-	Defs          map[string]*schema.SchemaNode `json:"$defs,omitempty"`
+	Process       string                 `json:"process"`
+	ProcessInput  schema.Schema          `json:"process_input,omitzero"`
+	ProcessOutput schema.Schema          `json:"process_output,omitzero"`
+	Tasks         map[string]TaskSchemas `json:"tasks,omitempty"`
+	Defs          schema.Defs            `json:"$defs,omitzero"`
 }
 
 // RedactContext returns a copy of an instance's context_data with secret-derived
@@ -39,22 +39,23 @@ func RedactContext(ctxData map[string]any, sf SchemaFile) map[string]any {
 
 // buildSchemaContext derives the shared defs, tasks, and processInput from a definition.
 // Both Generate and ValidateChildProcessRefs use it to avoid duplicating setup.
-func buildSchemaContext(def *model.ProcessDefinition) (defs map[string]*schema.SchemaNode, tasks map[string]TaskSchemas, processInput *schema.SchemaNode, configSchema *schema.SchemaNode, err error) {
-	named := make(map[string]*schema.SchemaNode)
+func buildSchemaContext(def *model.ProcessDefinition) (defs schema.Defs, tasks map[string]TaskSchemas, processInput schema.Schema, configSchema schema.Schema, err error) {
+	named := make(map[string]schema.Schema)
 	if def.InputSchema != nil {
-		named["input"] = def.InputSchema
+		named["input"] = *def.InputSchema
 	}
 	collectNamedOutputs(def.Tasks, named)
+	defs = schema.NewDefs()
 	if len(named) > 0 {
-		defs, err = flattenNamedSchemas(named)
+		defs, err = schema.FlattenNamed(named)
 		if err != nil {
 			return
 		}
 	}
 	tasks = make(map[string]TaskSchemas)
 	collectTaskRefs(def.Tasks, tasks)
-	if named["input"] != nil {
-		processInput = schemaRef("input")
+	if _, ok := named["input"]; ok {
+		processInput = schema.Ref("input")
 	}
 	configSchema = buildConfigSchema(def.ConfigSchema)
 	return
@@ -66,27 +67,35 @@ func buildSchemaContext(def *model.ProcessDefinition) (defs map[string]*schema.S
 // required (non-null) only when it is actually guaranteed present at runtime — it
 // is in config_schema.required or has a default; everything else stays optional,
 // so accessing it yields a nullable type and the inferrer flags unsafe uses (e.g.
-// a possibly-null value interpolated into a URL). Returns nil when no config is
-// declared.
-func buildConfigSchema(cs *schema.SchemaNode) *schema.SchemaNode {
-	if cs == nil || len(cs.Properties) == 0 {
-		return nil
+// a possibly-null value interpolated into a URL). Returns the zero Schema when no
+// config is declared.
+func buildConfigSchema(cs *schema.Schema) schema.Schema {
+	if cs == nil {
+		return schema.Schema{}
 	}
-	present := make(map[string]bool, len(cs.Properties))
-	for _, r := range cs.Required {
+	props := cs.Properties()
+	if len(props) == 0 {
+		return schema.Schema{}
+	}
+	present := make(map[string]bool, len(props))
+	for _, r := range cs.Required() {
 		present[r] = true
 	}
-	for name, prop := range cs.Properties {
-		if prop != nil && prop.Default != nil {
+	for name, prop := range props {
+		if prop.Default() != nil {
 			present[name] = true
 		}
 	}
-	required := make([]string, 0, len(present))
-	for name := range present {
-		required = append(required, name)
+	names := make([]string, 0, len(props))
+	for name := range props {
+		names = append(names, name)
 	}
-	slices.Sort(required)
-	return &schema.SchemaNode{Type: schema.SchemaType{"object"}, Properties: cs.Properties, Required: required}
+	slices.Sort(names)
+	out := schema.Object()
+	for _, name := range names {
+		out = out.WithProperty(name, props[name], present[name])
+	}
+	return out
 }
 
 // Generate normalises all schemas in def and builds the SchemaFile output.
@@ -106,16 +115,12 @@ func Generate(def *model.ProcessDefinition) (SchemaFile, error) {
 		return SchemaFile{}, err
 	}
 
-	if defs == nil {
-		defs = make(map[string]*schema.SchemaNode)
-	}
-
 	for _, s := range def.Tasks {
 		if ts, ok := tasks[s.ID]; ok {
-			if ts.Input != nil && ts.Input.Properties != nil {
+			if ts.Input.HasProperties() {
 				name := uniqueDefName(s.ID+"_input", defs)
-				defs[name] = ts.Input
-				ts.Input = schemaRef(name)
+				defs.Set(name, ts.Input)
+				ts.Input = schema.Ref(name)
 				tasks[s.ID] = ts
 			}
 		}
@@ -127,34 +132,31 @@ func Generate(def *model.ProcessDefinition) (SchemaFile, error) {
 			return SchemaFile{}, err
 		}
 		name := uniqueDefName("output", defs)
-		defs[name] = outputSchema
-		result.ProcessOutput = schemaRef(name)
+		defs.Set(name, outputSchema)
+		result.ProcessOutput = schema.Ref(name)
 	}
 
 	if len(tasks) > 0 {
 		result.Tasks = tasks
 	}
-	if len(defs) > 0 {
-		result.Defs = defs
-	}
+	result.Defs = defs
 	return result, nil
 }
 
-func inferProcessOutput(def *model.ProcessDefinition, tasks map[string]TaskSchemas, processInput, configSchema *schema.SchemaNode, defs map[string]*schema.SchemaNode) (*schema.SchemaNode, error) {
+func inferProcessOutput(def *model.ProcessDefinition, tasks map[string]TaskSchemas, processInput, configSchema schema.Schema, defs schema.Defs) (schema.Schema, error) {
 	req, opt, errReq, errOpt := outputContextSets(def)
-	ctx := contextSchema(req, opt, tasks, processInput, configSchema, errReq, errOpt)
-	ctx = withDefs(ctx, defs)
+	ctx := contextSchema(req, opt, tasks, processInput, configSchema, errReq, errOpt).WithDefs(defs)
 	return inferShape(def.Output.Raw, ctx, "output")
 }
 
-func collectNamedOutputs(tasks []*model.Task, named map[string]*schema.SchemaNode) {
+func collectNamedOutputs(tasks []*model.Task, named map[string]schema.Schema) {
 	for _, s := range tasks {
 		if !s.Output.Present() {
 			continue
 		}
 		// Inferred during the per-task walk (it may be recursive); a permissive
 		// placeholder holds the $defs slot until then.
-		named[s.ID+"_output"] = &schema.SchemaNode{Type: schema.SchemaType{"object"}}
+		named[s.ID+"_output"] = schema.Object()
 	}
 }
 
@@ -167,66 +169,32 @@ func collectTaskRefs(tasks []*model.Task, out map[string]TaskSchemas) {
 		if s.Action != nil {
 			at = s.Action.Type
 		}
-		out[s.ID] = TaskSchemas{ActionType: at, Output: schemaRef(s.ID + "_output")}
+		out[s.ID] = TaskSchemas{ActionType: at, Output: schema.Ref(s.ID + "_output")}
 	}
 }
 
-func childParallelOutputSchema(s *model.Task) *schema.SchemaNode {
-	props := make(map[string]*schema.SchemaNode, len(s.Action.Children))
-	var required []string
-	for key, entry := range s.Action.Children {
+func childParallelOutputSchema(s *model.Task) schema.Schema {
+	keys := make([]string, 0, len(s.Action.Children))
+	for key := range s.Action.Children {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := schema.Object()
+	for _, key := range keys {
+		entry := s.Action.Children[key]
 		if entry.ResultSchema != nil {
-			props[key] = entry.ResultSchema
-			required = append(required, key)
+			out = out.WithProperty(key, *entry.ResultSchema, true)
 		} else {
-			props[key] = &schema.SchemaNode{Type: schema.SchemaType{"object"}}
+			out = out.WithProperty(key, schema.Object(), false)
 		}
 	}
-	return &schema.SchemaNode{
-		Type:       schema.SchemaType{"object"},
-		Properties: props,
-		Required:   required,
-	}
+	return out
 }
 
-func flattenNamedSchemas(named map[string]*schema.SchemaNode) (map[string]*schema.SchemaNode, error) {
-	defs := make(map[string]*schema.SchemaNode, len(named))
-	refs := make([]*schema.SchemaNode, 0, len(named))
-	for name, s := range named {
-		entry := deepCopyNode(s)
-		entry.ID = name
-		defs[name] = entry
-		refs = append(refs, schemaRef(name))
-	}
-	container := &schema.SchemaNode{Defs: defs, AllOf: refs}
-	normalised, err := schema.FromNode(container).Normalize()
-	if err != nil {
-		return nil, err
-	}
-	return normalised.Node().Defs, nil
-}
-
-func uniqueDefName(base string, defs map[string]*schema.SchemaNode) string {
+func uniqueDefName(base string, defs schema.Defs) string {
 	name := base
-	for i := 1; defs[name] != nil; i++ {
+	for i := 1; defs.Has(name); i++ {
 		name = fmt.Sprintf("%s_%d", base, i)
 	}
 	return name
-}
-
-func schemaRef(name string) *schema.SchemaNode {
-	return &schema.SchemaNode{Ref: "#/$defs/" + name}
-}
-
-func deepCopyNode(n *schema.SchemaNode) *schema.SchemaNode {
-	if n == nil {
-		return nil
-	}
-	b, _ := json.Marshal(n)
-	// Use alias to bypass strict UnmarshalJSON on a round-trip of already-valid data.
-	type alias schema.SchemaNode
-	var a alias
-	json.Unmarshal(b, &a) //nolint:errcheck
-	result := schema.SchemaNode(a)
-	return &result
 }

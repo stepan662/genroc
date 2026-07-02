@@ -14,23 +14,32 @@ func lookupFrom(m map[string]string) func(string) (string, bool) {
 	}
 }
 
-func prim(typ string) *schema.SchemaNode { return &schema.SchemaNode{Type: schema.SchemaType{typ}} }
-
-func cfgSchema(required []string, props map[string]*schema.SchemaNode) *schema.SchemaNode {
-	return &schema.SchemaNode{Type: schema.SchemaType{"object"}, Required: required, Properties: props}
+// cfgSchema parses a JSON schema for a test definition, panicking on error
+// (test fixtures are constants).
+func cfgSchema(src string) *schema.Schema {
+	raw, err := schema.Parse([]byte(src))
+	if err != nil {
+		panic(err)
+	}
+	s := raw.AssumeNormalized()
+	return &s
 }
 
 func TestResolveConfig(t *testing.T) {
 	// Process "billing" → process-scoped keys GENROC_BILLING_<NAME>.
 	def := &ProcessDefinition{
 		Name: "billing",
-		ConfigSchema: cfgSchema([]string{"SERVER_URL"}, map[string]*schema.SchemaNode{
-			"SERVER_URL": prim("string"),
-			"PORT":       prim("integer"),
-			"RATE":       prim("number"),
-			"DEBUG":      prim("boolean"),
-			"REGION":     {Type: schema.SchemaType{"string"}, Default: "us"},
-		}),
+		ConfigSchema: cfgSchema(`{
+			"type": "object",
+			"required": ["SERVER_URL"],
+			"properties": {
+				"SERVER_URL": {"type": "string"},
+				"PORT":       {"type": "integer"},
+				"RATE":       {"type": "number"},
+				"DEBUG":      {"type": "boolean"},
+				"REGION":     {"type": "string", "default": "us"}
+			}
+		}`),
 	}
 
 	t.Run("process-scoped coerces types and applies default", func(t *testing.T) {
@@ -112,7 +121,7 @@ func TestResolveConfig(t *testing.T) {
 		} {
 			_, err := def.ResolveConfig(lookupFrom(map[string]string{
 				"GENROC_GLOBAL_SERVER_URL": "http://x",
-				tc.key:                   tc.val,
+				tc.key:                     tc.val,
 			}))
 			if err == nil {
 				t.Errorf("%s=%q: expected coercion error", tc.key, tc.val)
@@ -133,9 +142,11 @@ func TestResolveConfig(t *testing.T) {
 func TestResolveConfigEnum(t *testing.T) {
 	def := &ProcessDefinition{
 		Name: "p",
-		ConfigSchema: cfgSchema([]string{"ENV"}, map[string]*schema.SchemaNode{
-			"ENV": {Type: schema.SchemaType{"string"}, Enum: []any{"dev", "prod"}},
-		}),
+		ConfigSchema: cfgSchema(`{
+			"type": "object",
+			"required": ["ENV"],
+			"properties": {"ENV": {"type": "string", "enum": ["dev", "prod"]}}
+		}`),
 	}
 	if _, err := def.ResolveConfig(lookupFrom(map[string]string{"GENROC_GLOBAL_ENV": "prod"})); err != nil {
 		t.Fatalf("prod should be valid: %v", err)
@@ -149,7 +160,7 @@ func TestResolveConfigEnum(t *testing.T) {
 func TestResolveConfigProcessNameNormalization(t *testing.T) {
 	def := &ProcessDefinition{
 		Name:         "order-flow.v2",
-		ConfigSchema: cfgSchema([]string{"URL"}, map[string]*schema.SchemaNode{"URL": prim("string")}),
+		ConfigSchema: cfgSchema(`{"type":"object","required":["URL"],"properties":{"URL":{"type":"string"}}}`),
 	}
 	cfg, err := def.ResolveConfig(lookupFrom(map[string]string{
 		"GENROC_ORDER_FLOW_V2_URL": "http://x",
@@ -167,11 +178,15 @@ func TestResolveConfigProcessNameNormalization(t *testing.T) {
 func TestResolveConfigCaseInsensitiveName(t *testing.T) {
 	def := &ProcessDefinition{
 		Name: "billing",
-		ConfigSchema: cfgSchema([]string{"server_url"}, map[string]*schema.SchemaNode{
-			"server_url": prim("string"),  // snake_case
-			"e2e_port":   prim("integer"), //
-			"apiKey":     prim("string"),  // camelCase → API_KEY
-		}),
+		ConfigSchema: cfgSchema(`{
+			"type": "object",
+			"required": ["server_url"],
+			"properties": {
+				"server_url": {"type": "string"},
+				"e2e_port":   {"type": "integer"},
+				"apiKey":     {"type": "string"}
+			}
+		}`),
 	}
 	cfg, err := def.ResolveConfig(lookupFrom(map[string]string{
 		"GENROC_GLOBAL_SERVER_URL": "http://x",
@@ -221,9 +236,11 @@ func TestEnvToken(t *testing.T) {
 func TestResolveConfigRedactsSecretInError(t *testing.T) {
 	def := &ProcessDefinition{
 		Name: "p",
-		ConfigSchema: cfgSchema([]string{"API_KEY"}, map[string]*schema.SchemaNode{
-			"API_KEY": {Type: schema.SchemaType{"number"}, Secret: true},
-		}),
+		ConfigSchema: cfgSchema(`{
+			"type": "object",
+			"required": ["API_KEY"],
+			"properties": {"API_KEY": {"type": "number", "secret": true}}
+		}`),
 	}
 	_, err := def.ResolveConfig(lookupFrom(map[string]string{"GENROC_GLOBAL_API_KEY": "supersecret"}))
 	if err == nil {
@@ -241,7 +258,7 @@ func TestResolveConfigRedactsSecretInError(t *testing.T) {
 func TestResolveConfigShowsNonSecretInError(t *testing.T) {
 	def := &ProcessDefinition{
 		Name:         "p",
-		ConfigSchema: cfgSchema([]string{"PORT"}, map[string]*schema.SchemaNode{"PORT": {Type: schema.SchemaType{"integer"}}}),
+		ConfigSchema: cfgSchema(`{"type":"object","required":["PORT"],"properties":{"PORT":{"type":"integer"}}}`),
 	}
 	_, err := def.ResolveConfig(lookupFrom(map[string]string{"GENROC_GLOBAL_PORT": "abc"}))
 	if err == nil || !strings.Contains(err.Error(), "abc") {
@@ -251,10 +268,13 @@ func TestResolveConfigShowsNonSecretInError(t *testing.T) {
 
 func TestSecretConfigValues(t *testing.T) {
 	def := &ProcessDefinition{
-		ConfigSchema: cfgSchema(nil, map[string]*schema.SchemaNode{
-			"API_KEY":    {Type: schema.SchemaType{"string"}, Secret: true},
-			"SERVER_URL": prim("string"),
-		}),
+		ConfigSchema: cfgSchema(`{
+			"type": "object",
+			"properties": {
+				"API_KEY":    {"type": "string", "secret": true},
+				"SERVER_URL": {"type": "string"}
+			}
+		}`),
 	}
 	secrets := def.SecretConfigValues(map[string]any{"API_KEY": "s3cr3t", "SERVER_URL": "http://x"})
 	if len(secrets) != 1 || secrets[0] != "s3cr3t" {
@@ -263,26 +283,22 @@ func TestSecretConfigValues(t *testing.T) {
 }
 
 func TestValidateConfigSchema(t *testing.T) {
-	nested := &schema.SchemaNode{
-		Type:       schema.SchemaType{"object"},
-		Properties: map[string]*schema.SchemaNode{"a": prim("string")},
-	}
 	tests := []struct {
 		name    string
-		cs      *schema.SchemaNode
+		cs      *schema.Schema
 		wantErr string
 	}{
 		{"nil is ok", nil, ""},
-		{"valid flat object", cfgSchema([]string{"OK"}, map[string]*schema.SchemaNode{"OK": prim("integer")}), ""},
-		{"not an object", prim("string"), `must be type "object"`},
-		{"nested object property", cfgSchema(nil, map[string]*schema.SchemaNode{"X": nested}), "unsupported type"},
-		{"scalar with nested structure", cfgSchema(nil, map[string]*schema.SchemaNode{"X": {Type: schema.SchemaType{"string"}, Items: prim("string")}}), "primitive value"},
-		{"unsupported type", cfgSchema(nil, map[string]*schema.SchemaNode{"X": prim("date")}), "unsupported type"},
-		{"combinator", &schema.SchemaNode{Type: schema.SchemaType{"object"}, OneOf: []*schema.SchemaNode{prim("string")}}, "oneOf/anyOf/allOf"},
-		{"required unknown property", cfgSchema([]string{"NOPE"}, map[string]*schema.SchemaNode{"X": prim("string")}), "unknown property"},
-		{"required with default", cfgSchema([]string{"X"}, map[string]*schema.SchemaNode{"X": {Type: schema.SchemaType{"string"}, Default: "a"}}), "cannot be both required and have a default"},
-		{"invalid name", cfgSchema(nil, map[string]*schema.SchemaNode{"bad-name": prim("string")}), "valid identifier"},
-		{"env-key collision", cfgSchema(nil, map[string]*schema.SchemaNode{"server_url": prim("string"), "SERVER_URL": prim("string")}), "same environment variable suffix"},
+		{"valid flat object", cfgSchema(`{"type":"object","required":["OK"],"properties":{"OK":{"type":"integer"}}}`), ""},
+		{"not an object", cfgSchema(`{"type":"string"}`), `must be type "object"`},
+		{"nested object property", cfgSchema(`{"type":"object","properties":{"X":{"type":"object","properties":{"a":{"type":"string"}}}}}`), "unsupported type"},
+		{"scalar with nested structure", cfgSchema(`{"type":"object","properties":{"X":{"type":"string","items":{"type":"string"}}}}`), "primitive value"},
+		{"unsupported type", cfgSchema(`{"type":"object","properties":{"X":{"type":"date"}}}`), "unsupported type"},
+		{"combinator", cfgSchema(`{"type":"object","oneOf":[{"type":"string"}]}`), "oneOf/anyOf/allOf"},
+		{"required unknown property", cfgSchema(`{"type":"object","required":["NOPE"],"properties":{"X":{"type":"string"}}}`), "unknown property"},
+		{"required with default", cfgSchema(`{"type":"object","required":["X"],"properties":{"X":{"type":"string","default":"a"}}}`), "cannot be both required and have a default"},
+		{"invalid name", cfgSchema(`{"type":"object","properties":{"bad-name":{"type":"string"}}}`), "valid identifier"},
+		{"env-key collision", cfgSchema(`{"type":"object","properties":{"server_url":{"type":"string"},"SERVER_URL":{"type":"string"}}}`), "same environment variable suffix"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

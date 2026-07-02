@@ -22,7 +22,7 @@ func TestGenerate_OutputSingleExpressionPassthrough(t *testing.T) {
 		]
 	}`)
 	assertJSON(t, out.Tasks["charge"].Output, `{"$ref": "#/$defs/charge_output"}`)
-	assertJSON(t, out.Defs["charge_output"], `{
+	assertJSON(t, defOf(out, "charge_output"), `{
 		"type":"object",
 		"properties":{"charged":{"type":"boolean"}},
 		"required":["charged"]
@@ -46,7 +46,7 @@ func TestGenerate_OutputNestedObject(t *testing.T) {
 			}
 		]
 	}`)
-	assertJSON(t, out.Defs["charge_output"], `{
+	assertJSON(t, defOf(out, "charge_output"), `{
 		"type":"object",
 		"properties":{
 			"data":{
@@ -88,7 +88,7 @@ func TestGenerate_ProcessOutputSingleExpressionScalar(t *testing.T) {
   "output": "{{ outputs.charge.charged }}"
 }`)
 	assertJSON(t, out.ProcessOutput, `{"$ref": "#/$defs/output"}`)
-	assertJSON(t, out.Defs["output"], `{"type":"boolean"}`)
+	assertJSON(t, defOf(out, "output"), `{"type":"boolean"}`)
 }
 
 // A recursive single-expression output is driven by the same fixpoint as the
@@ -105,5 +105,5 @@ func TestGenerate_OutputRecursiveSingleExpression(t *testing.T) {
 			}
 		]
 	}`)
-	assertJSON(t, out.Defs["loop_output"], `{"type":"integer"}`)
+	assertJSON(t, defOf(out, "loop_output"), `{"type":"integer"}`)
 }

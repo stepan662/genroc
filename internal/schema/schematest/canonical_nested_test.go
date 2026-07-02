@@ -6,18 +6,10 @@ import (
 	"genroc/internal/schema"
 )
 
-func anyOf(vs ...*schema.SchemaNode) *schema.SchemaNode { return &schema.SchemaNode{AnyOf: vs} }
-func allOf(vs ...*schema.SchemaNode) *schema.SchemaNode { return &schema.SchemaNode{AllOf: vs} }
-
-// objP builds {type:object, properties:{name: v}, required:[name]}.
-func objP(name string, v *schema.SchemaNode) *schema.SchemaNode {
-	return obj([]string{name}, map[string]*schema.SchemaNode{name: v})
-}
-
 func TestCanonicalize_NestedObjectsInCompositions(t *testing.T) {
 	tests := []struct {
 		name string
-		a, b *schema.SchemaNode
+		a, b schema.Schema
 	}{
 		{
 			"oneOf of objects: variant order + inner union canonicalized",

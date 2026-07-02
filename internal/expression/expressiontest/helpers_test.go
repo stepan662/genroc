@@ -17,7 +17,7 @@ func ctx(t *testing.T, s string) schema.Schema {
 	if err != nil {
 		t.Fatalf("invalid context schema JSON: %v", err)
 	}
-	return sc
+	return sc.AssumeNormalized()
 }
 
 // infer calls InferType and fails the test on error.
@@ -27,7 +27,9 @@ func infer(t *testing.T, expr string, s schema.Schema) map[string]any {
 	if err != nil {
 		t.Fatalf("InferType(%q): %v", expr, err)
 	}
-	return got.Raw()
+	// Inferred sub-schemas carry the context's root $defs for resolvability; these
+	// tests compare bare types, so drop them.
+	return got.WithoutDefs().AsMap()
 }
 
 // inferErr calls InferType, expects an error, and optionally checks that the

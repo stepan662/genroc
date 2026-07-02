@@ -41,7 +41,7 @@ func InferType(s string, sc schema.Schema) (schema.Schema, error) {
 			return schema.Schema{}, err
 		}
 	}
-	return schema.FromNode(&schema.SchemaNode{Type: schema.SchemaType{"string"}}), nil
+	return schema.Type("string"), nil
 }
 
 // ReferencesSecret reports whether any expression embedded in the template reads
@@ -96,7 +96,7 @@ func checkMixedNullability(s string, sc schema.Schema) error {
 		if err != nil {
 			return fmt.Errorf("template expression %q: %w", expr, err)
 		}
-		if schema.HasNullType(inferred.Node()) {
+		if inferred.HasNull() {
 			return fmt.Errorf("template expression %q may be null; use ?? to provide a default value", expr)
 		}
 	}

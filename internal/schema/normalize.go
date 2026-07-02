@@ -7,24 +7,24 @@ import (
 )
 
 type normContext struct {
-	definitions map[string]*Def
-	anchors     map[string]*Def
-	references  []*Ref
+	definitions map[string]*defEntry
+	anchors     map[string]*defEntry
+	references  []*refSite
 }
 
-// Def holds a collected definition and its eventual flattened name.
-type Def struct {
+// defEntry holds a collected definition and its eventual flattened name.
+type defEntry struct {
 	OriginalName string
 	NewName      string
-	Node         *SchemaNode
+	Node         *node
 	Used         bool
 }
 
-// Ref holds a collected $ref and a pointer to the SchemaNode containing it
+// refSite holds a collected $ref and a pointer to the node containing it
 // so the value can be rewritten in place later.
-type Ref struct {
+type refSite struct {
 	RefValue     string
-	Node         *SchemaNode
+	Node         *node
 	ResourceBase string
 }
 
@@ -55,39 +55,39 @@ func (e ErrUnresolvedRef) Error() string {
 
 // normalize flattens all $defs to the root, removes unused definitions,
 // and rewrites $ref values to point to the new flat locations.
-func normalize(schema *SchemaNode) (*SchemaNode, error) {
+func normalize(schema *node) (*node, error) {
 	if schema == nil {
 		return nil, nil
 	}
 	ctx := &normContext{
-		definitions: make(map[string]*Def),
-		anchors:     make(map[string]*Def),
-		references:  make([]*Ref, 0),
+		definitions: make(map[string]*defEntry),
+		anchors:     make(map[string]*defEntry),
+		references:  make([]*refSite, 0),
 	}
 
 	// Phase 1: collect all definitions, anchors, and references from the whole tree.
-	walkTree(schema, nil, func(node *SchemaNode, path []string, resourceBase string) {
+	walkTree(schema, nil, func(nd *node, path []string, resourceBase string) {
 		if len(path) >= 2 && path[len(path)-2] == "$defs" {
 			key := strings.Join(path, "/")
 			if _, exists := ctx.definitions[key]; !exists {
-				def := &Def{OriginalName: path[len(path)-1], Node: node}
+				def := &defEntry{OriginalName: path[len(path)-1], Node: nd}
 				ctx.definitions[key] = def
-				if node.Anchor != "" && resourceBase == "" {
-					ctx.anchors[node.Anchor] = def
+				if nd.Anchor != "" && resourceBase == "" {
+					ctx.anchors[nd.Anchor] = def
 				}
 			}
-		} else if node.Anchor != "" && resourceBase == "" {
-			key := strings.Join(append(cp(path), "$anchor", node.Anchor), "/")
+		} else if nd.Anchor != "" && resourceBase == "" {
+			key := strings.Join(append(cp(path), "$anchor", nd.Anchor), "/")
 			if _, exists := ctx.definitions[key]; !exists {
-				def := &Def{OriginalName: node.Anchor, Node: node}
+				def := &defEntry{OriginalName: nd.Anchor, Node: nd}
 				ctx.definitions[key] = def
-				ctx.anchors[node.Anchor] = def
+				ctx.anchors[nd.Anchor] = def
 			}
 		}
-		if node.Ref != "" {
-			ctx.references = append(ctx.references, &Ref{
-				RefValue:     node.Ref,
-				Node:         node,
+		if nd.Ref != "" {
+			ctx.references = append(ctx.references, &refSite{
+				RefValue:     nd.Ref,
+				Node:         nd,
 				ResourceBase: resourceBase,
 			})
 		}
@@ -105,16 +105,16 @@ func normalize(schema *SchemaNode) (*SchemaNode, error) {
 	}
 
 	// Phase 3: strip $defs, $id, and $anchor from every node in the tree.
-	walkTree(schema, nil, func(node *SchemaNode, _ []string, _ string) {
-		node.ID = ""
-		node.Defs = nil
-		node.Anchor = ""
+	walkTree(schema, nil, func(nd *node, _ []string, _ string) {
+		nd.ID = ""
+		nd.Defs = nil
+		nd.Anchor = ""
 	})
 	for _, def := range ctx.definitions {
-		walkTree(def.Node, nil, func(node *SchemaNode, _ []string, _ string) {
-			node.ID = ""
-			node.Defs = nil
-			node.Anchor = ""
+		walkTree(def.Node, nil, func(nd *node, _ []string, _ string) {
+			nd.ID = ""
+			nd.Defs = nil
+			nd.Anchor = ""
 		})
 	}
 
@@ -126,7 +126,7 @@ func normalize(schema *SchemaNode) (*SchemaNode, error) {
 		}
 	}
 	sort.Strings(defKeys)
-	rootDefs := make(map[string]*SchemaNode)
+	rootDefs := make(map[string]*node)
 	for _, k := range defKeys {
 		def := ctx.definitions[k]
 		def.NewName = getUniqueName(def.OriginalName, rootDefs)
@@ -148,10 +148,10 @@ func normalize(schema *SchemaNode) (*SchemaNode, error) {
 }
 
 // walkTree calls fn(node, path, resourceBase) for the given node and all nested
-// schema nodes, covering every keyword in SchemaNode that can contain sub-schemas.
-func walkTree(node *SchemaNode, path []string, fn func(*SchemaNode, []string, string)) {
-	var walk func(*SchemaNode, []string, string)
-	walk = func(n *SchemaNode, p []string, resourceBase string) {
+// schema nodes, covering every keyword in node that can contain sub-schemas.
+func walkTree(nd *node, path []string, fn func(*node, []string, string)) {
+	var walk func(*node, []string, string)
+	walk = func(n *node, p []string, resourceBase string) {
 		if n == nil {
 			return
 		}
@@ -188,10 +188,10 @@ func walkTree(node *SchemaNode, path []string, fn func(*SchemaNode, []string, st
 			}
 		}
 	}
-	walk(node, path, "")
+	walk(nd, path, "")
 }
 
-func (ctx *normContext) resolveRef(ref string, resourceBase string) (*Def, error) {
+func (ctx *normContext) resolveRef(ref string, resourceBase string) (*defEntry, error) {
 	if strings.HasPrefix(ref, "#/$defs/") {
 		path := strings.TrimPrefix(ref, "#/")
 		def := ctx.resolveDef(path, resourceBase)
@@ -211,7 +211,7 @@ func (ctx *normContext) resolveRef(ref string, resourceBase string) (*Def, error
 	return nil, ErrUnsupportedRef{Ref: ref}
 }
 
-func (ctx *normContext) resolveDef(path string, resourceBase string) *Def {
+func (ctx *normContext) resolveDef(path string, resourceBase string) *defEntry {
 	if def, ok := ctx.definitions[path]; ok {
 		return def
 	}
@@ -223,7 +223,7 @@ func (ctx *normContext) resolveDef(path string, resourceBase string) *Def {
 	return nil
 }
 
-func getUniqueName(name string, existing map[string]*SchemaNode) string {
+func getUniqueName(name string, existing map[string]*node) string {
 	newName := name
 	for i := 1; existing[newName] != nil; i++ {
 		newName = fmt.Sprintf("%s_%d", name, i)

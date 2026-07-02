@@ -8,19 +8,29 @@ import (
 	"genroc/internal/schema"
 )
 
+// mustResultSchema parses a JSON schema fixture, panicking on error.
+func mustResultSchema(src string) *schema.Schema {
+	raw, err := schema.Parse([]byte(src))
+	if err != nil {
+		panic(err)
+	}
+	s := raw.AssumeNormalized()
+	return &s
+}
+
 // A result_schema field marked secret is redacted from the logged response body
 // (action_succeeded), so a "secret server-response key" never reaches the trail.
 func TestSnippetResultRedactsSecret(t *testing.T) {
 	e := &Engine{logCfg: LogConfig{Payloads: true}}
 	task := &model.Task{Action: &model.Action{
 		Type: model.ActionTypeREST,
-		ResultSchema: &schema.SchemaNode{
-			Type: schema.SchemaType{"object"},
-			Properties: map[string]*schema.SchemaNode{
-				"token": {Type: schema.SchemaType{"string"}, Secret: true},
-				"name":  {Type: schema.SchemaType{"string"}},
-			},
-		},
+		ResultSchema: mustResultSchema(`{
+			"type": "object",
+			"properties": {
+				"token": {"type": "string", "secret": true},
+				"name":  {"type": "string"}
+			}
+		}`),
 	}}
 	body := map[string]any{"token": "s3cr3t-token", "name": "public"}
 

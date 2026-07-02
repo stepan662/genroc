@@ -196,7 +196,7 @@ func TestGenerate_Input_SwitchOnlyStepSkippedInContext(t *testing.T) {
 	if _, ok := out.Tasks["route"]; ok {
 		t.Error("switch-only task should not appear in tasks")
 	}
-	if out.Tasks["ship"].Output == nil {
+	if out.Tasks["ship"].Output.IsZero() {
 		t.Error("ship should have an output schema")
 	}
 }
@@ -243,15 +243,15 @@ func TestGenerate_Input_Params(t *testing.T) {
   ]
 }`)
 	assertJSON(t, out.Tasks["charge"].Input, `{"$ref": "#/$defs/charge_input"}`)
-	input := out.Defs["charge_input"]
-	if input == nil {
+	input := defOf(out, "charge_input")
+	if input.IsZero() {
 		t.Fatal("charge_input not found in defs")
 	}
-	if !input.Type.Contains("object") {
-		t.Errorf("input type: got %v, want object", input.Type)
+	if !input.Type().Contains("object") {
+		t.Errorf("input type: got %v, want object", input.Type())
 	}
-	assertJSON(t, input.Properties["id"], `{"type": "integer"}`)
-	assertJSON(t, input.Properties["sum"], `{"type": "number"}`)
+	assertJSON(t, input.Properties()["id"], `{"type": "integer"}`)
+	assertJSON(t, input.Properties()["sum"], `{"type": "number"}`)
 }
 
 func TestGenerate_Input_InputOnlyTask(t *testing.T) {
@@ -267,7 +267,7 @@ func TestGenerate_Input_InputOnlyTask(t *testing.T) {
 		t.Fatal("task with action input but no result_schema should appear in tasks")
 	}
 	assertJSON(t, out.Tasks["log"].Input, `{"$ref": "#/$defs/log_input"}`)
-	assertJSON(t, out.Defs["log_input"], `{
+	assertJSON(t, defOf(out, "log_input"), `{
 		"type": "object",
 		"properties": { "uid": { "type": "string" } },
 		"required": ["uid"]
@@ -316,11 +316,11 @@ func TestGenerate_Input_OneOfOutputPropertyAccess(t *testing.T) {
   ]
 }`)
 	assertJSON(t, out.Tasks["check_fraud"].Input, `{"$ref": "#/$defs/check_fraud_input"}`)
-	cfInput := out.Defs["check_fraud_input"]
-	if cfInput == nil {
+	cfInput := defOf(out, "check_fraud_input")
+	if cfInput.IsZero() {
 		t.Fatal("check_fraud_input not found in defs")
 	}
-	assertJSON(t, cfInput.Properties["result"], `{"type":["boolean","null"]}`)
+	assertJSON(t, cfInput.Properties()["result"], `{"type":["boolean","null"]}`)
 }
 
 func TestGenerate_MixedTemplate_NullableExpressionRejected(t *testing.T) {
@@ -473,8 +473,8 @@ func TestGenerate_CrossStepMutualRecursion(t *testing.T) {
 		],
 		"output":{"num":"{{ outputs.start.num }}"}
 	}`)
-	assertJSON(t, out.Defs["loop_output"], `{"type":"object","properties":{"num":{"type":"integer"}},"required":["num"]}`)
-	assertJSON(t, out.Defs["start_output"], `{"type":"object","properties":{"num":{"type":["integer","null"]}},"required":["num"]}`)
+	assertJSON(t, defOf(out, "loop_output"), `{"type":"object","properties":{"num":{"type":"integer"}},"required":["num"]}`)
+	assertJSON(t, defOf(out, "start_output"), `{"type":"object","properties":{"num":{"type":["integer","null"]}},"required":["num"]}`)
 }
 
 func TestGenerate_UnboundedRecursionFailsFast(t *testing.T) {
@@ -574,9 +574,9 @@ func TestGenerate_ThreeStepMutualRecursion(t *testing.T) {
 			 "switch":[{"case":"self.output.n < input.ttl","goto":"$a"},{"goto":"end"}]}
 		]
 	}`)
-	assertJSON(t, out.Defs["c_output"], `{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}`)
-	assertJSON(t, out.Defs["a_output"], `{"type":"object","properties":{"n":{"type":["integer","null"]}},"required":["n"]}`)
-	assertJSON(t, out.Defs["b_output"], `{"type":"object","properties":{"n":{"type":["integer","null"]}},"required":["n"]}`)
+	assertJSON(t, defOf(out, "c_output"), `{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}`)
+	assertJSON(t, defOf(out, "a_output"), `{"type":"object","properties":{"n":{"type":["integer","null"]}},"required":["n"]}`)
+	assertJSON(t, defOf(out, "b_output"), `{"type":"object","properties":{"n":{"type":["integer","null"]}},"required":["n"]}`)
 }
 
 func TestGenerate_ForwardCrossStepRefRequiresCycle(t *testing.T) {
@@ -605,7 +605,7 @@ func TestGenerate_AcyclicOutputChain(t *testing.T) {
 		]
 	}`)
 	for _, id := range []string{"first_output", "second_output", "third_output"} {
-		assertJSON(t, out.Defs[id], `{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}`)
+		assertJSON(t, defOf(out, id), `{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}`)
 	}
 }
 
@@ -715,14 +715,14 @@ func TestGenerate_RecursiveStep_OwnOutputOptionalInParams(t *testing.T) {
   ]
 }`)
 	assertJSON(t, out.Tasks["loop"].Input, `{"$ref": "#/$defs/loop_input"}`)
-	loopInput := out.Defs["loop_input"]
-	if loopInput == nil || loopInput.Properties == nil {
+	loopInput := defOf(out, "loop_input")
+	if loopInput.IsZero() || !loopInput.HasProperties() {
 		t.Fatal("loop input should have properties")
 	}
-	if loopInput.Properties["task_index"] == nil {
+	if loopInput.Properties()["task_index"].IsZero() {
 		t.Error("task_index input field should be inferred")
 	}
-	if loopInput.Properties["tasks"] == nil {
+	if loopInput.Properties()["tasks"].IsZero() {
 		t.Error("tasks input field should be inferred")
 	}
 }
@@ -781,11 +781,11 @@ func TestGenerate_SwitchStep_NextStepNotReachableViaFallthrough(t *testing.T) {
   ]
 }`)
 	assertJSON(t, out.Tasks["work"].Input, `{"$ref": "#/$defs/work_input"}`)
-	workInput := out.Defs["work_input"]
-	if workInput == nil || workInput.Properties == nil {
+	workInput := defOf(out, "work_input")
+	if workInput.IsZero() || !workInput.HasProperties() {
 		t.Fatal("work input should have properties")
 	}
-	assertJSON(t, workInput.Properties["flag"], `{"type": "boolean"}`)
+	assertJSON(t, workInput.Properties()["flag"], `{"type": "boolean"}`)
 }
 
 func TestGenerate_Switch_OneOfAllBooleanAccepted(t *testing.T) {

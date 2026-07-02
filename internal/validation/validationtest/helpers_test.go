@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"genroc/internal/model"
+	"genroc/internal/schema"
 	"genroc/internal/validation"
 )
 
@@ -32,11 +33,14 @@ func runGenerateErr(t *testing.T, defJSON string) error {
 }
 
 func defKeys(out validation.SchemaFile) []string {
-	keys := make([]string, 0, len(out.Defs))
-	for k := range out.Defs {
-		keys = append(keys, k)
-	}
-	return keys
+	return out.Defs.Names()
+}
+
+// defOf returns the named definition (the zero Schema when absent), so
+// assertions can inspect it through the accessor API.
+func defOf(out validation.SchemaFile, name string) schema.Schema {
+	s, _ := out.Defs.Get(name)
+	return s
 }
 
 func assertJSON(t *testing.T, got any, wantJSON string) {

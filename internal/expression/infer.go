@@ -23,40 +23,31 @@ import (
 )
 
 // inferCtx is the immutable type-inference context threaded through all infer
-// calls. s and defs are shared across branches; guards is a shallow-copied
-// overlay that maps dot-paths to schema overrides for type-narrowed branches.
+// calls. s is the context schema (carrying the root $defs every navigation
+// resolves against); guards is a shallow-copied overlay mapping dot-paths to
+// schema overrides for type-narrowed branches.
 type inferCtx struct {
-	s      *schema.SchemaNode
-	defs   map[string]*schema.SchemaNode
-	guards map[string]*schema.SchemaNode
+	s      schema.Schema
+	guards map[string]schema.Schema
 }
 
-func (c inferCtx) withGuard(path string, narrowed *schema.SchemaNode) inferCtx {
-	guards := make(map[string]*schema.SchemaNode, len(c.guards)+1)
+func (c inferCtx) withGuard(path string, narrowed schema.Schema) inferCtx {
+	guards := make(map[string]schema.Schema, len(c.guards)+1)
 	for k, v := range c.guards {
 		guards[k] = v
 	}
 	guards[path] = narrowed
-	return inferCtx{s: c.s, defs: c.defs, guards: guards}
+	return inferCtx{s: c.s, guards: guards}
 }
 
 // InferType statically determines the JSON Schema type of expression when
-// evaluated against s. $refs are resolved against s's $defs.
+// evaluated against s. $refs are resolved against s's root $defs.
 func InferType(expression string, s schema.Schema) (schema.Schema, error) {
-	node := s.Node()
-	var defs map[string]*schema.SchemaNode
-	if node != nil {
-		defs = node.Defs
-	}
 	tree, err := parser.Parse(expression)
 	if err != nil {
 		return schema.Schema{}, fmt.Errorf("parse %q: %w", expression, err)
 	}
-	result, err := inferNode(tree.Node, inferCtx{s: node, defs: defs})
-	if err != nil {
-		return schema.Schema{}, err
-	}
-	return schema.FromNode(result), nil
+	return inferNode(tree.Node, inferCtx{s: s})
 }
 
 // ReferencesSecret reports whether expression reads any value whose schema — or
@@ -70,35 +61,30 @@ func ReferencesSecret(expression string, s schema.Schema) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("parse %q: %w", expression, err)
 	}
-	node := s.Node()
-	var defs map[string]*schema.SchemaNode
-	if node != nil {
-		defs = node.Defs
-	}
-	return walkSecretRefs(tree.Node, node, defs), nil
+	return walkSecretRefs(tree.Node, s), nil
 }
 
-func walkSecretRefs(n ast.Node, root *schema.SchemaNode, defs map[string]*schema.SchemaNode) bool {
+func walkSecretRefs(n ast.Node, s schema.Schema) bool {
 	if n == nil {
 		return false
 	}
-	if path := nodePath(n); path != "" && schema.Wrap(root, defs).SecretAt(path) {
+	if path := nodePath(n); path != "" && s.SecretAt(path) {
 		return true
 	}
 	switch x := n.(type) {
 	case *ast.MemberNode:
-		return walkSecretRefs(x.Node, root, defs) || walkSecretRefs(x.Property, root, defs)
+		return walkSecretRefs(x.Node, s) || walkSecretRefs(x.Property, s)
 	case *ast.BinaryNode:
-		return walkSecretRefs(x.Left, root, defs) || walkSecretRefs(x.Right, root, defs)
+		return walkSecretRefs(x.Left, s) || walkSecretRefs(x.Right, s)
 	case *ast.UnaryNode:
-		return walkSecretRefs(x.Node, root, defs)
+		return walkSecretRefs(x.Node, s)
 	case *ast.ConditionalNode:
-		return walkSecretRefs(x.Cond, root, defs) || walkSecretRefs(x.Exp1, root, defs) || walkSecretRefs(x.Exp2, root, defs)
+		return walkSecretRefs(x.Cond, s) || walkSecretRefs(x.Exp1, s) || walkSecretRefs(x.Exp2, s)
 	}
 	return false
 }
 
-func inferNode(node ast.Node, ictx inferCtx) (*schema.SchemaNode, error) {
+func inferNode(node ast.Node, ictx inferCtx) (schema.Schema, error) {
 	switch n := node.(type) {
 	case *ast.IntegerNode:
 		return typeSchema("integer"), nil
@@ -109,7 +95,7 @@ func inferNode(node ast.Node, ictx inferCtx) (*schema.SchemaNode, error) {
 	case *ast.BoolNode:
 		return typeSchema("boolean"), nil
 	case *ast.NilNode:
-		return nil, fmt.Errorf("nil is not supported; use null")
+		return schema.Schema{}, fmt.Errorf("nil is not supported; use null")
 	case *ast.IdentifierNode:
 		if n.Value == "null" {
 			return typeSchema("null"), nil
@@ -117,8 +103,7 @@ func inferNode(node ast.Node, ictx inferCtx) (*schema.SchemaNode, error) {
 		if s, ok := ictx.guards[n.Value]; ok {
 			return s, nil
 		}
-		sub, err := schema.Wrap(ictx.s, ictx.defs).Property(n.Value)
-		return sub.Node(), err
+		return ictx.s.Property(n.Value)
 	case *ast.MemberNode:
 		return inferMember(n, ictx)
 	case *ast.BinaryNode:
@@ -128,11 +113,11 @@ func inferNode(node ast.Node, ictx inferCtx) (*schema.SchemaNode, error) {
 	case *ast.ConditionalNode:
 		return inferConditional(n, ictx)
 	default:
-		return nil, ErrUnsupported{Detail: fmt.Sprintf("node type %T", node)}
+		return schema.Schema{}, ErrUnsupported{Detail: fmt.Sprintf("node type %T", node)}
 	}
 }
 
-func inferMember(n *ast.MemberNode, ictx inferCtx) (*schema.SchemaNode, error) {
+func inferMember(n *ast.MemberNode, ictx inferCtx) (schema.Schema, error) {
 	if path := nodePath(n); path != "" {
 		if s, ok := ictx.guards[path]; ok {
 			return s, nil
@@ -140,68 +125,70 @@ func inferMember(n *ast.MemberNode, ictx inferCtx) (*schema.SchemaNode, error) {
 	}
 	base, err := inferNode(n.Node, ictx)
 	if err != nil {
-		return nil, err
+		return schema.Schema{}, err
 	}
 	// Member access on a known-null base is null, matching runtime optional
 	// chaining (eval returns nil for a nil base). This is also what lets the
 	// recursive-inference seed work: the self-reference's previous value is null
 	// on the first iteration, and `self.previous.x` must resolve to null so a
 	// `?? default` base case can fire rather than erroring on a missing property.
-	if schema.IsNullType(base) {
+	if base.IsNull() {
 		return typeSchema("null"), nil
 	}
+	// The base may be a composed result (an operator-built union) that carries no
+	// resolution context of its own — re-anchor it to the context's root $defs so
+	// any $refs inside still resolve.
+	base = base.WithDefs(ictx.s.DefsHandle())
 	switch prop := n.Property.(type) {
 	case *ast.StringNode:
-		sub, err := schema.Wrap(base, ictx.defs).Property(prop.Value)
-		return sub.Node(), err
+		return base.Property(prop.Value)
 	case *ast.IntegerNode:
-		sub, err := schema.Wrap(base, ictx.defs).Index()
-		return sub.Node(), err
+		return base.Index()
 	default:
-		return nil, ErrUnsupported{Detail: "computed member access [expr]"}
+		return schema.Schema{}, ErrUnsupported{Detail: "computed member access [expr]"}
 	}
 }
 
-func inferBinary(n *ast.BinaryNode, ictx inferCtx) (*schema.SchemaNode, error) {
+func inferBinary(n *ast.BinaryNode, ictx inferCtx) (schema.Schema, error) {
 	op, ok := binaryOps[n.Operator]
 	if !ok {
-		return nil, ErrUnsupported{Detail: fmt.Sprintf("operator %q", n.Operator)}
+		return schema.Schema{}, ErrUnsupported{Detail: fmt.Sprintf("operator %q", n.Operator)}
 	}
 	left, err := inferNode(n.Left, ictx)
 	if err != nil {
-		return nil, err
+		return schema.Schema{}, err
 	}
 	right, err := inferNode(n.Right, ictx)
 	if err != nil {
-		return nil, err
+		return schema.Schema{}, err
 	}
 	return op.infer(unwrapSingleVariant(left), unwrapSingleVariant(right))
 }
 
-func inferUnary(n *ast.UnaryNode, ictx inferCtx) (*schema.SchemaNode, error) {
+func inferUnary(n *ast.UnaryNode, ictx inferCtx) (schema.Schema, error) {
 	op, ok := unaryOps[n.Operator]
 	if !ok {
-		return nil, ErrUnsupported{Detail: fmt.Sprintf("unary operator %q", n.Operator)}
+		return schema.Schema{}, ErrUnsupported{Detail: fmt.Sprintf("unary operator %q", n.Operator)}
 	}
 	operand, err := inferNode(n.Node, ictx)
 	if err != nil {
-		return nil, err
+		return schema.Schema{}, err
 	}
 	return op.infer(unwrapSingleVariant(operand))
 }
 
-func inferConditional(n *ast.ConditionalNode, ictx inferCtx) (*schema.SchemaNode, error) {
+func inferConditional(n *ast.ConditionalNode, ictx inferCtx) (schema.Schema, error) {
 	if _, err := inferNode(n.Cond, ictx); err != nil {
-		return nil, err
+		return schema.Schema{}, err
 	}
 	thenCtx, elseCtx := narrowCondition(n.Cond, ictx)
 	t, err := inferNode(n.Exp1, thenCtx)
 	if err != nil {
-		return nil, err
+		return schema.Schema{}, err
 	}
 	f, err := inferNode(n.Exp2, elseCtx)
 	if err != nil {
-		return nil, err
+		return schema.Schema{}, err
 	}
 	if schemasEqual(t, f) {
 		return t, nil
@@ -209,7 +196,7 @@ func inferConditional(n *ast.ConditionalNode, ictx inferCtx) (*schema.SchemaNode
 	if s, ok := nullableSchema(t, f); ok {
 		return s, nil
 	}
-	return &schema.SchemaNode{OneOf: []*schema.SchemaNode{t, f}}, nil
+	return schema.OneOf(t, f), nil
 }
 
 // narrowCondition returns then/else contexts narrowed by an equality condition.
@@ -246,14 +233,14 @@ func narrowCondition(cond ast.Node, ictx inferCtx) (thenCtx, elseCtx inferCtx) {
 		thenCtx = ictx.withGuard(path, litSchema)
 		if litIsNull {
 			if subjectSchema, err := inferNode(subject, ictx); err == nil {
-				elseCtx = ictx.withGuard(path, schema.StripNull(subjectSchema))
+				elseCtx = ictx.withGuard(path, subjectSchema.StripNull())
 			}
 		}
 	} else {
 		elseCtx = ictx.withGuard(path, litSchema)
 		if litIsNull {
 			if subjectSchema, err := inferNode(subject, ictx); err == nil {
-				thenCtx = ictx.withGuard(path, schema.StripNull(subjectSchema))
+				thenCtx = ictx.withGuard(path, subjectSchema.StripNull())
 			}
 		}
 	}
