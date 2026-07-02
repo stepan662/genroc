@@ -57,8 +57,8 @@ var (
 	}
 )
 
-// testNullableOperand checks all three layers (expr-lang, Eval, InferType) for
-// expr with "x" set to nil, running once per schema in schemas as a subtest.
+// testNullableOperand checks all three layers (expr-lang, Eval, Schema.Infer)
+// for expr with "x" set to nil, running once per schema in schemas as a subtest.
 func testNullableOperand(t *testing.T, expr string, schemas []namedSchema) {
 	t.Helper()
 	evalCtx := map[string]any{"x": nil}
@@ -66,7 +66,7 @@ func testNullableOperand(t *testing.T, expr string, schemas []namedSchema) {
 		t.Run(ns.name, func(t *testing.T) {
 			_, libErr := exprlib.Eval(expr, evalCtx)
 			_, ourErr := expression.Eval(expr, evalCtx)
-			_, inferErr := expression.InferType(expr, ns.schema)
+			_, inferErr := ns.schema.Infer(expr)
 			if (libErr != nil) != (ourErr != nil) {
 				t.Errorf("eval mismatch:\n  expr-lang: %v\n  our eval:  %v", libErr, ourErr)
 			}
@@ -77,14 +77,14 @@ func testNullableOperand(t *testing.T, expr string, schemas []namedSchema) {
 	}
 }
 
-// testAmbiguousTypeCase verifies that both Eval and InferType reject the schema
-// when evaluated with wrongVal — the incompatible runtime value.
+// testAmbiguousTypeCase verifies that both Eval and Schema.Infer reject the
+// schema when evaluated with wrongVal — the incompatible runtime value.
 func testAmbiguousTypeCase(t *testing.T, expr string, wrongVal any, s schema.Schema) {
 	t.Helper()
 	evalCtx := map[string]any{"x": wrongVal}
 	_, libErr := exprlib.Eval(expr, evalCtx)
 	_, ourErr := expression.Eval(expr, evalCtx)
-	_, inferErr := expression.InferType(expr, s)
+	_, inferErr := s.Infer(expr)
 	if libErr == nil {
 		t.Fatalf("expr-lang: expected error with wrong-type value %T, got nil", wrongVal)
 	}
@@ -92,11 +92,11 @@ func testAmbiguousTypeCase(t *testing.T, expr string, wrongVal any, s schema.Sch
 		t.Errorf("eval mismatch: expected error with wrong-type value, got nil (expr-lang: %v)", libErr)
 	}
 	if inferErr == nil {
-		t.Errorf("infer/runtime mismatch: InferType accepted an ambiguous schema (expr-lang: %v)", libErr)
+		t.Errorf("infer/runtime mismatch: Infer accepted an ambiguous schema (expr-lang: %v)", libErr)
 	}
 }
 
-// testNullableNarrowValid verifies InferType accepts expr for each schema in schemas.
+// testNullableNarrowValid verifies Schema.Infer accepts expr for each schema in schemas.
 func testNullableNarrowValid(t *testing.T, expr string, schemas []namedSchema) {
 	t.Helper()
 	for _, ns := range schemas {
@@ -106,7 +106,7 @@ func testNullableNarrowValid(t *testing.T, expr string, schemas []namedSchema) {
 	}
 }
 
-// testNullableNarrowInvalid verifies InferType rejects expr for each schema in schemas.
+// testNullableNarrowInvalid verifies Schema.Infer rejects expr for each schema in schemas.
 func testNullableNarrowInvalid(t *testing.T, expr string, schemas []namedSchema) {
 	t.Helper()
 	for _, ns := range schemas {
@@ -116,8 +116,8 @@ func testNullableNarrowInvalid(t *testing.T, expr string, schemas []namedSchema)
 	}
 }
 
-// testNullableNarrowResultType verifies InferType accepts expr and its result
-// matches wantJSON, for each schema in schemas.
+// testNullableNarrowResultType verifies Schema.Infer accepts expr and its
+// result matches wantJSON, for each schema in schemas.
 func testNullableNarrowResultType(t *testing.T, expr string, schemas []namedSchema, wantJSON string) {
 	t.Helper()
 	for _, ns := range schemas {
@@ -133,9 +133,9 @@ func testNumericUnionCase(t *testing.T, expr string, schemas []namedSchema) {
 	t.Helper()
 	for _, ns := range schemas {
 		t.Run(ns.name+"/infer", func(t *testing.T) {
-			_, err := expression.InferType(expr, ns.schema)
+			_, err := ns.schema.Infer(expr)
 			if err != nil {
-				t.Errorf("InferType rejected a valid all-numeric union: %v", err)
+				t.Errorf("Infer rejected a valid all-numeric union: %v", err)
 			}
 		})
 		for _, xVal := range []any{5, 5.5} {

@@ -1,3 +1,16 @@
+// Package expression provides runtime evaluation and reference analysis for a
+// subset of expr-lang expressions. The matching static type inference lives on
+// schema.Schema.Infer, which accepts the same subset:
+//
+//   - Literals: integer, float, string, bool, null
+//   - Field access via dot notation: input.x, outputs.task.y
+//   - Arithmetic: +, -, *, /, % (numbers; + also concatenates strings)
+//   - Comparison: ==, !=, <, >, <=, >= → boolean
+//   - Logical: &&, || → boolean (short-circuit); ! → boolean
+//   - Conditional: cond ? a : b
+//   - Null coalescing: a ?? b (returns a if non-nil, else b)
+//
+// All other expr-lang constructs return ErrUnsupported.
 package expression
 
 import (
@@ -8,8 +21,8 @@ import (
 )
 
 // Eval evaluates expression against context and returns the result.
-// Only the same subset of constructs accepted by InferType is supported;
-// any other construct returns ErrUnsupported.
+// Only the same subset of constructs accepted by schema.Schema.Infer is
+// supported; any other construct returns ErrUnsupported.
 func Eval(expression string, context map[string]any) (any, error) {
 	tree, err := parser.Parse(expression)
 	if err != nil {
@@ -152,7 +165,7 @@ func evalBinary(n *ast.BinaryNode, ctx map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return op.eval(left, right)
+	return op(left, right)
 }
 
 func evalUnary(n *ast.UnaryNode, ctx map[string]any) (any, error) {
@@ -164,7 +177,7 @@ func evalUnary(n *ast.UnaryNode, ctx map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return op.eval(operand)
+	return op(operand)
 }
 
 func evalConditional(n *ast.ConditionalNode, ctx map[string]any) (any, error) {

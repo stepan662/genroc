@@ -34,7 +34,7 @@ func EvalAny(s string, ctx map[string]any) (any, error) {
 // InferType infers the JSON Schema type of template s against sc.
 func InferType(s string, sc schema.Schema) (schema.Schema, error) {
 	if expr, ok := singleExpr(s); ok {
-		return expression.InferType(expr, sc)
+		return sc.Infer(expr)
 	}
 	if strings.Contains(s, "{{") {
 		if err := checkMixedNullability(s, sc); err != nil {
@@ -45,11 +45,11 @@ func InferType(s string, sc schema.Schema) (schema.Schema, error) {
 }
 
 // ReferencesSecret reports whether any expression embedded in the template reads
-// a secret value (see expression.ReferencesSecret). A plain string with no {{ }}
-// is never secret.
+// a secret value (see schema.Schema.ReferencesSecret). A plain string with no
+// {{ }} is never secret.
 func ReferencesSecret(s string, sc schema.Schema) (bool, error) {
 	if expr, ok := singleExpr(s); ok {
-		return expression.ReferencesSecret(expr, sc)
+		return sc.ReferencesSecret(expr)
 	}
 	rest := s
 	for {
@@ -64,7 +64,7 @@ func ReferencesSecret(s string, sc schema.Schema) (bool, error) {
 		}
 		expr := rest[:end]
 		rest = rest[end+2:]
-		sec, err := expression.ReferencesSecret(expr, sc)
+		sec, err := sc.ReferencesSecret(expr)
 		if err != nil {
 			return false, err
 		}
@@ -92,7 +92,7 @@ func checkMixedNullability(s string, sc schema.Schema) error {
 		}
 		expr := rest[:end]
 		rest = rest[end+2:]
-		inferred, err := expression.InferType(expr, sc)
+		inferred, err := sc.Infer(expr)
 		if err != nil {
 			return fmt.Errorf("template expression %q: %w", expr, err)
 		}

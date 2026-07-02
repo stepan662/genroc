@@ -1,9 +1,13 @@
 package validationtest
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
+
+	"genroc/internal/model"
+	"genroc/internal/validation"
 )
 
 func TestGenerate_Input_FirstTaskNoInput(t *testing.T) {
@@ -477,14 +481,22 @@ func TestGenerate_CrossStepMutualRecursion(t *testing.T) {
 	assertJSON(t, defOf(out, "start_output"), `{"type":"object","properties":{"num":{"type":["integer","null"]}},"required":["num"]}`)
 }
 
-func TestGenerate_UnboundedRecursionFailsFast(t *testing.T) {
-	// `result: self.previous ?? input` has no base case: each pass nests the prior
-	// output one level deeper, so the type grows without bound (exponentially, as
-	// the joined accumulator references the prior estimate). The widening size bound
-	// must reject it — and cheaply, before building a multi-megabyte schema.
-	done := make(chan error, 1)
+func TestGenerate_StructuralRecursionKeptAsRecursiveType(t *testing.T) {
+	// `result: self.previous ?? input` nests the prior output one level deeper
+	// per iteration. This used to diverge (the materialized estimate grew until
+	// the widening cap rejected it); with references honored in inferred types
+	// it is a finite recursive schema: loop_output = {result: $ref loop_output
+	// | <input type>} — recursion through properties, each unrolling consuming
+	// one level of the value. The timeout still guards against regressing into
+	// a non-terminating or exploding inference.
+	type result struct {
+		out validation.SchemaFile
+		err error
+	}
+	done := make(chan result, 1)
 	go func() {
-		done <- runGenerateErr(t, `{
+		var def model.ProcessDefinition
+		if err := json.Unmarshal([]byte(`{
 			"name": "p",
 			"input_schema": {
 				"type": "object",
@@ -498,18 +510,42 @@ func TestGenerate_UnboundedRecursionFailsFast(t *testing.T) {
 				 "switch":[{"case":"self.output.result != null","goto":"$start"},{"goto":"end"}]}
 			],
 			"output":{"num":"{{ outputs.loop }}"}
-		}`)
+		}`), &def); err != nil {
+			done <- result{err: err}
+			return
+		}
+		out, err := validation.Generate(&def)
+		done <- result{out: out, err: err}
 	}()
 	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("expected non-convergence error, got nil")
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("structural recursion should infer as a recursive type, got error: %v", r.err)
 		}
-		if !strings.Contains(err.Error(), "without converging") {
-			t.Errorf("expected a non-convergence error, got: %v", err)
+		loop := defOf(r.out, "loop_output").AsMap()
+		if loop["type"] != "object" {
+			t.Fatalf("loop_output is not an object: %s", mustMarshal(loop))
+		}
+		props, _ := loop["properties"].(map[string]any)
+		res, _ := props["result"].(map[string]any)
+		if res == nil {
+			t.Fatalf("loop_output has no result property: %s", mustMarshal(loop))
+		}
+		variants, _ := res["oneOf"].([]any)
+		if variants == nil {
+			variants, _ = res["anyOf"].([]any)
+		}
+		selfRef := false
+		for _, v := range variants {
+			if vm, ok := v.(map[string]any); ok && vm["$ref"] == "#/$defs/loop_output" {
+				selfRef = true
+			}
+		}
+		if !selfRef {
+			t.Errorf("loop_output.result does not keep the recursive $ref: %s", mustMarshal(res))
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("inference did not fail fast: still running after 5s (widening bound not applied)")
+		t.Fatal("inference did not terminate: still running after 5s")
 	}
 }
 

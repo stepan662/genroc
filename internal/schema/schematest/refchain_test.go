@@ -77,7 +77,7 @@ func TestFlattenNamedSharesContentEqualDefs(t *testing.T) {
 	// Both schemas' refs land on the shared copy.
 	for _, entry := range []struct{ name, prop string }{{"a_output", "u"}, {"b_output", "w"}} {
 		sc := schema.Ref(entry.name).WithDefs(defs)
-		if _, err := sc.Infer(entry.prop + ".name"); err != nil {
+		if _, err := sc.At(entry.prop + ".name"); err != nil {
 			t.Errorf("%s.%s.name through the shared def: %v", entry.name, entry.prop, err)
 		}
 	}

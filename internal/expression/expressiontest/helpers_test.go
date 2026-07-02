@@ -20,28 +20,28 @@ func ctx(t *testing.T, s string) schema.Schema {
 	return sc.AssumeNormalized()
 }
 
-// infer calls InferType and fails the test on error.
+// infer calls Schema.Infer and fails the test on error.
 func infer(t *testing.T, expr string, s schema.Schema) map[string]any {
 	t.Helper()
-	got, err := expression.InferType(expr, s)
+	got, err := s.Infer(expr)
 	if err != nil {
-		t.Fatalf("InferType(%q): %v", expr, err)
+		t.Fatalf("Infer(%q): %v", expr, err)
 	}
 	// Inferred sub-schemas carry the context's root $defs for resolvability; these
 	// tests compare bare types, so drop them.
 	return got.WithoutDefs().AsMap()
 }
 
-// inferErr calls InferType, expects an error, and optionally checks that the
+// inferErr calls Schema.Infer, expects an error, and optionally checks that the
 // error message contains wantContains (pass "" to skip the message check).
 func inferErr(t *testing.T, expr string, s schema.Schema, wantContains string) error {
 	t.Helper()
-	_, err := expression.InferType(expr, s)
+	_, err := s.Infer(expr)
 	if err == nil {
-		t.Fatalf("InferType(%q): expected error, got nil", expr)
+		t.Fatalf("Infer(%q): expected error, got nil", expr)
 	}
 	if wantContains != "" && !strings.Contains(err.Error(), wantContains) {
-		t.Errorf("InferType(%q): error %q does not contain %q", expr, err.Error(), wantContains)
+		t.Errorf("Infer(%q): error %q does not contain %q", expr, err.Error(), wantContains)
 	}
 	return err
 }

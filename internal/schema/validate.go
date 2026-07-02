@@ -32,11 +32,11 @@ func (s Schema) Validate(data any) (any, error) {
 }
 
 // ValidateAt validates data against the subschema at path (e.g. "outputs.taskA")
-// and returns the normalized value. It is Infer(path) followed by Validate, so
+// and returns the normalized value. It is At(path) followed by Validate, so
 // the value is checked against the declared shape at that path with root $defs
-// resolved. Optional path segments are treated as nullable, matching Infer.
+// resolved. Optional path segments are treated as nullable, matching At.
 func (s Schema) ValidateAt(path string, data any) (any, error) {
-	sub, err := s.Infer(path)
+	sub, err := s.At(path)
 	if err != nil {
 		return nil, err
 	}
@@ -46,9 +46,32 @@ func (s Schema) ValidateAt(path string, data any) (any, error) {
 // conform is the recursive validator/normalizer. path is the dotted location of
 // data within the root value (empty at the root), used only for error messages.
 func conform(nd *node, defs map[string]*node, data any, path string) (any, error) {
+	return conformGuard(nd, defs, data, path, nil)
+}
+
+// conformGuard is conform with a same-position cycle guard: visiting holds the
+// resolved nodes already expanded at the current value position (no object or
+// array descent since). Following a $ref back to one of them is a schema cycle
+// with no structural progress — the branch fails instead of recursing forever.
+// CheckDoc rejects such documents, but stored schemas decode without CheckDoc,
+// so the validator guards itself. Descending into a property or element starts
+// a fresh set (conformObject/conformArray call conform): value depth was
+// consumed, so revisiting a node there is legitimate, productive recursion.
+func conformGuard(nd *node, defs map[string]*node, data any, path string, visiting map[*node]bool) (any, error) {
 	resolved, err := deref(nd, defs)
 	if err != nil {
 		return nil, err
+	}
+	if nd != nil && nd.Ref != "" {
+		if visiting[resolved] {
+			return nil, fmt.Errorf("%sschema reference cycle without structural progress", at(path))
+		}
+		next := make(map[*node]bool, len(visiting)+1)
+		for k := range visiting {
+			next[k] = true
+		}
+		next[resolved] = true
+		visiting = next
 	}
 	if resolved == nil || isEmptyNode(resolved) {
 		return data, nil // unconstrained — pass through untouched
@@ -57,10 +80,10 @@ func conform(nd *node, defs map[string]*node, data any, path string) (any, error
 	// Combinators take precedence: a nullable complex value is modelled as
 	// oneOf:[X, {type:null}], and discriminated unions as anyOf/oneOf of objects.
 	if len(resolved.AnyOf) > 0 {
-		return conformUnion(resolved.AnyOf, defs, data, path, false)
+		return conformUnion(resolved.AnyOf, defs, data, path, false, visiting)
 	}
 	if len(resolved.OneOf) > 0 {
-		return conformUnion(resolved.OneOf, defs, data, path, true)
+		return conformUnion(resolved.OneOf, defs, data, path, true, visiting)
 	}
 
 	if err := checkType(resolved, data, path); err != nil {
@@ -147,15 +170,16 @@ func conformArray(nd *node, defs map[string]*node, arr []any, path string) (any,
 
 // conformUnion normalizes data against a oneOf/anyOf. anyOf returns the first
 // branch that validates; oneOf requires exactly one branch to validate (matching
-// zero or several is an error).
-func conformUnion(branches []*node, defs map[string]*node, data any, path string, exactlyOne bool) (any, error) {
+// zero or several is an error). Branches keep the value at the same position, so
+// the caller's visiting set carries through.
+func conformUnion(branches []*node, defs map[string]*node, data any, path string, exactlyOne bool, visiting map[*node]bool) (any, error) {
 	var (
 		firstErr error
 		match    any
 		matches  int
 	)
 	for _, b := range branches {
-		res, err := conform(b, defs, data, path)
+		res, err := conformGuard(b, defs, data, path, visiting)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err

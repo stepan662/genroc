@@ -141,7 +141,7 @@ func TestInferTopLevelProperty(t *testing.T) {
 		"required": ["name"]
 	}`)
 	norm, _ := sc.Normalize()
-	sub, err := norm.Infer("name")
+	sub, err := norm.At("name")
 	if err != nil {
 		t.Fatalf("Infer: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestInferOptionalPropertyIsNullable(t *testing.T) {
 		}
 	}`)
 	norm, _ := sc.Normalize()
-	sub, err := norm.Infer("age")
+	sub, err := norm.At("age")
 	if err != nil {
 		t.Fatalf("Infer: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestInferNestedProperty(t *testing.T) {
 		"required": ["user"]
 	}`)
 	norm, _ := sc.Normalize()
-	sub, err := norm.Infer("user.id")
+	sub, err := norm.At("user.id")
 	if err != nil {
 		t.Fatalf("Infer: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestInferArrayIndex(t *testing.T) {
 		"required": ["items"]
 	}`)
 	norm, _ := sc.Normalize()
-	sub, err := norm.Infer("items[0]")
+	sub, err := norm.At("items[0]")
 	if err != nil {
 		t.Fatalf("Infer: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestInferDeepPath(t *testing.T) {
 		"required": ["user"]
 	}`)
 	norm, _ := sc.Normalize()
-	sub, err := norm.Infer("user.issues[0].value")
+	sub, err := norm.At("user.issues[0].value")
 	if err != nil {
 		t.Fatalf("Infer: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestInferWithRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Normalize: %v", err)
 	}
-	sub, err := norm.Infer("user.id")
+	sub, err := norm.At("user.id")
 	if err != nil {
 		t.Fatalf("Infer: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestInferWithRef(t *testing.T) {
 func TestInferUnknownProperty(t *testing.T) {
 	sc := mustParse(t, `{"type":"object","properties":{"x":{"type":"string"}}}`)
 	norm, _ := sc.Normalize()
-	_, err := norm.Infer("missing")
+	_, err := norm.At("missing")
 	if err == nil {
 		t.Fatal("expected error for unknown property, got nil")
 	}
@@ -283,7 +283,7 @@ func TestInferUnknownProperty(t *testing.T) {
 func TestInferEmptyPath(t *testing.T) {
 	sc := mustParse(t, `{"type":"object"}`)
 	norm, _ := sc.Normalize()
-	_, err := norm.Infer("")
+	_, err := norm.At("")
 	if err == nil {
 		t.Fatal("expected error for empty path, got nil")
 	}
@@ -298,7 +298,7 @@ func TestInferIndexOnNonArray(t *testing.T) {
 		"required": ["name"]
 	}`)
 	norm, _ := sc.Normalize()
-	_, err := norm.Infer("name[0]")
+	_, err := norm.At("name[0]")
 	if err == nil {
 		t.Fatal("expected error for index on non-array, got nil")
 	}
@@ -336,11 +336,11 @@ func TestIsSubsetBetweenInferred(t *testing.T) {
 		"required": ["count", "score"]
 	}`)
 	norm, _ := sc.Normalize()
-	count, err := norm.Infer("count")
+	count, err := norm.At("count")
 	if err != nil {
 		t.Fatalf("Infer count: %v", err)
 	}
-	score, err := norm.Infer("score")
+	score, err := norm.At("score")
 	if err != nil {
 		t.Fatalf("Infer score: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestWithDefThenNormalize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Normalize after WithDef: %v", err)
 	}
-	sub, err := norm.Infer("user.name")
+	sub, err := norm.At("user.name")
 	if err != nil {
 		t.Fatalf("Infer after WithDef+Normalize: %v", err)
 	}

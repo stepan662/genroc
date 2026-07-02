@@ -326,22 +326,17 @@ func (s Schema) rootDefs() map[string]*node {
 
 // ─── Navigation ─────────────────────────────────────────────────────────────────
 
-// Infer navigates a dot-path expression (e.g. "user.issues[0].value") and returns
-// the subschema for the value at that path as a Schema carrying the same root
-// $defs, so the result stays navigable/validatable.
-func (s Schema) Infer(path string) (Schema, error) {
+// At navigates a dot-path (e.g. "user.issues[0].value") and returns the
+// subschema for the value at that path as a Schema carrying the same root
+// $defs, so the result stays navigable/validatable. For the type of a full
+// expression rather than a plain sub-path, see Infer.
+func (s Schema) At(path string) (Schema, error) {
 	return s.subSchema(navigate(s.n, s.rootDefs(), path))
 }
 
-// At is an alias for Infer, reading better where the intent is "the schema at
-// this subpath" rather than "the inferred type of this expression".
-func (s Schema) At(path string) (Schema, error) {
-	return s.Infer(path)
-}
-
 // Property returns the subschema for a single named property, carrying the same
-// root $defs. An optional property comes back nullable, matching Infer's per-step
-// semantics. It is the single-step form of Infer used by the type inferrer.
+// root $defs. An optional property comes back nullable, matching At's per-step
+// semantics. It is the single-step form of At used by the type inferrer.
 func (s Schema) Property(name string) (Schema, error) {
 	return s.subSchema(lookupProperty(s.n, name, s.rootDefs()))
 }
@@ -963,9 +958,11 @@ func (s Schema) IsNull() bool {
 	return isNullType(s.n)
 }
 
-// HasNull reports whether null is a possible type for s.
+// HasNull reports whether null is a possible runtime value for s, following
+// $refs against the root $defs (nullability may be declared inside a
+// referenced definition, not just on the use-site wrapper).
 func (s Schema) HasNull() bool {
-	return hasNullType(s.n)
+	return hasNullResolved(s.n, s.rootDefs())
 }
 
 // Join returns the least upper bound of s and o: a schema accepting every value

@@ -37,6 +37,10 @@ func joinNodes(a, b *node) *node {
 
 	var res *node
 	switch {
+	case nodesEqual(na, nb):
+		// The inputs differed only in nullability (e.g. anyOf[$ref x, null] vs
+		// $ref x) — no union needed, just restore the null below.
+		res = na
 	case isObjectType(na) && isObjectType(nb):
 		res = joinObjects(na, nb)
 	default:

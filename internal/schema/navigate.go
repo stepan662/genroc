@@ -65,7 +65,22 @@ func navigate(s *node, defs map[string]*node, path string) (*node, error) {
 
 // lookupProperty returns the subschema for a single named property within s.
 // Optional properties are returned wrapped as nullable.
+//
+// A property whose value is a `$ref` is returned as the reference itself, not
+// its expansion: passing a referenced value through whole keeps the reference
+// in the inferred type (which is what lets a recursive output type stay a
+// finite recursive schema). Descending *into* it — the next lookupProperty on
+// that base, an operator, a union walk below — resolves it then, on demand.
 func lookupProperty(s *node, name string, defs map[string]*node) (*node, error) {
+	return lookupPropertyGuard(s, name, defs, nil)
+}
+
+// lookupPropertyGuard is lookupProperty with a union-walk cycle guard:
+// visiting holds union nodes already being walked at this value position, so a
+// reference cycle threaded through union variants fails that variant (treated
+// as a miss) instead of recursing forever. Recursion through properties/items
+// starts fresh — that is productive structure, not a cycle.
+func lookupPropertyGuard(s *node, name string, defs map[string]*node, visiting map[*node]bool) (*node, error) {
 	resolved, err := deref(s, defs)
 	if err != nil {
 		return nil, err
@@ -81,6 +96,14 @@ func lookupProperty(s *node, name string, defs map[string]*node) (*node, error) 
 		if kw.variants == nil {
 			continue
 		}
+		if visiting[resolved] {
+			return nil, fmt.Errorf("cannot access .%s: schema reference cycle", name)
+		}
+		next := make(map[*node]bool, len(visiting)+1)
+		for k := range visiting {
+			next[k] = true
+		}
+		next[resolved] = true
 		results := make([]*node, 0, len(kw.variants))
 		hadNull := false
 		hadMiss := false
@@ -88,11 +111,19 @@ func lookupProperty(s *node, name string, defs map[string]*node) (*node, error) 
 			if v == nil {
 				return nil, fmt.Errorf("cannot access .%s: %s[%d] is nil", name, kw.name, i)
 			}
-			if isNullType(v) {
+			// Accessing a property *inside* a union variant is a look-inside
+			// operation: resolve a $ref variant first, so a reference to a
+			// null seed (mid-solve estimate) counts as the null arm rather
+			// than a missing field.
+			rv, verr := deref(v, defs)
+			if verr != nil {
+				return nil, verr
+			}
+			if isNullType(rv) {
 				hadNull = true
 				continue
 			}
-			r, err := lookupProperty(v, name, defs)
+			r, err := lookupPropertyGuard(rv, name, defs, next)
 			if err != nil {
 				hadMiss = true
 				hadNull = true
@@ -131,19 +162,23 @@ func lookupProperty(s *node, name string, defs map[string]*node) (*node, error) 
 	if !ok {
 		return nil, fmt.Errorf("field %q not found in schema", name)
 	}
-	result, err := deref(prop, defs)
-	if err != nil {
-		return nil, err
-	}
+	// The property value is returned as declared — a $ref stays a $ref (see the
+	// function comment); a taint on it rides along on the ref node itself.
 	if !isRequired(resolved, name) {
-		return withNull(result), nil
+		return withNull(prop), nil
 	}
-	return result, nil
+	return prop, nil
 }
 
 // inferIndex returns the (nullable) element type for array index access on s.
 // Always nullable because the index may be out of bounds at runtime.
 func inferIndex(s *node, defs map[string]*node) (*node, error) {
+	return inferIndexGuard(s, defs, nil)
+}
+
+// inferIndexGuard carries the same union-walk cycle guard as
+// lookupPropertyGuard.
+func inferIndexGuard(s *node, defs map[string]*node, visiting map[*node]bool) (*node, error) {
 	resolved, err := deref(s, defs)
 	if err != nil {
 		return nil, err
@@ -154,17 +189,32 @@ func inferIndex(s *node, defs map[string]*node) (*node, error) {
 		if variants == nil {
 			continue
 		}
+		if visiting[resolved] {
+			return nil, fmt.Errorf("index access [n]: schema reference cycle")
+		}
+		next := make(map[*node]bool, len(visiting)+1)
+		for k := range visiting {
+			next[k] = true
+		}
+		next[resolved] = true
 		results := make([]*node, 0, len(variants))
 		hadNull := false
 		for _, v := range variants {
 			if v == nil {
 				continue
 			}
-			if isNullType(v) {
+			// Indexing into a union variant is a look-inside operation:
+			// resolve a $ref variant first (a mid-solve null seed counts as
+			// the null arm).
+			rv, verr := deref(v, defs)
+			if verr != nil {
+				return nil, verr
+			}
+			if isNullType(rv) {
 				hadNull = true
 				continue
 			}
-			r, err := inferIndex(v, defs)
+			r, err := inferIndexGuard(rv, defs, next)
 			if err != nil {
 				hadNull = true
 				continue
@@ -204,6 +254,11 @@ func inferIndex(s *node, defs map[string]*node) (*node, error) {
 // (e.g. after a collision rename), so a single hop is not enough. A repeated
 // node means a pure ref cycle, which can never bottom out and is an error.
 // Returns s unchanged if no $ref is present.
+//
+// A target that is a solver sentinel routes back to its owning Solver, which
+// computes the definition on demand (or serves the running estimate when the
+// read closes a cycle) — this is the hook that makes definition resolution
+// demand-driven during generation.
 func deref(s *node, defs map[string]*node) (*node, error) {
 	var seen map[*node]bool
 	for s != nil && s.Ref != "" {
@@ -225,6 +280,17 @@ func deref(s *node, defs map[string]*node) (*node, error) {
 			seen = map[*node]bool{}
 		}
 		seen[s] = true
+		if p, pending := lookupPending(target); pending {
+			resolved, err := p.solver.resolvePending(p.name)
+			if err != nil {
+				return nil, err
+			}
+			s = resolved
+			continue
+		}
+		if target.Anchor == pendingAnchor {
+			return nil, fmt.Errorf("internal: $ref %q points at an unresolved pending definition", s.Ref)
+		}
 		s = target
 	}
 	return s, nil
@@ -267,6 +333,22 @@ func taintNode(s *node) *node {
 	return &n
 }
 
+// nodeOrTargetSecret reports whether n, or the definition it resolves to, is
+// marked secret. A taint on a $ref node marks the pointer rather than the
+// shared target (tainting the target would over-taint its other users), so
+// both sides must be consulted.
+func nodeOrTargetSecret(n *node, defs map[string]*node) bool {
+	if isSecret(n) {
+		return true
+	}
+	if n != nil && n.Ref != "" {
+		if resolved, err := deref(n, defs); err == nil && isSecret(resolved) {
+			return true
+		}
+	}
+	return false
+}
+
 // pathHitsSecret reports whether navigating path from s passes through (or ends
 // at) a node marked secret — reading from inside a secret object is itself
 // secret. Returns false if the path cannot be resolved.
@@ -275,12 +357,12 @@ func pathHitsSecret(s *node, defs map[string]*node, path string) bool {
 	if err != nil {
 		return false
 	}
+	if nodeOrTargetSecret(s, defs) {
+		return true
+	}
 	cur, err := deref(s, defs)
 	if err != nil {
 		return false
-	}
-	if isSecret(cur) {
-		return true
 	}
 	for _, step := range steps {
 		if step.prop != "" {
@@ -291,7 +373,7 @@ func pathHitsSecret(s *node, defs map[string]*node, path string) bool {
 		if err != nil {
 			return false
 		}
-		if isSecret(cur) {
+		if nodeOrTargetSecret(cur, defs) {
 			return true
 		}
 	}
@@ -308,14 +390,14 @@ func collectSecrets(value any, node *node, defs map[string]*node, out *[]string)
 	if node == nil || value == nil {
 		return
 	}
-	resolved, err := deref(node, defs)
-	if err != nil {
-		return
-	}
-	if isSecret(resolved) {
+	if nodeOrTargetSecret(node, defs) {
 		if s := SecretString(value); s != "" {
 			*out = append(*out, s)
 		}
+		return
+	}
+	resolved, err := deref(node, defs)
+	if err != nil {
 		return
 	}
 	switch v := value.(type) {
@@ -345,12 +427,12 @@ func redact(value any, node *node, defs map[string]*node) any {
 	if node == nil || value == nil {
 		return value
 	}
+	if nodeOrTargetSecret(node, defs) {
+		return "***"
+	}
 	resolved, err := deref(node, defs)
 	if err != nil {
 		return value
-	}
-	if isSecret(resolved) {
-		return "***"
 	}
 	switch v := value.(type) {
 	case map[string]any:
@@ -421,12 +503,15 @@ func hasNullType(s *node) bool {
 
 // IsType reports whether s resolves to exactly the given type: its type list is
 // non-empty with every entry equal to typ, or it is a oneOf/anyOf all of whose
-// variants themselves resolve to typ. It is the "is this uniformly type X" gate
-// used, e.g., to require a switch expression to be boolean.
-func (s Schema) IsType(typ string) bool { return nodeIsType(s.n, typ) }
+// variants themselves resolve to typ. $refs are followed (against the root
+// $defs), so a reference to a boolean definition is a boolean. It is the "is
+// this uniformly type X" gate used, e.g., to require a switch expression to be
+// boolean.
+func (s Schema) IsType(typ string) bool { return nodeIsType(s.n, s.rootDefs(), typ) }
 
-func nodeIsType(s *node, typ string) bool {
-	if s == nil {
+func nodeIsType(s *node, defs map[string]*node, typ string) bool {
+	s, err := deref(s, defs)
+	if err != nil || s == nil {
 		return false
 	}
 	if len(s.Type) > 0 {
@@ -442,11 +527,37 @@ func nodeIsType(s *node, typ string) bool {
 			continue
 		}
 		for _, v := range variants {
-			if !nodeIsType(v, typ) {
+			if !nodeIsType(v, defs, typ) {
 				return false
 			}
 		}
 		return len(variants) > 0
+	}
+	return false
+}
+
+// hasNullResolved reports whether null is a possible runtime value for s,
+// following $refs (top-level and one union level, matching hasNullType's
+// structural depth) so nullability declared inside a referenced definition is
+// seen. Resolution failures degrade to the structural answer.
+func hasNullResolved(s *node, defs map[string]*node) bool {
+	r, err := deref(s, defs)
+	if err != nil {
+		return hasNullType(s)
+	}
+	if hasNullType(r) {
+		return true
+	}
+	for _, variants := range [][]*node{r.OneOf, r.AnyOf} {
+		for _, v := range variants {
+			rv, verr := deref(v, defs)
+			if verr != nil {
+				continue
+			}
+			if isNullType(rv) || rv.Type.Contains("null") {
+				return true
+			}
+		}
 	}
 	return false
 }

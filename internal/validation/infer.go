@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"slices"
 
-	"genroc/internal/expression"
 	"genroc/internal/model"
 	"genroc/internal/schema"
 	"genroc/internal/template"
@@ -81,7 +80,7 @@ func buildInputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proces
 				if c.Case == "" {
 					continue
 				}
-				inferred, err := expression.InferType(c.Case, switchCtx)
+				inferred, err := switchCtx.Infer(c.Case)
 				if err != nil {
 					return fmt.Errorf("task %q switch case %q: %w", s.ID, c.Case, err)
 				}

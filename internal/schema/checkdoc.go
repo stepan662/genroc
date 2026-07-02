@@ -1,11 +1,16 @@
 package schema
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
 
 // CheckDoc reports whether node is a well-formed schema document in the supported
 // subset: every $ref resolves against the root $defs, combinator and property
-// entries are non-nil, any paired numeric/length/item bounds are ordered, and
-// every declared default validates against the schema it is attached to.
+// entries are non-nil, any paired numeric/length/item bounds are ordered, every
+// declared default validates against the schema it is attached to, and every
+// definition cycle is productive (see checkProductivity).
 //
 // Keyword validity is already guaranteed by node's strict UnmarshalJSON, so
 // CheckDoc only catches the structural errors that survive parsing — chiefly an
@@ -14,7 +19,98 @@ func checkDocRoot(nd *node) error {
 	if nd == nil {
 		return nil
 	}
-	return checkDoc(nd, nd.Defs, map[*node]bool{})
+	if err := checkDoc(nd, nd.Defs, map[*node]bool{}); err != nil {
+		return err
+	}
+	return checkProductivity(nd.Defs)
+}
+
+// checkProductivity rejects definition cycles with no structural progress. A
+// $ref that occurs in a definition's body outside any properties/items subtree
+// (at the root, or reachable only through oneOf/anyOf/allOf) is a "bare" edge:
+// following it consumes no value depth. A cycle made entirely of bare edges —
+// e.g. x = oneOf[$ref x, …] — is degenerate: a validator walking it would spin
+// on the spot, and as an inferred type it denotes a recursion with no base
+// case. Recursion is legal exactly when every cycle passes through properties
+// or items, so each unrolling consumes one level of the (finite) value.
+func checkProductivity(defs map[string]*node) error {
+	if len(defs) == 0 {
+		return nil
+	}
+	bare := make(map[string][]string, len(defs))
+	names := make([]string, 0, len(defs))
+	for name, d := range defs {
+		names = append(names, name)
+		set := map[string]struct{}{}
+		collectBareRefs(d, set)
+		edges := make([]string, 0, len(set))
+		for e := range set {
+			if _, ok := defs[e]; ok {
+				edges = append(edges, e)
+			}
+		}
+		sort.Strings(edges)
+		bare[name] = edges
+	}
+	sort.Strings(names)
+
+	const unvisited, onStack, done = 0, 1, 2
+	state := make(map[string]int, len(defs))
+	var stack []string
+	var visit func(n string) error
+	visit = func(n string) error {
+		switch state[n] {
+		case onStack:
+			i := len(stack) - 1
+			for i >= 0 && stack[i] != n {
+				i--
+			}
+			cycle := append(append([]string{}, stack[i:]...), n)
+			return fmt.Errorf("$defs cycle without structural progress: %s (recursion must pass through properties or items)",
+				strings.Join(cycle, " -> "))
+		case done:
+			return nil
+		}
+		state[n] = onStack
+		stack = append(stack, n)
+		for _, e := range bare[n] {
+			if err := visit(e); err != nil {
+				return err
+			}
+		}
+		stack = stack[:len(stack)-1]
+		state[n] = done
+		return nil
+	}
+	for _, n := range names {
+		if err := visit(n); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// collectBareRefs gathers the $defs names referenced from nd without passing
+// through properties or items. Union variants keep the value at the same depth,
+// so they are walked; properties/items subtrees consume value depth, so any ref
+// below them is productive and skipped.
+func collectBareRefs(nd *node, out map[string]struct{}) {
+	if nd == nil {
+		return
+	}
+	const prefix = "#/$defs/"
+	if strings.HasPrefix(nd.Ref, prefix) {
+		out[strings.TrimPrefix(nd.Ref, prefix)] = struct{}{}
+	}
+	for _, v := range nd.OneOf {
+		collectBareRefs(v, out)
+	}
+	for _, v := range nd.AnyOf {
+		collectBareRefs(v, out)
+	}
+	for _, v := range nd.AllOf {
+		collectBareRefs(v, out)
+	}
 }
 
 func checkDoc(nd *node, defs map[string]*node, seen map[*node]bool) error {

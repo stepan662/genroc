@@ -123,7 +123,7 @@ func TestInferChainsThroughDefs(t *testing.T) {
 	sc := mustParse(t, nestedSchema)
 	// Infer to a subpath, then validate against the returned sub-schema directly —
 	// proves the sub-schema is self-sufficient (carries root defs).
-	sub, err := sc.Infer("outputs.charge")
+	sub, err := sc.At("outputs.charge")
 	if err != nil {
 		t.Fatalf("Infer: %v", err)
 	}

@@ -2,8 +2,6 @@ package expressiontest
 
 import (
 	"testing"
-
-	"genroc/internal/expression"
 )
 
 // secretContextJSON has secret scalars (config.api_key, self.result.token), a
@@ -75,7 +73,7 @@ func TestReferencesSecret(t *testing.T) {
 	}
 
 	for _, e := range secret {
-		got, err := expression.ReferencesSecret(e, c)
+		got, err := c.ReferencesSecret(e)
 		if err != nil {
 			t.Fatalf("ReferencesSecret(%q): %v", e, err)
 		}
@@ -84,7 +82,7 @@ func TestReferencesSecret(t *testing.T) {
 		}
 	}
 	for _, e := range notSecret {
-		got, err := expression.ReferencesSecret(e, c)
+		got, err := c.ReferencesSecret(e)
 		if err != nil {
 			t.Fatalf("ReferencesSecret(%q): %v", e, err)
 		}
