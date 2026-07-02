@@ -10,6 +10,7 @@ type normContext struct {
 	definitions map[string]*defEntry
 	anchors     map[string]*defEntry
 	references  []*refSite
+	sites       map[*node]*refSite // ref-carrying node → its collected site (for base-aware re-resolution)
 }
 
 // defEntry holds a collected definition and its eventual flattened name.
@@ -63,6 +64,7 @@ func normalize(schema *node) (*node, error) {
 		definitions: make(map[string]*defEntry),
 		anchors:     make(map[string]*defEntry),
 		references:  make([]*refSite, 0),
+		sites:       make(map[*node]*refSite),
 	}
 
 	// Phase 1: collect all definitions, anchors, and references from the whole tree.
@@ -85,11 +87,13 @@ func normalize(schema *node) (*node, error) {
 			}
 		}
 		if nd.Ref != "" {
-			ctx.references = append(ctx.references, &refSite{
+			site := &refSite{
 				RefValue:     nd.Ref,
 				Node:         nd,
 				ResourceBase: resourceBase,
-			})
+			}
+			ctx.references = append(ctx.references, site)
+			ctx.sites[nd] = site
 		}
 	})
 
@@ -123,6 +127,14 @@ func normalize(schema *node) (*node, error) {
 	// its exact name and a nested one that collides gets the unique suffix. This
 	// is what lets FlattenNamed guarantee that its named entries — the generated
 	// schema names during process generation — always win a collision.
+	//
+	// Two collisions are not real conflicts and produce no suffix:
+	//   - a pure-$ref definition aliasing a same-named definition (a schema that
+	//     IS a reference to a shared def, e.g. input_schema {$ref:#/$defs/input}
+	//     over a def named "input") — the target binds directly under the name
+	//     instead of leaving an input → input_1 indirection;
+	//   - a definition content-equal to the one already holding the name (the
+	//     same definition arriving twice, e.g. baked into two schemas) — shared.
 	defKeys := make([]string, 0, len(ctx.definitions))
 	for k, def := range ctx.definitions {
 		if def.Used {
@@ -139,6 +151,23 @@ func normalize(schema *node) (*node, error) {
 	rootDefs := make(map[string]*node)
 	for _, k := range defKeys {
 		def := ctx.definitions[k]
+		if def.NewName != "" {
+			continue // already named as some alias's target
+		}
+		if isPureRef(def.Node) {
+			if target := ctx.aliasTarget(def); target != nil && target.OriginalName == def.OriginalName {
+				if target.NewName == "" {
+					target.NewName = getUniqueName(def.OriginalName, rootDefs)
+					rootDefs[target.NewName] = target.Node
+				}
+				def.NewName = target.NewName // refs to the alias land on the target
+				continue
+			}
+		}
+		if existing, taken := rootDefs[def.OriginalName]; taken && nodesEqual(existing, def.Node) {
+			def.NewName = def.OriginalName
+			continue
+		}
 		def.NewName = getUniqueName(def.OriginalName, rootDefs)
 		rootDefs[def.NewName] = def.Node
 	}
@@ -221,16 +250,59 @@ func (ctx *normContext) resolveRef(ref string, resourceBase string) (*defEntry, 
 	return nil, ErrUnsupportedRef{Ref: ref}
 }
 
+// resolveDef matches a "$defs/<name>" path to a collected definition. The
+// innermost resource is tried first — a $ref inside an $id-carrying subtree
+// resolves against that resource's own $defs before falling back to the root
+// (nearest-wins, matching JSON Schema resource scoping). Root-first would make
+// a definition that shares its resource's name resolve to the resource itself,
+// turning the ref into a self-loop and orphaning the real definition.
 func (ctx *normContext) resolveDef(path string, resourceBase string) *defEntry {
-	if def, ok := ctx.definitions[path]; ok {
-		return def
-	}
 	if resourceBase != "" {
 		if def, ok := ctx.definitions[resourceBase+"/"+path]; ok {
 			return def
 		}
 	}
+	if def, ok := ctx.definitions[path]; ok {
+		return def
+	}
 	return nil
+}
+
+// isPureRef reports whether nd is nothing but a $ref pointer — no other keyword
+// refines it — so it carries no meaning of its own beyond naming its target.
+func isPureRef(nd *node) bool {
+	return nd != nil && nd.Ref != "" &&
+		len(nd.Type) == 0 && nd.Properties == nil && nd.Required == nil &&
+		nd.Items == nil && nd.OneOf == nil && nd.AnyOf == nil && nd.AllOf == nil &&
+		nd.Enum == nil && nd.Minimum == nil && nd.Maximum == nil &&
+		nd.MinLength == nil && nd.MaxLength == nil &&
+		nd.MinItems == nil && nd.MaxItems == nil &&
+		nd.Defs == nil && nd.Anchor == "" && nd.ID == "" &&
+		nd.Default == nil && !nd.Secret
+}
+
+// aliasTarget follows a chain of pure-$ref definitions from def to the first
+// definition with content of its own. Returns nil when def is not an alias, the
+// chain cannot be resolved, or it cycles without reaching content.
+func (ctx *normContext) aliasTarget(def *defEntry) *defEntry {
+	seen := map[*defEntry]bool{}
+	cur := def
+	for isPureRef(cur.Node) && !seen[cur] {
+		seen[cur] = true
+		site := ctx.sites[cur.Node]
+		if site == nil {
+			return nil
+		}
+		next, err := ctx.resolveRef(site.RefValue, site.ResourceBase)
+		if err != nil || next == nil {
+			return nil
+		}
+		cur = next
+	}
+	if cur == def || isPureRef(cur.Node) {
+		return nil
+	}
+	return cur
 }
 
 func getUniqueName(name string, existing map[string]*node) string {

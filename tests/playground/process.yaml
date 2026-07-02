@@ -2,14 +2,17 @@
 name: order-pipeline
 
 input_schema:
-  type: object
-  properties:
-    blob:
-      type: string
-      default: "12"
-    sleep:
-      type: integer
-  required: [sleep]
+  $ref: "#/$defs/input"
+  $defs:
+    input: 
+      type: object
+      properties:
+        blob:
+          type: string
+          default: "13"
+        sleep:
+          type: integer
+      required: [sleep]
 
 tasks:
   - id: first
@@ -19,12 +22,27 @@ tasks:
         blob: "{{ input.blob }}"
         additional: "{{ input.sleep }}"
       result_schema:
-        type: object
-        properties:
-          result:
-            type: string
-            secret: true
-    output: "{{input.blob}}"
+        $ref: "#/$defs/input"
+        
+    output: "{{self.result}}"
     switch: end
 
+$defs:
+  input: 
+    type: object
+    properties:
+      blob:
+        type: string
+        default: "12"
+      sleep:
+        type: integer
+      recursive:
+        $ref: "#/$defs/input"
+    required: [sleep]
+  first_output:
+    type: object
+    properties:
+      result:
+        type: string
+        secret: true
 output: "{{ outputs.first }}"

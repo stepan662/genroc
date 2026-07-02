@@ -199,24 +199,35 @@ func inferIndex(s *node, defs map[string]*node) (*node, error) {
 	return withNull(resolved.Items), nil
 }
 
-// deref follows a $ref pointer if present, looking it up in defs.
+// deref resolves s to a concrete (non-ref) node, following chains of $ref
+// pointers through defs — a definition may itself be a bare alias for another
+// (e.g. after a collision rename), so a single hop is not enough. A repeated
+// node means a pure ref cycle, which can never bottom out and is an error.
 // Returns s unchanged if no $ref is present.
 func deref(s *node, defs map[string]*node) (*node, error) {
-	if s == nil || s.Ref == "" {
-		return s, nil
+	var seen map[*node]bool
+	for s != nil && s.Ref != "" {
+		if seen[s] {
+			return nil, fmt.Errorf("circular $ref %q never resolves to a schema", s.Ref)
+		}
+		if defs == nil {
+			return nil, fmt.Errorf("cannot resolve $ref %q: no defs available", s.Ref)
+		}
+		const prefix = "#/$defs/"
+		if !strings.HasPrefix(s.Ref, prefix) {
+			return nil, fmt.Errorf("unsupported $ref %q: only #/$defs/<name> is supported", s.Ref)
+		}
+		target, ok := defs[strings.TrimPrefix(s.Ref, prefix)]
+		if !ok || target == nil {
+			return nil, fmt.Errorf("$ref %q not found in defs", s.Ref)
+		}
+		if seen == nil {
+			seen = map[*node]bool{}
+		}
+		seen[s] = true
+		s = target
 	}
-	if defs == nil {
-		return nil, fmt.Errorf("cannot resolve $ref %q: no defs available", s.Ref)
-	}
-	const prefix = "#/$defs/"
-	if !strings.HasPrefix(s.Ref, prefix) {
-		return nil, fmt.Errorf("unsupported $ref %q: only #/$defs/<name> is supported", s.Ref)
-	}
-	target, ok := defs[strings.TrimPrefix(s.Ref, prefix)]
-	if !ok || target == nil {
-		return nil, fmt.Errorf("$ref %q not found in defs", s.Ref)
-	}
-	return target, nil
+	return s, nil
 }
 
 // isSecret reports whether s is a secret value (marked secret:true), looking

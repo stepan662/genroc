@@ -578,7 +578,7 @@ func (s Schema) MergeInto(d Defs) (Schema, error) {
 	insert := make(map[string]*node, len(moved))
 	for _, name := range names {
 		def := moved[name]
-		if target, ok := findEqualDef(d.m, def); ok {
+		if target, ok := findEqualDef(d.m, name, def); ok {
 			rename[name] = target // reuse the existing content-equal definition
 			continue
 		}
@@ -599,19 +599,52 @@ func (s Schema) MergeInto(d Defs) (Schema, error) {
 	return Schema{cloned}, nil
 }
 
-// findEqualDef returns the name of an existing definition content-equal to def.
-func findEqualDef(existing map[string]*node, def *node) (string, bool) {
+// findEqualDef returns the name of an existing definition content-equal to def,
+// which is about to be inserted under name. Equality is judged modulo that
+// insertion rename: a self-referencing definition must also match an earlier
+// copy whose self-refs already spell the renamed name — plain textual equality
+// would re-merge a recursive definition as a fresh input_1, input_2, … every
+// time. (Mutually recursive definitions renamed as a group are still compared
+// textually and may duplicate; only self-references are rename-normalized.)
+func findEqualDef(existing map[string]*node, name string, def *node) (string, bool) {
 	names := make([]string, 0, len(existing))
-	for name := range existing {
-		names = append(names, name)
+	for n := range existing {
+		names = append(names, n)
 	}
 	sort.Strings(names)
-	for _, name := range names {
-		if nodesEqual(existing[name], def) {
-			return name, true
+	for _, en := range names {
+		if nodesEqual(existing[en], def) {
+			return en, true
+		}
+	}
+	if !referencesDef(def, name) {
+		return "", false
+	}
+	for _, en := range names {
+		if en == name {
+			continue // no rename would occur; the plain comparison above covered it
+		}
+		clone, err := deepClone(def)
+		if err != nil {
+			return "", false
+		}
+		applyRename(clone, map[string]string{name: en})
+		if nodesEqual(existing[en], clone) {
+			return en, true
 		}
 	}
 	return "", false
+}
+
+// referencesDef reports whether any $ref in the tree points at #/$defs/<name>.
+func referencesDef(root *node, name string) bool {
+	found := false
+	walkTree(root, nil, func(nd *node, _ []string, _ string) {
+		if nd.Ref == "#/$defs/"+name {
+			found = true
+		}
+	})
+	return found
 }
 
 // applyRename rewrites every "#/$defs/<old>" ref in the tree to its renamed

@@ -66,6 +66,45 @@ test("process-level $defs are shared by input_schema and result_schemas", async 
   mock.stop();
 });
 
+// A schema may BE a bare $ref to a process-level def — including one named
+// "input", colliding with the generated schema name. The colliding def is
+// renamed, the resulting alias chain resolves for inference and validation,
+// and defaults fill through it.
+test("input_schema as a bare $ref to a def named 'input' works", async () => {
+  const name = `shared_defs_bare_ref_${crypto.randomUUID()}`;
+  const { error } = await client.PUT("/definitions", {
+    body: {
+      name,
+      $defs: {
+        input: {
+          type: "object",
+          properties: {
+            blob: { type: "string", default: "12" },
+            sleep: { type: "integer" },
+          },
+          required: ["sleep"],
+        },
+      },
+      input_schema: { $ref: "#/$defs/input" },
+      tasks: [{ id: "route", output: "{{ input.blob }}", switch: "end" }],
+      output: "{{ outputs.route }}",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any,
+  });
+  expect(error).toBeUndefined();
+
+  // blob is omitted: its default must fill through the bare root $ref.
+  const { data: startData } = await client.POST("/instances", {
+    body: { process: name, input: { sleep: 1 } },
+  });
+  const id = startData!.id;
+  expect(await waitForInstance(id)).toBe("completed");
+
+  const { data } = await client.GET("/instances/{id}", { params: { path: { id } } });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  expect((data?.context as any)?.output).toBe("12");
+});
+
 // Generated schema names take precedence by renaming: a user definition named
 // like a generated one (here fetch_output) is accepted — generation renames it
 // with a unique suffix and rewrites the $refs pointing at it, so the process
