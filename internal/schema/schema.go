@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // SchemaType holds one or more JSON Schema type strings.
@@ -309,7 +310,8 @@ func (s Schema) Normalize() (Schema, error) {
 
 // CheckDoc reports whether the schema is structurally well-formed in the supported
 // subset: every $ref resolves against the root $defs, combinator and property
-// entries are non-nil, and paired numeric/length/item bounds are ordered.
+// entries are non-nil, paired numeric/length/item bounds are ordered, and declared
+// defaults validate against their schema.
 func (s Schema) CheckDoc() error {
 	return checkDocRoot(s.n)
 }
@@ -525,6 +527,122 @@ func (s Schema) WithDefs(d Defs) Schema {
 		return s
 	}
 	return wrap(s.n, d.m)
+}
+
+// WithMergedDefs returns a copy of s whose root $defs are the union of its own
+// and the handle's — the schema's own definitions win on a name clash. Unlike
+// WithDefs the maps are merged into a fresh map, so neither the receiver nor the
+// handle observes later changes. A zero/empty handle is a no-op.
+func (s Schema) WithMergedDefs(d Defs) Schema {
+	if len(d.m) == 0 {
+		return s
+	}
+	own := s.rootDefs()
+	merged := make(map[string]*node, len(own)+len(d.m))
+	for k, v := range d.m {
+		merged[k] = v
+	}
+	for k, v := range own {
+		merged[k] = v
+	}
+	return wrap(s.n, merged)
+}
+
+// MergeInto hoists the schema's root $defs into the handle and returns a copy of
+// the schema with its refs pointing at the merged locations, leaving the copy
+// itself defs-free. Collisions are resolved safely: a definition that is
+// content-equal to one already in the handle (under any name) is reused, and a
+// genuinely different one is renamed with a unique suffix — with every $ref in
+// the returned schema and in the moved definition bodies rewritten to match.
+// Existing entries in the handle always keep their names, so definitions seeded
+// first (e.g. the generated schema names during process generation) take
+// precedence. The receiver is not modified; the handle is mutated in place.
+func (s Schema) MergeInto(d Defs) (Schema, error) {
+	if s.n == nil || len(s.n.Defs) == 0 {
+		return s, nil
+	}
+	cloned, err := deepClone(s.n)
+	if err != nil {
+		return Schema{}, err
+	}
+	moved := cloned.Defs
+	cloned.Defs = nil
+
+	// Assign a target name per definition, deterministically (sorted names).
+	names := make([]string, 0, len(moved))
+	for name := range moved {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	rename := make(map[string]string, len(moved))
+	insert := make(map[string]*node, len(moved))
+	for _, name := range names {
+		def := moved[name]
+		if target, ok := findEqualDef(d.m, def); ok {
+			rename[name] = target // reuse the existing content-equal definition
+			continue
+		}
+		newName := name
+		if _, taken := d.m[name]; taken {
+			newName = getUniqueName(name, d.m)
+		}
+		rename[name] = newName
+		insert[newName] = def
+		d.m[newName] = def // claim immediately so later names stay unique
+	}
+
+	// Rewrite refs in the schema body and in the moved definition bodies.
+	applyRename(cloned, rename)
+	for _, def := range insert {
+		applyRename(def, rename)
+	}
+	return Schema{cloned}, nil
+}
+
+// findEqualDef returns the name of an existing definition content-equal to def.
+func findEqualDef(existing map[string]*node, def *node) (string, bool) {
+	names := make([]string, 0, len(existing))
+	for name := range existing {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if nodesEqual(existing[name], def) {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// applyRename rewrites every "#/$defs/<old>" ref in the tree to its renamed
+// location. Renames to the same name are no-ops.
+func applyRename(root *node, rename map[string]string) {
+	walkTree(root, nil, func(nd *node, _ []string, _ string) {
+		const prefix = "#/$defs/"
+		if !strings.HasPrefix(nd.Ref, prefix) {
+			return
+		}
+		if newName, ok := rename[strings.TrimPrefix(nd.Ref, prefix)]; ok {
+			nd.Ref = prefix + newName
+		}
+	})
+}
+
+// Flatten resolves the handle's definitions against each other — nested $defs
+// hoisted, cross-refs rewritten, every named entry kept — and returns a fresh,
+// flat handle. It is how a user-supplied definition pool (whose entries may
+// reference one another) is brought into normal form.
+func (d Defs) Flatten() (Defs, error) {
+	named := make(map[string]Schema, len(d.m))
+	for k, v := range d.m {
+		named[k] = Schema{v} // bare nodes: cross-refs resolve at the container level
+	}
+	return FlattenNamed(named)
+}
+
+// JSONSchemaBytes returns a permissive JSON Schema for OpenAPI reflection.
+func (Defs) JSONSchemaBytes() ([]byte, error) {
+	return []byte(`{"type":"object","additionalProperties":true}`), nil
 }
 
 // DefsHandle returns a handle over the schema's own root $defs. The handle shares

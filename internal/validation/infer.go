@@ -70,7 +70,11 @@ func buildInputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proces
 			switchCtx := contextSchema(required[s.ID], optional[s.ID], taskSchemas, processInput, configSchema, mustErr[s.ID], mayErr[s.ID])
 			if s.Action != nil || s.Output.Present() {
 				loops := slices.Contains(optional[s.ID], s.ID) || slices.Contains(required[s.ID], s.ID)
-				switchCtx = addSelfSchema(switchCtx, s, loops)
+				withSelf, err := addSelfSchema(switchCtx, s, loops, defs)
+				if err != nil {
+					return fmt.Errorf("task %q: %w", s.ID, err)
+				}
+				switchCtx = withSelf
 			}
 			switchCtx = switchCtx.WithDefs(defs)
 			for _, c := range s.Switch {
@@ -204,34 +208,42 @@ func contextSchema(preceding []string, optional []string, tasks map[string]TaskS
 //   - self.previous: this task's prior output — present only when it loops (and so
 //     has a prior iteration). Both output and previous resolve through
 //     $defs[<id>_output].
-func addSelfSchema(ctx schema.Schema, s *model.Task, loops bool) schema.Schema {
-	self := schema.Object().WithProperty("result", actionResultType(s), true)
+func addSelfSchema(ctx schema.Schema, s *model.Task, loops bool, defs schema.Defs) (schema.Schema, error) {
+	resultType, err := actionResultType(s, defs)
+	if err != nil {
+		return schema.Schema{}, err
+	}
+	self := schema.Object().WithProperty("result", resultType, true)
 	if s.Output.Present() {
 		self = self.WithProperty("output", schema.Ref(s.ID+"_output"), true)
 		if loops {
 			self = self.WithProperty("previous", schema.Ref(s.ID+"_output"), false)
 		}
 	}
-	return ctx.WithProperty("self", self, true)
+	return ctx.WithProperty("self", self, true), nil
 }
 
 // actionResultType is the type of a task's raw action result — self.result inside
 // an output map (typed by result_schema when present, else permissive; null for
 // delay or a no-action task).
-func actionResultType(s *model.Task) schema.Schema {
+func actionResultType(s *model.Task, defs schema.Defs) (schema.Schema, error) {
 	if s.Action == nil {
-		return schema.Type("null")
+		return schema.Type("null"), nil
 	}
 	switch s.Action.Type {
 	case model.ActionTypeChildParallel:
-		return childParallelOutputSchema(s)
+		return childParallelOutputSchema(s, defs)
 	case model.ActionTypeDelay:
-		return schema.Type("null")
+		return schema.Type("null"), nil
 	default:
 		if s.Action.ResultSchema != nil {
-			return *s.Action.ResultSchema
+			// The result schema is self-contained (shared $defs baked in at
+			// Normalize). Hoist its definitions into the generation pool — reusing
+			// content-equal entries, renaming collisions and rewriting the schema's
+			// $refs — so they resolve in every inference context it is embedded in.
+			return s.Action.ResultSchema.MergeInto(defs)
 		}
-		return schema.Object()
+		return schema.Object(), nil
 	}
 }
 

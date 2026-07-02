@@ -6,7 +6,7 @@ input_schema:
   properties:
     blob:
       type: string
-      default: abcd
+      default: "12"
     sleep:
       type: integer
   required: [sleep]
@@ -24,7 +24,7 @@ tasks:
           result:
             type: string
             secret: true
-    output: "{{self.result}}"
+    output: "{{input.blob}}"
     switch: end
 
 output: "{{ outputs.first }}"

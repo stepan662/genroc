@@ -119,13 +119,23 @@ func normalize(schema *node) (*node, error) {
 	}
 
 	// Build root $defs from used definitions, resolving name collisions.
+	// Shallower definitions claim their name first: a top-level definition keeps
+	// its exact name and a nested one that collides gets the unique suffix. This
+	// is what lets FlattenNamed guarantee that its named entries — the generated
+	// schema names during process generation — always win a collision.
 	defKeys := make([]string, 0, len(ctx.definitions))
 	for k, def := range ctx.definitions {
 		if def.Used {
 			defKeys = append(defKeys, k)
 		}
 	}
-	sort.Strings(defKeys)
+	sort.Slice(defKeys, func(i, j int) bool {
+		di, dj := strings.Count(defKeys[i], "/"), strings.Count(defKeys[j], "/")
+		if di != dj {
+			return di < dj
+		}
+		return defKeys[i] < defKeys[j]
+	})
 	rootDefs := make(map[string]*node)
 	for _, k := range defKeys {
 		def := ctx.definitions[k]

@@ -13,7 +13,9 @@ import (
 // Normalization, relative to the input:
 //   - object properties not declared in the schema are dropped;
 //   - a declared property that is absent is filled from its `default` if it has
-//     one, and otherwise omitted (a missing required property is an error);
+//     one, and otherwise omitted (a missing required property is an error); a
+//     filled default is itself conformed against the property schema, so an
+//     invalid default is an error rather than a schema-violating output;
 //   - every retained value is type- and constraint-checked (enum, minimum/maximum,
 //     minLength/maxLength, minItems/maxItems).
 //
@@ -104,7 +106,14 @@ func conformObject(nd *node, defs map[string]*node, v map[string]any, path strin
 				return nil, fmt.Errorf("%srequired property %q is missing", at(path), name)
 			}
 			if def := propDefault(prop, defs); def != nil {
-				out[name] = cloneJSON(def)
+				// The default is conformed like a supplied value, so a filled
+				// value can never violate the schema and object defaults are
+				// normalized (pruned, nested defaults filled) consistently.
+				norm, err := conform(prop, defs, cloneJSON(def), join(path, name))
+				if err != nil {
+					return nil, fmt.Errorf("invalid schema default: %w", err)
+				}
+				out[name] = norm
 			}
 			continue // absent optional without a default is omitted
 		}

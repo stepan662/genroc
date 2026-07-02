@@ -190,7 +190,7 @@ test("nested-prefix secret values are fully redacted in stored logs", async () =
 test("a secret in a large (externalized) request body is redacted in stored logs", async () => {
   const mock = await startMockService(0, { response: { ok: 1 } });
   const name = `secret_big_body_${crypto.randomUUID()}`;
-  const secret = "Z".repeat(9000); // exceeds the 8 KiB externalization threshold
+  const secret = "Z".repeat(9000); // exceeds the 2 KiB externalization threshold
 
   await client.PUT("/definitions/batch", {
     body: {
@@ -239,4 +239,98 @@ test("a secret in a large (externalized) request body is redacted in stored logs
   // preview, and not in any externalized log object.
   expect(JSON.stringify(logs)).not.toContain("ZZZZZZZZZZ");
   mock.stop();
+});
+
+// Log payloads are redacted BEFORE the inline-vs-externalize decision: a payload
+// that only exceeds the cap because of its secrets shrinks to a few bytes once
+// scrubbed, so it must be stored inline — no log object is written for it.
+test("a large payload that shrinks below the threshold after redaction is stored inline", async () => {
+  const name = `secret_shrink_${crypto.randomUUID()}`;
+  const secret = "X".repeat(4000); // alone exceeds the 2 KiB payload cap
+
+  await client.PUT("/definitions/batch", {
+    body: {
+      definitions: [
+        {
+          name,
+          input_schema: {
+            type: "object",
+            required: ["token"],
+            properties: { token: { type: "string", secret: true } },
+          },
+          tasks: [{ id: "route", switch: "end" }],
+        },
+      ],
+      channel: "latest",
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any);
+
+  const { data: startData } = await client.POST("/instances", {
+    body: { process: name, input: { token: secret } },
+  });
+  const id = startData!.id;
+  expect(await waitForInstance(id)).toBe("completed");
+
+  const { data: logs } = await client.GET("/instances/{id}/logs", { params: { path: { id } } });
+  const created = (logs!.items ?? []).find((l) => l.event === "inst_created");
+  expect(created).toBeDefined();
+  // Redacted to {"token":"***"} — inline, not a reference to a log object.
+  expect(created!.data_ref).toBeUndefined();
+  expect(created!.data).toContain("***");
+  expect(JSON.stringify(logs)).not.toContain("XXXXXXXXXX");
+});
+
+// A payload still over the cap AFTER redaction is externalized — but the stored
+// log object must hold the redacted content: resolving it inlines the scrubbed
+// payload, never the raw secret.
+test("an externalized log payload is stored pre-redacted", async () => {
+  const name = `secret_blob_${crypto.randomUUID()}`;
+  const secret = "SECRET_HIDDEN_VALUE_42";
+  const pad = "P".repeat(4000); // keeps the payload over the cap even after redaction
+
+  await client.PUT("/definitions/batch", {
+    body: {
+      definitions: [
+        {
+          name,
+          input_schema: {
+            type: "object",
+            required: ["token", "pad"],
+            properties: {
+              token: { type: "string", secret: true },
+              pad: { type: "string" },
+            },
+          },
+          tasks: [{ id: "route", switch: "end" }],
+        },
+      ],
+      channel: "latest",
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any);
+
+  const { data: startData } = await client.POST("/instances", {
+    body: { process: name, input: { token: secret, pad } },
+  });
+  const id = startData!.id;
+  expect(await waitForInstance(id)).toBe("completed");
+
+  const { data: logs } = await client.GET("/instances/{id}/logs", { params: { path: { id } } });
+  const created = (logs!.items ?? []).find((l) => l.event === "inst_created");
+  expect(created).toBeDefined();
+  expect(created!.data_ref).toBeDefined();
+  // Neither the inline preview nor any listed field leaks the secret.
+  expect(JSON.stringify(logs)).not.toContain(secret);
+
+  // Resolve the log object: the full payload comes back scrubbed.
+  const { data: resolved } = await client.GET("/instances/{id}/logs", {
+    params: { path: { id }, query: { resolve: true } },
+  });
+  const full = (resolved!.items ?? []).find((l) => l.event === "inst_created");
+  expect(full).toBeDefined();
+  expect(full!.data_ref).toBeUndefined();
+  expect(full!.data).toContain("PPPPPPPP");
+  expect(full!.data).toContain("***");
+  expect(full!.data).not.toContain(secret);
 });

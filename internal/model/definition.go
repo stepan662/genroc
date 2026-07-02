@@ -430,14 +430,31 @@ type ProcessDefinition struct {
 	Tasks        []*Task        `json:"tasks"        validate:"required,min=1,dive" description:"Ordered list of execution tasks. Control advances linearly unless a switch case redirects."`
 	InputSchema  *schema.Schema `json:"input_schema,omitempty"          description:"JSON Schema used to validate the input payload when starting a new instance."`
 	ConfigSchema *schema.Schema `json:"config_schema,omitempty"         description:"JSON Schema — a flat object whose properties are primitive values (string/integer/number/boolean) — declaring configuration variables. Each is resolved at runtime from GENROC_<PROCESS>_<NAME> (falling back to GENROC_GLOBAL_<NAME>) in the server environment, coerced to its declared type, and exposed to expressions as config.<NAME>. A property may set secret:true to redact its value from logs."`
+	Defs         schema.Defs    `json:"$defs,omitempty,omitzero"        description:"Shared schema definitions, referenced from input_schema and result_schemas as \"#/$defs/<name>\". Definitions may reference each other. Generated schema names (input, output, <taskID>_input, <taskID>_output) take precedence: a definition reusing one is kept but renamed with a unique suffix in the generated schemas."`
 	Output       *Shape         `json:"output,omitempty"                description:"Templated value (a string expression or nested object of expressions) evaluated at completion to produce the process output."`
 }
 
 // Normalize normalizes InputSchema and all task OutputSchemas in-place using the
 // schema package (flattens $defs to root, removes unused definitions, rewrites $refs).
+//
+// Process-level $defs are flattened first (they may reference each other) and made
+// visible to every schema during its normalization, so a schema may reference a
+// shared definition as "#/$defs/<name>". Each schema comes out self-contained —
+// the shared definitions it uses are baked into its own root $defs — so runtime
+// validation, spawn marshaling, and API responses need no shared context. A
+// schema-local root definition wins over a process-level one of the same name for
+// that schema (nearest-wins scoping); generation later reconciles the copies,
+// renaming safely where contents genuinely differ.
 func (d *ProcessDefinition) Normalize() error {
+	if !d.Defs.IsZero() {
+		flat, err := d.Defs.Flatten()
+		if err != nil {
+			return fmt.Errorf("$defs: %w", err)
+		}
+		d.Defs = flat
+	}
 	norm := func(s *schema.Schema) (*schema.Schema, error) {
-		out, err := s.Normalize()
+		out, err := s.WithMergedDefs(d.Defs).Normalize()
 		return &out, err
 	}
 	if d.InputSchema != nil {
@@ -481,10 +498,13 @@ func (d *ProcessDefinition) Validate() error {
 	if err := fmtValidationErr(v.Struct(d)); err != nil {
 		return err
 	}
-	if err := checkSchemaDoc("input_schema", d.InputSchema); err != nil {
+	if err := d.validateDefs(); err != nil {
 		return err
 	}
-	if err := checkSchemaDoc("config_schema", d.ConfigSchema); err != nil {
+	if err := checkSchemaDoc("input_schema", d.InputSchema, d.Defs); err != nil {
+		return err
+	}
+	if err := checkSchemaDoc("config_schema", d.ConfigSchema, schema.Defs{}); err != nil {
 		return err
 	}
 	if err := validateConfigSchema(d.ConfigSchema); err != nil {
@@ -496,14 +516,14 @@ func (d *ProcessDefinition) Validate() error {
 	}
 	lastIdx := len(d.Tasks) - 1
 	for i, s := range d.Tasks {
-		if err := validateTask(s, taskIDs, i, lastIdx); err != nil {
+		if err := validateTask(s, taskIDs, i, lastIdx, d.Defs); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateTask(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int) error {
+func validateTask(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int, pool schema.Defs) error {
 	// Reserved task IDs.
 	if s.ID == GotoEnd || s.ID == GotoNext {
 		return fmt.Errorf("task ID %q is reserved", s.ID)
@@ -611,12 +631,12 @@ func validateTask(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int) er
 		}
 	}
 	if s.Action != nil {
-		if err := checkSchemaDoc(fmt.Sprintf("task %q action.result_schema", s.ID), s.Action.ResultSchema); err != nil {
+		if err := checkSchemaDoc(fmt.Sprintf("task %q action.result_schema", s.ID), s.Action.ResultSchema, pool); err != nil {
 			return err
 		}
 		if s.Action.Type == ActionTypeChildParallel {
 			for key, entry := range s.Action.Children {
-				if err := checkSchemaDoc(fmt.Sprintf("task %q action.children[%q].result_schema", s.ID, key), entry.ResultSchema); err != nil {
+				if err := checkSchemaDoc(fmt.Sprintf("task %q action.children[%q].result_schema", s.ID, key), entry.ResultSchema, pool); err != nil {
 					return err
 				}
 			}
@@ -744,12 +764,34 @@ func validateConfigSchema(cs *schema.Schema) error {
 	return nil
 }
 
-func checkSchemaDoc(field string, s *schema.Schema) error {
+// checkSchemaDoc verifies s is a well-formed schema document. The process-level
+// $defs pool is merged in so a schema referencing a shared definition passes even
+// before Normalize has baked the pool in (the dry-run validate path).
+func checkSchemaDoc(field string, s *schema.Schema, pool schema.Defs) error {
 	if s == nil {
 		return nil
 	}
-	if err := s.CheckDoc(); err != nil {
+	if err := s.WithMergedDefs(pool).CheckDoc(); err != nil {
 		return fmt.Errorf("%s is not a valid JSON Schema: %w", field, err)
+	}
+	return nil
+}
+
+// validateDefs checks that each process-level $defs definition is a well-formed
+// document, resolving its $refs against the whole pool since definitions may
+// reference each other. Name collisions with generated schema names need no
+// check: generation renames a colliding user definition (rewriting its $refs),
+// so generated names always take precedence without rejecting anything.
+func (d *ProcessDefinition) validateDefs() error {
+	if d.Defs.IsZero() {
+		return nil
+	}
+	for _, name := range d.Defs.Names() {
+		def, _ := d.Defs.Get(name)
+		// Merge the pool so definitions referencing each other check clean.
+		if err := def.WithMergedDefs(d.Defs).CheckDoc(); err != nil {
+			return fmt.Errorf("$defs %q is not a valid JSON Schema: %w", name, err)
+		}
 	}
 	return nil
 }

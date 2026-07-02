@@ -90,6 +90,28 @@ test("PUT /definitions — rejects unknown task type", async () => {
   expect(data).toBeUndefined();
 });
 
+test("PUT /definitions — rejects schema default that violates its own schema", async () => {
+  const { data, error } = await client.PUT("/definitions", {
+    body: {
+      name: "bad",
+      input_schema: {
+        type: "object",
+        properties: { blob: { type: "string", default: 12 } },
+      },
+      tasks: [
+        {
+          id: "s1",
+          action: { type: "rest" as const, endpoint: "http://localhost:19990/action" },
+          switch: [{ goto: "end" }],
+        },
+      ],
+    },
+  });
+
+  expect(data).toBeUndefined();
+  expect((error as any)?.error).toContain("default does not validate");
+});
+
 test("PUT /definitions — rejects missing process name", async () => {
   const { data, error } = await client.PUT("/definitions", {
     body: {

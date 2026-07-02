@@ -4,7 +4,8 @@ import "fmt"
 
 // CheckDoc reports whether node is a well-formed schema document in the supported
 // subset: every $ref resolves against the root $defs, combinator and property
-// entries are non-nil, and any paired numeric/length/item bounds are ordered.
+// entries are non-nil, any paired numeric/length/item bounds are ordered, and
+// every declared default validates against the schema it is attached to.
 //
 // Keyword validity is already guaranteed by node's strict UnmarshalJSON, so
 // CheckDoc only catches the structural errors that survive parsing — chiefly an
@@ -35,6 +36,13 @@ func checkDoc(nd *node, defs map[string]*node, seen map[*node]bool) error {
 	}
 	if nd.MinItems != nil && nd.MaxItems != nil && *nd.MinItems > *nd.MaxItems {
 		return fmt.Errorf("minItems %d exceeds maxItems %d", *nd.MinItems, *nd.MaxItems)
+	}
+	// An invalid default would surface only when Validate fills it into an
+	// absent property; reject it here, where the error points at the schema.
+	if nd.Default != nil {
+		if _, err := conform(nd, defs, nd.Default, ""); err != nil {
+			return fmt.Errorf("default does not validate against its schema: %w", err)
+		}
 	}
 
 	for name, p := range nd.Properties {

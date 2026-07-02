@@ -65,7 +65,11 @@ func inferOutputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proce
 			// The task loops iff it is its own predecessor: computeContextSets then
 			// lists its own output among its available (optional) outputs.
 			loops := slices.Contains(optional[id], id) || slices.Contains(required[id], id)
-			ctx := outputMapContext(base, actionResultType(taskByID[id]), id, loops).WithDefs(defs)
+			resultType, err := actionResultType(taskByID[id], defs)
+			if err != nil {
+				return fmt.Errorf("task %q: %w", id, err)
+			}
+			ctx := outputMapContext(base, resultType, id, loops).WithDefs(defs)
 			members = append(members, sccMember{defName: id + "_output", node: taskByID[id].Output.Raw, ctx: ctx})
 		}
 		if err := inferOutputFixpoint(members, defs); err != nil {
