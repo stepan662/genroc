@@ -1,0 +1,46 @@
+# Parent process: runs the poller as a CHILD process and returns whatever result the
+# child eventually polls out of the remote job.
+#
+# The parent owns the connection details — the job service URL and the auth token — and
+# passes them down to the child through the child's `input`. The child then puts the token
+# on its request headers. This is how a parent configures the headers its child sends:
+# thread the value through child input, reference it in the child's `headers` map.
+#
+# The parent also optionally sets the poll interval and the overall timeout (as a max
+# number of polls); both fall back to defaults when the caller omits them.
+#
+# Here everything comes from the parent's own input to keep the example self-contained; a
+# real deployment would more likely source the URL/token from config vars set via
+# GENROC_<PROCESS>_<NAME>.
+name: polling-example
+input_schema:
+  type: object
+  properties:
+    jobs_url: { type: string }
+    auth_token: { type: string }
+    poll_interval_ms: { type: integer, default: 500 }
+    max_attempts: { type: integer, default: 20 }
+  required: [jobs_url, auth_token]
+tasks:
+  - id: run
+    action:
+      type: child_map
+      children:
+        poll:
+          name: poll-until-done
+          input:
+            jobs_url: "{{ input.jobs_url }}"
+            auth_token: "{{ input.auth_token }}"
+            poll_interval_ms: "{{ input.poll_interval_ms }}"
+            max_attempts: "{{ input.max_attempts }}"
+          result_schema:
+            type: object
+            properties:
+              cancelled: { type: boolean }
+              timed_out: { type: boolean }
+              answer: { type: number }
+            required: [cancelled, timed_out, answer]
+    output: "{{ self.result.poll }}"
+    switch: end
+
+output: "{{ outputs.run }}"

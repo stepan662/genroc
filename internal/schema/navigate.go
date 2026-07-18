@@ -64,7 +64,8 @@ func navigate(s *node, defs map[string]*node, path string) (*node, error) {
 }
 
 // lookupProperty returns the subschema for a single named property within s.
-// Optional properties are returned wrapped as nullable.
+// Optional properties with no default are returned wrapped as nullable; required
+// properties and optionals with a default (always filled by validation) are not.
 //
 // A property whose value is a `$ref` is returned as the reference itself, not
 // its expansion: passing a referenced value through whole keeps the reference
@@ -164,7 +165,12 @@ func lookupPropertyGuard(s *node, name string, defs map[string]*node, visiting m
 	}
 	// The property value is returned as declared — a $ref stays a $ref (see the
 	// function comment); a taint on it rides along on the ref node itself.
-	if !isRequired(resolved, name) {
+	//
+	// A property is non-nullable when it is guaranteed present after validation:
+	// either it is required, or it has a default (conformObject fills an absent
+	// optional's default, so the value can never be missing). Only a truly optional
+	// property with no default comes back nullable.
+	if !isRequired(resolved, name) && propDefault(prop, defs) == nil {
 		return withNull(prop), nil
 	}
 	return prop, nil
