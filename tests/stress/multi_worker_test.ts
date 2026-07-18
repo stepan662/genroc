@@ -9,7 +9,7 @@ import { listAllInstances } from "../helpers/client.ts";
 // real shape of a worker fleet: correctness rests on the claim/lease/child-finish
 // locks holding across separate processes.
 //
-// Workload: a recursive child_parallel process. With ttl=D every instance spawns
+// Workload: a recursive child_map process. With ttl=D every instance spawns
 // two children with ttl=D-1 until ttl hits 0, so each root grows a binary tree of
 // exactly 2^(D+1)-1 instances, and the root's aggregated `output.processes`
 // re-counts that subtree bottom-up — a built-in exactly-once checksum.
@@ -127,7 +127,7 @@ for (const backend of backends) {
               {
                 id: "recursion",
                 action: {
-                  type: "child_parallel" as const,
+                  type: "child_map" as const,
                   children: {
                     first: {
                       name: processName,

@@ -27,14 +27,14 @@ const GotoNext = "next"
 type ActionType string
 
 const (
-	ActionTypeREST          ActionType = "rest"
-	ActionTypeChild         ActionType = "child"
-	ActionTypeChildParallel ActionType = "child_parallel"
-	ActionTypeDelay         ActionType = "delay"
-	ActionTypeExternal      ActionType = "external"
+	ActionTypeREST      ActionType = "rest"
+	ActionTypeChildMap  ActionType = "child_map"
+	ActionTypeChildList ActionType = "child_list"
+	ActionTypeDelay     ActionType = "delay"
+	ActionTypeExternal  ActionType = "external"
 )
 
-// ChildEntry describes a single named child process in a "child_parallel" call.
+// ChildEntry describes a single named child process in a "child_map" call.
 type ChildEntry struct {
 	Name         string         `json:"name"                    description:"Name of the child process to invoke."`
 	Version      int            `json:"version,omitempty"       description:"Version to run; 0 means latest published version."`
@@ -43,19 +43,22 @@ type ChildEntry struct {
 }
 
 // Action describes how to invoke a task's action. It is a discriminated union on Type.
-//   - "rest":           Endpoint (required), Headers (optional), AcceptedStatus (optional), Input (optional), ResultSchema (optional)
-//   - "child":          Name (required), Input (optional), ResultSchema (optional) — single child process
-//   - "child_parallel": Children (required, keyed map) — concurrent named child processes
-//   - "delay":          Ms (required) — pauses the instance for a duration without holding a worker, then routes via switch
-//   - "external":       Input (optional), ResultSchema (optional) — parks the instance until an
+//   - "rest":       Endpoint (required), Headers (optional), AcceptedStatus (optional), Input (optional), ResultSchema (optional)
+//   - "child_map":  Children (required, keyed map) — concurrent named child processes; the result is
+//     an object keyed by child name. A single child is expressed as a one-entry map.
+//   - "child_list": Name (required), Over (required), Version (optional), ResultSchema (optional) —
+//     runs one child per element of the Over array; each element is that child's input, and the
+//     collected result is an array of the children's outputs in the same order as Over.
+//   - "delay":      Ms (required) — pauses the instance for a duration without holding a worker, then routes via switch
+//   - "external":   Input (optional), ResultSchema (optional) — parks the instance until an
 //     outside caller submits a result via the external-tasks API; no worker is held while waiting.
 //     An optional Task.TimeoutMs (0 = wait forever) raises a catchable "external.timeout" error.
 //
-// Input (rest/child/external): templated value evaluated against the current context to build
-// the action's input — the request body (rest), child's input payload (child),
-// or the snapshot exposed to the resolver via the external-tasks queue (external).
+// Input (rest/external): templated value evaluated against the current context to build
+// the action's input — the request body (rest), or the snapshot exposed to the resolver
+// via the external-tasks queue (external).
 //
-// ResultSchema (rest/child/external): when set, the result is validated before the instance
+// ResultSchema (rest/external): when set, the result is validated before the instance
 // resumes (the submitted result, for external). Without it the result is available only as "self" in
 // this task's switch.
 //
@@ -65,11 +68,12 @@ type Action struct {
 	Endpoint       string                `json:"endpoint,omitempty"`        // rest
 	Headers        map[string]string     `json:"headers,omitempty"`         // rest, values are expressions
 	AcceptedStatus []string              `json:"accepted_status,omitempty"` // rest: HTTP status patterns accepted as non-errors
-	ResultSchema   *schema.Schema        `json:"result_schema,omitempty"`   // rest/child: validate & persist output
-	Name           string                `json:"name,omitempty"`            // child
-	Version        int                   `json:"version,omitempty"`         // child
-	Input          *Shape                `json:"input,omitempty"`           // rest/child: templated input payload
-	Children       map[string]ChildEntry `json:"children,omitempty"`        // child_parallel
+	ResultSchema   *schema.Schema        `json:"result_schema,omitempty"`   // rest/child_list: validate & persist output
+	Name           string                `json:"name,omitempty"`            // child_list
+	Version        int                   `json:"version,omitempty"`         // child_list
+	Input          *Shape                `json:"input,omitempty"`           // rest: templated input payload
+	Children       map[string]ChildEntry `json:"children,omitempty"`        // child_map
+	Over           string                `json:"over,omitempty"`            // child_list: expression evaluating to the input array (one child per element)
 	Ms             string                `json:"ms,omitempty"`              // delay: milliseconds to pause, as an expression
 }
 
@@ -94,22 +98,9 @@ func (Action) JSONSchemaBytes() ([]byte, error) {
 			},
 			{
 				"type": "object",
-				"description": "Single child-process call — runs one named process as a sub-instance and waits for it to complete. The child's output is available as outputs.taskID.",
+				"description": "Keyed child-process call — runs one or more named processes concurrently and waits for all to complete. The result is an object keyed by child name, available as outputs.taskID.childKey. A single child is a one-entry map.",
 				"properties": {
-					"type":          {"type": "string", "const": "child"},
-					"name":          {"type": "string", "description": "Name of the child process to invoke."},
-					"version":       {"type": "integer", "description": "Version to run; 0 means latest published version."},
-					"input":         {"$ref": "#/$defs/ModelShape", "description": "Templated value (string expression or nested object) evaluated against the current context to build the child's input payload."},
-					"result_schema": {"type": "object", "additionalProperties": true, "description": "JSON Schema to validate and persist the child's output. Without it the output is not stored in context."}
-				},
-				"required": ["type", "name"],
-				"additionalProperties": false
-			},
-			{
-				"type": "object",
-				"description": "Parallel child-process call — runs multiple named processes concurrently and waits for all to complete. Each child's output is available as outputs.taskID.childKey.",
-				"properties": {
-					"type": {"type": "string", "const": "child_parallel"},
+					"type": {"type": "string", "const": "child_map"},
 					"children": {
 						"type": "object",
 						"description": "Keyed map of child processes to run concurrently. Keys become the access names in outputs.taskID.",
@@ -128,6 +119,19 @@ func (Action) JSONSchemaBytes() ([]byte, error) {
 					}
 				},
 				"required": ["type", "children"],
+				"additionalProperties": false
+			},
+			{
+				"type": "object",
+				"description": "List fan-out child call — runs one instance of a single child process per element of the 'over' array, concurrently, and waits for all to complete. Each element is that child's input payload. The result is an array of the children's outputs in the same order as 'over', available as outputs.taskID.",
+				"properties": {
+					"type":          {"type": "string", "const": "child_list"},
+					"name":          {"type": "string", "description": "Name of the child process to invoke for every element."},
+					"version":       {"type": "integer", "description": "Version to run; 0 means latest published version."},
+					"over":          {"type": "string", "description": "Expression ({{ ... }}) evaluating to an array; the engine spawns one child per element, passing the element as that child's input. An empty array spawns no children and yields an empty-array result."},
+					"result_schema": {"type": "object", "additionalProperties": true, "description": "JSON Schema to validate and expose EACH child's output. The collected result is an array of values conforming to this schema."}
+				},
+				"required": ["type", "name", "over"],
 				"additionalProperties": false
 			},
 			{
@@ -475,7 +479,7 @@ func (d *ProcessDefinition) Normalize() error {
 			}
 			s.Action.ResultSchema = normalized
 		}
-		if s.Action.Type == ActionTypeChildParallel {
+		if s.Action.Type == ActionTypeChildMap {
 			for key, entry := range s.Action.Children {
 				if entry.ResultSchema != nil {
 					normalized, err := norm(entry.ResultSchema)
@@ -535,11 +539,7 @@ func validateTask(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int, po
 			if s.Action.Endpoint == "" {
 				return fmt.Errorf("task %q: action.endpoint is required for type %q", s.ID, s.Action.Type)
 			}
-		case ActionTypeChild:
-			if s.Action.Name == "" {
-				return fmt.Errorf("task %q: action.name is required for type %q", s.ID, s.Action.Type)
-			}
-		case ActionTypeChildParallel:
+		case ActionTypeChildMap:
 			if len(s.Action.Children) == 0 {
 				return fmt.Errorf("task %q: action.children is required for type %q", s.ID, s.Action.Type)
 			}
@@ -547,6 +547,13 @@ func validateTask(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int, po
 				if entry.Name == "" {
 					return fmt.Errorf("task %q: action.children[%q].name is required", s.ID, key)
 				}
+			}
+		case ActionTypeChildList:
+			if s.Action.Name == "" {
+				return fmt.Errorf("task %q: action.name is required for type %q", s.ID, s.Action.Type)
+			}
+			if s.Action.Over == "" {
+				return fmt.Errorf("task %q: action.over is required for type %q", s.ID, s.Action.Type)
 			}
 		case ActionTypeDelay:
 			if s.Action.Ms == "" {
@@ -556,7 +563,7 @@ func validateTask(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int, po
 			// No required action fields: input and result_schema are both optional
 			// (mirroring rest). The wait timeout is the task's timeout_ms (0 = forever).
 		default:
-			return fmt.Errorf("task %q: action.type must be one of: rest, child, child_parallel, delay, external", s.ID)
+			return fmt.Errorf("task %q: action.type must be one of: rest, child_map, child_list, delay, external", s.ID)
 		}
 	}
 
@@ -634,7 +641,7 @@ func validateTask(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int, po
 		if err := checkSchemaDoc(fmt.Sprintf("task %q action.result_schema", s.ID), s.Action.ResultSchema, pool); err != nil {
 			return err
 		}
-		if s.Action.Type == ActionTypeChildParallel {
+		if s.Action.Type == ActionTypeChildMap {
 			for key, entry := range s.Action.Children {
 				if err := checkSchemaDoc(fmt.Sprintf("task %q action.children[%q].result_schema", s.ID, key), entry.ResultSchema, pool); err != nil {
 					return err

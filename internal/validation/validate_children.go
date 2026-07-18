@@ -13,7 +13,7 @@ type DefinitionGetter interface {
 	LatestVersion(name string) (int, error)
 }
 
-// ValidateChildProcessRefs checks every child/child_parallel task in def:
+// ValidateChildProcessRefs checks every child_map/child_list task in def:
 //  1. The referenced process exists (version 0 resolves to latest).
 //  2. The schema inferred from the input expressions is a subset of the child's InputSchema.
 //
@@ -34,16 +34,15 @@ func ValidateChildProcessRefs(def *model.ProcessDefinition, currentVersion int, 
 		ctx := contextSchema(required[s.ID], optional[s.ID], tasks, processInput, configSchema, mustErr[s.ID], mayErr[s.ID]).WithDefs(defs)
 
 		switch s.Action.Type {
-		case model.ActionTypeChild:
-			entry := model.ChildEntry{Name: s.Action.Name, Version: s.Action.Version, Input: s.Action.Input}
-			if err := validateChildEntry(s.ID, "child", entry, ctx, defs, def, currentVersion, getter); err != nil {
-				return err
-			}
-		case model.ActionTypeChildParallel:
+		case model.ActionTypeChildMap:
 			for key, entry := range s.Action.Children {
 				if err := validateChildEntry(s.ID, fmt.Sprintf("children[%q]", key), entry, ctx, defs, def, currentVersion, getter); err != nil {
 					return err
 				}
+			}
+		case model.ActionTypeChildList:
+			if err := validateChildListEntry(s.ID, s.Action, ctx, defs, def, currentVersion, getter); err != nil {
+				return err
 			}
 		}
 	}
@@ -99,6 +98,66 @@ func validateChildEntry(taskID string, label string, p model.ChildEntry, ctx sch
 
 	if !normalized.IsSubset(*child.InputSchema) {
 		return fmt.Errorf("%s: input is not compatible with %q v%d input_schema", prefix, p.Name, childVersion)
+	}
+	return nil
+}
+
+// validateChildListEntry checks a child_list task: the referenced child exists,
+// `over` is a non-null array, and the array's element type (each element is one
+// child's input) is a subset of the child's InputSchema.
+func validateChildListEntry(taskID string, action *model.Action, ctx schema.Schema, defs schema.Defs, current *model.ProcessDefinition, currentVersion int, getter DefinitionGetter) error {
+	prefix := fmt.Sprintf("task %q: child_list", taskID)
+
+	var child *model.ProcessDefinition
+	var childVersion int
+	if action.Name == current.Name && (action.Version == 0 || action.Version == currentVersion) {
+		child = current
+		childVersion = currentVersion
+	} else {
+		childVersion = action.Version
+		if childVersion == 0 {
+			v, err := getter.LatestVersion(action.Name)
+			if err != nil {
+				return fmt.Errorf("%s: %w", prefix, err)
+			}
+			childVersion = v
+		}
+		var err error
+		child, err = getter.GetDefinition(action.Name, childVersion)
+		if err != nil {
+			return fmt.Errorf("%s: %w", prefix, err)
+		}
+	}
+
+	// Infer `over` and confirm it is a non-null array. This also type-checks the
+	// expression itself (done again here — with the child in scope — after buildInputs).
+	arr, err := checkArrayTemplate(action.Over, ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if child.InputSchema == nil {
+		return nil
+	}
+
+	// Extract the element type (resolving `over` through a $ref first, so an array
+	// reached via a shared definition still yields its item schema), then subset-check
+	// it against the child's input schema.
+	if arr.HasRef() {
+		if resolved, rerr := arr.Resolve(); rerr == nil {
+			arr = resolved
+		}
+	}
+	if !arr.HasItems() {
+		return fmt.Errorf("%s: over is an array with no declared element type, so it cannot be checked against %q v%d input_schema; give the array a typed item schema", prefix, action.Name, childVersion)
+	}
+	elem := arr.Items()
+
+	normalized, err := elem.WithDefs(defs).Normalize()
+	if err != nil {
+		return fmt.Errorf("%s: normalize element type: %w", prefix, err)
+	}
+	if !normalized.IsSubset(*child.InputSchema) {
+		return fmt.Errorf("%s: array element type is not compatible with %q v%d input_schema", prefix, action.Name, childVersion)
 	}
 	return nil
 }

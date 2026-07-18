@@ -372,6 +372,18 @@ func Type(types ...string) Schema {
 	return Schema{&node{Type: SchemaType(types)}}
 }
 
+// Array returns a new array Schema ({"type":"array","items":item}) whose elements
+// conform to item. A zero item (Schema{}) yields an itemless array (any element).
+// The item is embedded structurally; any root $defs it carries are dropped (it is
+// expected to reference the shared pool, like MergeInto results and WithProperty subs).
+func Array(item Schema) Schema {
+	n := &node{Type: SchemaType{"array"}}
+	if item.n != nil {
+		n.Items = item.n
+	}
+	return Schema{n}
+}
+
 // Ref returns a Schema that is a reference to the named root definition:
 // {"$ref": "#/$defs/<name>"}.
 func Ref(name string) Schema {

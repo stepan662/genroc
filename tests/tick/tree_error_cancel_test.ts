@@ -3,8 +3,8 @@
  *
  *   grandparent
  *     └─ parent  (child call)
- *          ├─ a  (child_parallel)  ← always calls failWorker → HTTP 500 → fails
- *          └─ b  (child_parallel)  ← calls successWorker → HTTP 200 → completes
+ *          ├─ a  (child_map)  ← always calls failWorker → HTTP 500 → fails
+ *          └─ b  (child_map)  ← calls successWorker → HTTP 200 → completes
  *
  * Key invariants:
  *   - Errors take precedence over cancellation: FailAncestors marks ancestors
@@ -77,7 +77,7 @@ beforeAll(async () => {
     {
       id: "run_children",
       action: {
-        type: "child_parallel" as const,
+        type: "child_map" as const,
         children: {
           a: { name: failWorkerName },
           b: { name: successWorkerName },
@@ -90,7 +90,7 @@ beforeAll(async () => {
   await ctx.env.define(gpName, [
     {
       id: "run_parent",
-      action: { type: "child" as const, name: parentName },
+      action: { type: "child_map" as const, children: { out: { name: parentName } } },
       switch: [{ goto: "end" }],
     },
   ]);
@@ -197,7 +197,7 @@ test("a fails while ancestors are cancelling — FailAncestors overrides 'cancel
       {
         id: "run_children",
         action: {
-          type: "child_parallel" as const,
+          type: "child_map" as const,
           children: {
             a: { name: holdWorker },
             b: { name: successWorkerName },
@@ -210,7 +210,7 @@ test("a fails while ancestors are cancelling — FailAncestors overrides 'cancel
     await ctx.env.define(gp2Name, [
       {
         id: "run_parent",
-        action: { type: "child" as const, name: parent2Name },
+        action: { type: "child_map" as const, children: { out: { name: parent2Name } } },
         switch: [{ goto: "end" }],
       },
     ]);

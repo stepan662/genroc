@@ -577,7 +577,7 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 
 		if hasCall {
 			switch task.Action.Type {
-			case model.ActionTypeChild, model.ActionTypeChildParallel:
+			case model.ActionTypeChildMap, model.ActionTypeChildList:
 				out, done := e.runChildProcesses(ctx, inst, task)
 				if done != nil {
 					return *done
@@ -1458,25 +1458,38 @@ func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInsta
 
 	var children []*model.ProcessInstance
 	switch task.Action.Type {
-	case model.ActionTypeChild:
-		child, fail := e.buildSingleChild(ctx, inst, task, childCallStack)
+	case model.ActionTypeChildMap:
+		mapped, fail := e.buildMapChildren(ctx, inst, task, childCallStack)
 		if fail != nil {
 			return nil, fail
 		}
-		spawned[task.ID] = child.ID
-		children = []*model.ProcessInstance{child}
-	case model.ActionTypeChildParallel:
-		parallel, fail := e.buildParallelChildren(ctx, inst, task, childCallStack)
-		if fail != nil {
-			return nil, fail
-		}
-		ids := make(map[string]any, len(parallel))
-		for _, c := range parallel {
+		ids := make(map[string]any, len(mapped))
+		for _, c := range mapped {
 			key, _ := c.ContextData["_spawn_child_key"].(string)
 			ids[key] = c.ID
 		}
 		spawned[task.ID] = ids
-		children = parallel
+		children = mapped
+	case model.ActionTypeChildList:
+		listChildren, fail := e.buildListChildren(ctx, inst, task, childCallStack)
+		if fail != nil {
+			return nil, fail
+		}
+		if len(listChildren) == 0 {
+			// Empty `over` array: there is nothing to spawn. Yield an empty-array
+			// result and continue inline — do NOT park. SpawnChildrenAndWait is a
+			// no-op on zero children, so parking here would leave the parent to
+			// re-run this task forever.
+			spawned[task.ID] = []any{}
+			e.audit(inst, logEvent{Level: model.LogInfo, Event: model.EventChildrenSpawned, Task: task.ID, Msg: "0 children"})
+			return []any{}, nil
+		}
+		ids := make([]any, len(listChildren))
+		for i, c := range listChildren {
+			ids[i] = c.ID
+		}
+		spawned[task.ID] = ids
+		children = listChildren
 	}
 
 	var order []string
@@ -1513,67 +1526,10 @@ func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInsta
 	return nil, stop(advanceOutcome{kind: outcomeNoop})
 }
 
-// buildSingleChild resolves the child definition, evaluates input, and constructs
-// a ProcessInstance ready to be saved. It does not persist anything; a non-nil
-// outcome means the parent failed and the caller should stop and persist it.
-func (e *Engine) buildSingleChild(ctx context.Context, inst *model.ProcessInstance, task *model.Task, callStack []string) (*model.ProcessInstance, *advanceOutcome) {
-	name := task.Action.Name
-	version := task.Action.Version
-	if version == 0 {
-		if name == inst.ProcessName {
-			version = inst.ProcessVersion
-		} else {
-			var err error
-			version, err = e.db.GetDependencyVersion(inst.ProcessName, inst.ProcessVersion, task.ID, "")
-			if err != nil {
-				version, err = e.db.LatestVersion(name)
-				if err != nil {
-					return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child: %v", task.ID, err)))
-				}
-			}
-		}
-	}
-	def, err := e.db.GetDefinition(name, version)
-	if err != nil {
-		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child: %v", task.ID, err)))
-	}
-	input, err := e.evalChildInput(inst, task.ID, "child", task.Action.Input)
-	if err != nil {
-		return nil, stop(e.failInstance(inst, err.Error()))
-	}
-	input, err = def.ValidateInput(input)
-	if err != nil {
-		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child input validation: %v", task.ID, err)))
-	}
-	childCtx := map[string]any{
-		"input":              input,
-		"outputs":            map[string]any{},
-		"output_order":       []string{},
-		"error":              nil,
-		"_spawn_action_type": string(model.ActionTypeChild),
-	}
-	if task.Action.ResultSchema != nil {
-		if b, err := json.Marshal(task.Action.ResultSchema); err == nil {
-			childCtx["_spawn_result_schema"] = string(b)
-		}
-	}
-	return &model.ProcessInstance{
-		ID:             idgen.ChildBase(inst.ID).String(), // sorts after the parent
-		ProcessName:    def.Name,
-		ProcessVersion: version,
-		Task:           def.Tasks[0].ID,
-		ContextData:    childCtx,
-		Status:         model.StatusRunning,
-		ParentID:       inst.ID,
-		SpawnTaskID:    task.ID,
-		CallStack:      callStack,
-	}, nil
-}
-
-// buildParallelChildren resolves definitions, evaluates inputs, and constructs
-// ProcessInstances for all parallel children. Does not persist anything; a non-nil
-// outcome means the parent failed and the caller should stop and persist it.
-func (e *Engine) buildParallelChildren(ctx context.Context, inst *model.ProcessInstance, task *model.Task, callStack []string) ([]*model.ProcessInstance, *advanceOutcome) {
+// buildMapChildren resolves definitions, evaluates inputs, and constructs
+// ProcessInstances for all keyed (child_map) children. Does not persist anything; a
+// non-nil outcome means the parent failed and the caller should stop and persist it.
+func (e *Engine) buildMapChildren(ctx context.Context, inst *model.ProcessInstance, task *model.Task, callStack []string) ([]*model.ProcessInstance, *advanceOutcome) {
 	keys := make([]string, 0, len(task.Action.Children))
 	for key := range task.Action.Children {
 		keys = append(keys, key)
@@ -1598,35 +1554,119 @@ func (e *Engine) buildParallelChildren(ctx context.Context, inst *model.ProcessI
 				if err != nil {
 					version, err = e.db.LatestVersion(entry.Name)
 					if err != nil {
-						return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_parallel[%q]: %v", task.ID, key, err)))
+						return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_map[%q]: %v", task.ID, key, err)))
 					}
 				}
 			}
 		}
 		def, err := e.db.GetDefinition(entry.Name, version)
 		if err != nil {
-			return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_parallel[%q]: %v", task.ID, key, err)))
+			return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_map[%q]: %v", task.ID, key, err)))
 		}
-		input, err := e.evalChildInput(inst, task.ID, fmt.Sprintf("child_parallel[%q]", key), entry.Input)
+		input, err := e.evalChildInput(inst, task.ID, fmt.Sprintf("child_map[%q]", key), entry.Input)
 		if err != nil {
 			return nil, stop(e.failInstance(inst, err.Error()))
 		}
 		input, err = def.ValidateInput(input)
 		if err != nil {
-			return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_parallel[%q] input validation: %v", task.ID, key, err)))
+			return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_map[%q] input validation: %v", task.ID, key, err)))
 		}
 		childCtx := map[string]any{
 			"input":              input,
 			"outputs":            map[string]any{},
 			"output_order":       []string{},
 			"error":              nil,
-			"_spawn_action_type": string(model.ActionTypeChildParallel),
+			"_spawn_action_type": string(model.ActionTypeChildMap),
 			"_spawn_child_key":   key,
 		}
 		if entry.ResultSchema != nil {
 			if b, err := json.Marshal(entry.ResultSchema); err == nil {
 				childCtx["_spawn_result_schema"] = string(b)
 			}
+		}
+		children = append(children, &model.ProcessInstance{
+			ID:             idgen.Add(base, uint64(i)).String(),
+			ProcessName:    def.Name,
+			ProcessVersion: version,
+			Task:           def.Tasks[0].ID,
+			ContextData:    childCtx,
+			Status:         model.StatusRunning,
+			ParentID:       inst.ID,
+			SpawnTaskID:    task.ID,
+			CallStack:      callStack,
+		})
+	}
+	return children, nil
+}
+
+// buildListChildren evaluates the child_list `over` expression to an array and
+// constructs one child ProcessInstance per element, in order — each element is that
+// child's input. It returns an empty slice (no error) when `over` yields an empty
+// array or null; the caller handles that as the empty-fan-out case. Does not persist
+// anything; a non-nil outcome means the parent failed and the caller should stop and
+// persist it.
+func (e *Engine) buildListChildren(ctx context.Context, inst *model.ProcessInstance, task *model.Task, callStack []string) ([]*model.ProcessInstance, *advanceOutcome) {
+	name := task.Action.Name
+	version := task.Action.Version
+	if version == 0 {
+		if name == inst.ProcessName {
+			version = inst.ProcessVersion
+		} else {
+			var err error
+			version, err = e.db.GetDependencyVersion(inst.ProcessName, inst.ProcessVersion, task.ID, "")
+			if err != nil {
+				version, err = e.db.LatestVersion(name)
+				if err != nil {
+					return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_list: %v", task.ID, err)))
+				}
+			}
+		}
+	}
+	def, err := e.db.GetDefinition(name, version)
+	if err != nil {
+		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_list: %v", task.ID, err)))
+	}
+
+	// Evaluate `over` to the input array. Registration guarantees a non-null array
+	// type, but guard defensively: a null evaluates to the empty fan-out.
+	arrVal, err := e.evalAnyCtx(inst, task.Action.Over)
+	if err != nil {
+		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_list over: %v", task.ID, err)))
+	}
+	if arrVal == nil {
+		return nil, nil
+	}
+	items, ok := arrVal.([]any)
+	if !ok {
+		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_list: over did not evaluate to an array (got %T)", task.ID, arrVal)))
+	}
+
+	var resultSchema string
+	if task.Action.ResultSchema != nil {
+		if b, err := json.Marshal(task.Action.ResultSchema); err == nil {
+			resultSchema = string(b)
+		}
+	}
+
+	// One base id (sorts after the parent); siblings are base, base+1, … in element
+	// order, so the batch sorts after the parent and among itself in input order.
+	base := idgen.ChildBase(inst.ID)
+	children := make([]*model.ProcessInstance, 0, len(items))
+	for i, elem := range items {
+		input, err := def.ValidateInput(elem)
+		if err != nil {
+			return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_list[%d] input validation: %v", task.ID, i, err)))
+		}
+		childCtx := map[string]any{
+			"input":              input,
+			"outputs":            map[string]any{},
+			"output_order":       []string{},
+			"error":              nil,
+			"_spawn_action_type": string(model.ActionTypeChildList),
+			"_spawn_index":       i,
+		}
+		if resultSchema != "" {
+			childCtx["_spawn_result_schema"] = resultSchema
 		}
 		children = append(children, &model.ProcessInstance{
 			ID:             idgen.Add(base, uint64(i)).String(),

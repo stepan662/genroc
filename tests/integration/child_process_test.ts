@@ -29,19 +29,23 @@ test("child — task without result_schema after a task with one does not fail",
         {
           id: "task_a",
           action: {
-            type: "child" as const,
-            name: leafWithOutput,
-            result_schema: {
-              type: "object",
-              properties: { value: { type: "number" } },
-              required: ["value"],
+            type: "child_map" as const,
+            children: {
+              out: {
+                name: leafWithOutput,
+                result_schema: {
+                  type: "object",
+                  properties: { value: { type: "number" } },
+                  required: ["value"],
+                },
+              },
             },
           },
           switch: [{ goto: "next" }],
         },
         {
           id: "task_b",
-          action: { type: "child" as const, name: leafNoOutput },
+          action: { type: "child_map" as const, children: { out: { name: leafNoOutput } } },
           switch: [{ goto: "end" }],
         },
       ],
@@ -76,12 +80,16 @@ test("child — output validation failure error includes process name", async ()
         {
           id: "spawn",
           action: {
-            type: "child" as const,
-            name: childName,
-            result_schema: {
-              type: "object",
-              properties: { required_field: { type: "string" } },
-              required: ["required_field"],
+            type: "child_map" as const,
+            children: {
+              out: {
+                name: childName,
+                result_schema: {
+                  type: "object",
+                  properties: { required_field: { type: "string" } },
+                  required: ["required_field"],
+                },
+              },
             },
           },
           switch: [{ goto: "end" }],
@@ -127,7 +135,7 @@ test("child — on_error with child.failed pattern is rejected at registration",
       tasks: [
         {
           id: "spawn",
-          action: { type: "child" as const, name: childName },
+          action: { type: "child_map" as const, children: { out: { name: childName } } },
           on_error: [{ code: ["child.%"], goto: "$recovery" }],
           switch: [{ goto: "end" }],
         },
@@ -166,7 +174,7 @@ test("child — no on_error cascades to parent failure", async () => {
       tasks: [
         {
           id: "spawn",
-          action: { type: "child" as const, name: childName },
+          action: { type: "child_map" as const, children: { out: { name: childName } } },
           switch: [{ goto: "end" }],
         },
       ],
@@ -207,7 +215,7 @@ test("child — failure propagates through the entire ancestor chain", async () 
       tasks: [
         {
           id: "spawn",
-          action: { type: "child" as const, name: leafName },
+          action: { type: "child_map" as const, children: { out: { name: leafName } } },
           switch: [{ goto: "end" }],
         },
       ],
@@ -220,7 +228,7 @@ test("child — failure propagates through the entire ancestor chain", async () 
       tasks: [
         {
           id: "spawn_middle",
-          action: { type: "child" as const, name: middleName },
+          action: { type: "child_map" as const, children: { out: { name: middleName } } },
           switch: [{ goto: "end" }],
         },
       ],
@@ -263,7 +271,7 @@ test("child — parent error contains child's error message when child fails", a
       tasks: [
         {
           id: "spawn",
-          action: { type: "child" as const, name: childName },
+          action: { type: "child_map" as const, children: { out: { name: childName } } },
           switch: [{ goto: "end" }],
         },
       ],
@@ -279,8 +287,8 @@ test("child — parent error contains child's error message when child fails", a
   failMock.stop();
 });
 
-test("child_parallel — recursive spawn completes with correct aggregated output", async () => {
-  const processName = `child_parallel_${crypto.randomUUID()}`;
+test("child_map — recursive spawn completes with correct aggregated output", async () => {
+  const processName = `child_map_${crypto.randomUUID()}`;
 
   await client.PUT("/definitions", {
     body: {
@@ -301,7 +309,7 @@ test("child_parallel — recursive spawn completes with correct aggregated outpu
         {
           id: "recursion",
           action: {
-            type: "child_parallel" as const,
+            type: "child_map" as const,
             children: {
               first: {
                 name: processName,
@@ -389,14 +397,14 @@ test("child — two sequential child tasks both spawn and collect", async () => 
         tasks: [
           {
             id: "first",
-            action: { type: "child" as const, name: leafName },
-            output: "{{ self.result }}",
+            action: { type: "child_map" as const, children: { out: { name: leafName } } },
+            output: "{{ self.result.out }}",
             switch: [{ goto: "next" }],
           },
           {
             id: "second",
-            action: { type: "child" as const, name: leafName },
-            output: "{{ self.result }}",
+            action: { type: "child_map" as const, children: { out: { name: leafName } } },
+            output: "{{ self.result.out }}",
             switch: [{ goto: "end" }],
           },
         ],

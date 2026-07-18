@@ -239,25 +239,23 @@ func TestGenerate_InnerDefsConflictRenamed(t *testing.T) {
 	}
 }
 
-func TestGenerate_Child_WithOutputSchema_ExposesTypedOutput(t *testing.T) {
+func TestGenerate_ChildMapSingleEntry_WithOutputSchema_ExposesTypedOutput(t *testing.T) {
 	out := runGenerate(t, `{
   "name": "p",
   "tasks": [
     {
       "id": "spawn",
       "action": {
-        "type": "child",
-        "name": "worker",
-        "result_schema": {
-          "type": "object",
-          "properties": {
-            "count": {
-              "type": "integer"
+        "type": "child_map",
+        "children": {
+          "out": {
+            "name": "worker",
+            "result_schema": {
+              "type": "object",
+              "properties": { "count": { "type": "integer" } },
+              "required": ["count"]
             }
-          },
-          "required": [
-            "count"
-          ]
+          }
         }
       },
       "switch": "end",
@@ -265,23 +263,29 @@ func TestGenerate_Child_WithOutputSchema_ExposesTypedOutput(t *testing.T) {
     }
   ]
 }`)
-	// spawn should appear in tasks with a typed output
+	// spawn should appear in tasks with a typed, keyed output
 	if out.Tasks["spawn"].Output.IsZero() {
 		t.Fatal("spawn should have a typed output in tasks")
 	}
 	assertJSON(t, defOf(out, "spawn_output"), `{
 		"type": "object",
-		"properties": { "count": { "type": "integer" } },
-		"required": ["count"]
+		"properties": {
+			"out": {
+				"type": "object",
+				"properties": { "count": { "type": "integer" } },
+				"required": ["count"]
+			}
+		},
+		"required": ["out"]
 	}`)
 }
 
-func TestGenerate_Child_WithoutOutputSchema_NoOutput(t *testing.T) {
+func TestGenerate_ChildMapSingleEntry_WithoutOutputSchema_NoOutput(t *testing.T) {
 	out := runGenerate(t, `{
 		"name": "p",
 		"tasks": [{
 			"id": "spawn",
-			"action": { "type": "child", "name": "worker" },
+			"action": { "type": "child_map", "children": { "out": { "name": "worker" } } },
 			"switch": "end"
 		}]
 	}`)
@@ -293,26 +297,24 @@ func TestGenerate_Child_WithoutOutputSchema_NoOutput(t *testing.T) {
 	}
 }
 
-func TestGenerate_Child_OutputAvailableInDownstreamStep(t *testing.T) {
-	// outputs.spawn.count should be typed as integer in a subsequent step's input.
+func TestGenerate_ChildMapSingleEntry_OutputAvailableInDownstreamStep(t *testing.T) {
+	// outputs.spawn.out.count should be typed as integer in a subsequent step's input.
 	out := runGenerate(t, `{
   "name": "p",
   "tasks": [
     {
       "id": "spawn",
       "action": {
-        "type": "child",
-        "name": "worker",
-        "result_schema": {
-          "type": "object",
-          "properties": {
-            "count": {
-              "type": "integer"
+        "type": "child_map",
+        "children": {
+          "out": {
+            "name": "worker",
+            "result_schema": {
+              "type": "object",
+              "properties": { "count": { "type": "integer" } },
+              "required": ["count"]
             }
-          },
-          "required": [
-            "count"
-          ]
+          }
         }
       },
       "switch": "next",
@@ -324,7 +326,7 @@ func TestGenerate_Child_OutputAvailableInDownstreamStep(t *testing.T) {
         "type": "rest",
         "endpoint": "http://x",
         "input": {
-          "n": "{{outputs.spawn.count}}"
+          "n": "{{outputs.spawn.out.count}}"
         }
       }
     }
@@ -344,7 +346,7 @@ func TestGenerate_ChildParallel_WithOutputSchemas_ExposesKeyedOutput(t *testing.
     {
       "id": "spawn",
       "action": {
-        "type": "child_parallel",
+        "type": "child_map",
         "children": {
           "left": {
             "name": "worker",
@@ -409,7 +411,7 @@ func TestGenerate_ChildParallel_KeyedOutputAvailableInDownstreamStep(t *testing.
     {
       "id": "spawn",
       "action": {
-        "type": "child_parallel",
+        "type": "child_map",
         "children": {
           "left": {
             "name": "worker",
@@ -473,7 +475,7 @@ func TestGenerate_ChildParallel_MixedOutputSchemas_UntypedKeyIsObject(t *testing
     {
       "id": "spawn",
       "action": {
-        "type": "child_parallel",
+        "type": "child_map",
         "children": {
           "typed": {
             "name": "worker",
@@ -529,5 +531,119 @@ func TestGenerate_UnusedDefsRemoved(t *testing.T) {
 	}
 	if out.Defs.Has("Unused") {
 		t.Error("Unused def should have been removed")
+	}
+}
+
+func TestGenerate_ChildFromArray_OutputIsTypedArray(t *testing.T) {
+	out := runGenerate(t, `{
+  "name": "p",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {"type": "object", "properties": {"n": {"type": "integer"}}, "required": ["n"]}
+      }
+    },
+    "required": ["items"]
+  },
+  "tasks": [
+    {
+      "id": "spread",
+      "action": {
+        "type": "child_list",
+        "name": "worker",
+        "over": "{{ input.items }}",
+        "result_schema": {
+          "type": "object",
+          "properties": {"doubled": {"type": "integer"}},
+          "required": ["doubled"]
+        }
+      },
+      "switch": "end",
+      "output": "{{ self.result }}"
+    }
+  ]
+}`)
+	spreadOutput := defOf(out, "spread_output")
+	if spreadOutput.IsZero() {
+		t.Fatal("spread_output def missing")
+	}
+	if !spreadOutput.IsType("array") {
+		t.Fatalf("spread_output should be an array, got %q", spreadOutput.TypeName())
+	}
+	item := spreadOutput.Items()
+	if item.IsZero() || !item.HasProperties() {
+		t.Fatal("spread_output items should be a typed object")
+	}
+	if item.Properties()["doubled"].IsZero() {
+		t.Error("spread_output item should carry the result_schema property 'doubled'")
+	}
+}
+
+func TestGenerate_ChildFromArray_ArrayElementTypedInDownstream(t *testing.T) {
+	// outputs.spread.0.doubled must be typed as integer via array index access.
+	out := runGenerate(t, `{
+  "name": "p",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {"type": "object", "properties": {"n": {"type": "integer"}}, "required": ["n"]}
+      }
+    },
+    "required": ["items"]
+  },
+  "tasks": [
+    {
+      "id": "spread",
+      "action": {
+        "type": "child_list",
+        "name": "worker",
+        "over": "{{ input.items }}",
+        "result_schema": {
+          "type": "object",
+          "properties": {"doubled": {"type": "integer"}},
+          "required": ["doubled"]
+        }
+      },
+      "switch": "next",
+      "output": "{{ self.result }}"
+    },
+    {
+      "id": "use",
+      "action": {
+        "type": "rest",
+        "endpoint": "http://x",
+        "input": {"first": "{{ outputs.spread[0].doubled }}"}
+      }
+    }
+  ]
+}`)
+	useInput := defOf(out, "use_input")
+	if useInput.IsZero() || !useInput.HasProperties() {
+		t.Fatal("use input should have properties")
+	}
+}
+
+func TestGenerate_ChildFromArray_OverMustBeArray(t *testing.T) {
+	err := runGenerateErr(t, `{
+  "name": "p",
+  "input_schema": {
+    "type": "object",
+    "properties": {"n": {"type": "integer"}},
+    "required": ["n"]
+  },
+  "tasks": [
+    {
+      "id": "spread",
+      "action": {"type": "child_list", "name": "worker", "over": "{{ input.n }}"},
+      "switch": "end"
+    }
+  ]
+}`)
+	if err == nil {
+		t.Fatal("expected error: over must evaluate to an array")
 	}
 }

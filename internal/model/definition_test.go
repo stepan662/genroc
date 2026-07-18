@@ -126,11 +126,11 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 		}
 	})
 
-	t.Run("child_parallel children result_schemas are normalized", func(t *testing.T) {
+	t.Run("child_map children result_schemas are normalized", func(t *testing.T) {
 		task := &Task{
 			ID: "spawn",
 			Action: &Action{
-				Type: ActionTypeChildParallel,
+				Type: ActionTypeChildMap,
 				Children: map[string]ChildEntry{
 					"a": {Name: "worker", ResultSchema: mustSchemaPtr(`{
 						"type": "object",
@@ -244,24 +244,31 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			wantErr: "action.endpoint is required",
 		},
 		{
-			name: "valid child call",
+			name: "valid child_list call",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
-				{ID: "spawn", Action: &Action{Type: ActionTypeChild, Name: "worker"}, Switch: SwitchMap{{Goto: GotoEnd}}},
+				{ID: "spawn", Action: &Action{Type: ActionTypeChildList, Name: "worker", Over: "{{ input.items }}"}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
 			wantErr: "",
 		},
 		{
-			name: "child call missing name",
+			name: "child_list call missing name",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
-				{ID: "spawn", Action: &Action{Type: ActionTypeChild}, Switch: SwitchMap{{Goto: GotoEnd}}},
+				{ID: "spawn", Action: &Action{Type: ActionTypeChildList, Over: "{{ input.items }}"}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
 			wantErr: "action.name is required",
 		},
 		{
-			name: "valid child_parallel call",
+			name: "child_list call missing over",
+			def: ProcessDefinition{Name: "p", Tasks: []*Task{
+				{ID: "spawn", Action: &Action{Type: ActionTypeChildList, Name: "worker"}, Switch: SwitchMap{{Goto: GotoEnd}}},
+			}},
+			wantErr: "action.over is required",
+		},
+		{
+			name: "valid child_map call",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{ID: "spawn", Action: &Action{
-					Type: ActionTypeChildParallel,
+					Type: ActionTypeChildMap,
 					Children: map[string]ChildEntry{
 						"left":  {Name: "worker"},
 						"right": {Name: "worker"},
@@ -271,17 +278,17 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			wantErr: "",
 		},
 		{
-			name: "child_parallel call missing children",
+			name: "child_map call missing children",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
-				{ID: "spawn", Action: &Action{Type: ActionTypeChildParallel}, Switch: SwitchMap{{Goto: GotoEnd}}},
+				{ID: "spawn", Action: &Action{Type: ActionTypeChildMap}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
 			wantErr: "action.children is required",
 		},
 		{
-			name: "child_parallel entry missing name",
+			name: "child_map entry missing name",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{ID: "spawn", Action: &Action{
-					Type:     ActionTypeChildParallel,
+					Type:     ActionTypeChildMap,
 					Children: map[string]ChildEntry{"left": {Name: ""}},
 				}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
@@ -292,7 +299,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{ID: "s1", Action: &Action{Type: "ftp", Endpoint: "ftp://x"}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
-			wantErr: "action.type must be one of: rest, child, child_parallel",
+			wantErr: "action.type must be one of: rest, child_map, child_list",
 		},
 		{
 			name: "switch missing catch-all is rejected",

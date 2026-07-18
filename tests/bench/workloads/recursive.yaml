@@ -36,7 +36,7 @@ process:
         - goto: end
     - id: recursion
       action:
-        type: child_parallel
+        type: child_map
         children:
           first:
             name: recursive

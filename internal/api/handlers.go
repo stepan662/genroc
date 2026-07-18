@@ -1034,7 +1034,7 @@ func (h *Handlers) applyBatch(defs []model.ProcessDefinition, channel string, au
 	return results, nil
 }
 
-// buildResolvedDeps returns dependency rows for all child/child_parallel tasks in def,
+// buildResolvedDeps returns dependency rows for all child_map/child_list tasks in def,
 // resolving version=0 refs via batchVersions or the channel.
 // Self-references are excluded — the engine always runs them at the caller's own version.
 // It does not mutate def — the raw definition is stored as-is.
@@ -1045,12 +1045,11 @@ func (h *Handlers) buildResolvedDeps(def *model.ProcessDefinition, selfVersion i
 			continue
 		}
 		switch task.Action.Type {
-		case model.ActionTypeChild:
-			entry := model.ChildEntry{Name: task.Action.Name, Version: task.Action.Version}
-			if entry.Name == def.Name && (entry.Version == 0 || entry.Version == selfVersion) {
+		case model.ActionTypeChildList:
+			if task.Action.Name == def.Name && (task.Action.Version == 0 || task.Action.Version == selfVersion) {
 				continue
 			}
-			version, err := h.resolveChildVersion(entry.Name, entry.Version, task.ID, "", channel, batchVersions)
+			version, err := h.resolveChildVersion(task.Action.Name, task.Action.Version, task.ID, "", channel, batchVersions)
 			if err != nil {
 				return nil, err
 			}
@@ -1059,10 +1058,10 @@ func (h *Handlers) buildResolvedDeps(def *model.ProcessDefinition, selfVersion i
 				ParentVersion: selfVersion,
 				TaskID:        task.ID,
 				ChildKey:      "",
-				ChildName:     entry.Name,
+				ChildName:     task.Action.Name,
 				ChildVersion:  version,
 			})
-		case model.ActionTypeChildParallel:
+		case model.ActionTypeChildMap:
 			for key, entry := range task.Action.Children {
 				if entry.Name == def.Name && (entry.Version == 0 || entry.Version == selfVersion) {
 					continue
@@ -1349,9 +1348,9 @@ func topoSort(defs []*model.ProcessDefinition) ([]*model.ProcessDefinition, erro
 			}
 			var childNames []string
 			switch task.Action.Type {
-			case model.ActionTypeChild:
+			case model.ActionTypeChildList:
 				childNames = []string{task.Action.Name}
-			case model.ActionTypeChildParallel:
+			case model.ActionTypeChildMap:
 				for _, entry := range task.Action.Children {
 					childNames = append(childNames, entry.Name)
 				}
@@ -1402,11 +1401,11 @@ func applyDepsToDefCopy(def *model.ProcessDefinition, deps []db.DependencyRow) *
 			continue
 		}
 		switch task.Action.Type {
-		case model.ActionTypeChild:
+		case model.ActionTypeChildList:
 			if v, ok := lookup[taskChildKey{task.ID, ""}]; ok {
 				task.Action.Version = v
 			}
-		case model.ActionTypeChildParallel:
+		case model.ActionTypeChildMap:
 			for key := range task.Action.Children {
 				if v, ok := lookup[taskChildKey{task.ID, key}]; ok {
 					entry := task.Action.Children[key]
@@ -1461,11 +1460,11 @@ func subtree(defs []db.VersionedDef, rootName string) ([]db.VersionedDef, error)
 				continue
 			}
 			switch task.Action.Type {
-			case model.ActionTypeChild:
+			case model.ActionTypeChildList:
 				if err := collect(task.Action.Name); err != nil {
 					return err
 				}
-			case model.ActionTypeChildParallel:
+			case model.ActionTypeChildMap:
 				for _, entry := range task.Action.Children {
 					if err := collect(entry.Name); err != nil {
 						return err

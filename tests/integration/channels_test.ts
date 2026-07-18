@@ -37,8 +37,9 @@ function restDef(name: string, endpoint = "http://localhost/x") {
 }
 
 function childDef(name: string, childName: string, childVersion = 0) {
-  const action: Record<string, unknown> = { type: "child" as const, name: childName };
-  if (childVersion !== 0) action.version = childVersion;
+  const entry: Record<string, unknown> = { name: childName };
+  if (childVersion !== 0) entry.version = childVersion;
+  const action = { type: "child_map" as const, children: { out: entry } };
   return {
     name,
     tasks: [
@@ -339,7 +340,7 @@ test("channels — re-applying a recursive (self-calling) process dedups", async
   const selfRef = {
     name,
     tasks: [
-      { id: "recurse", action: { type: "child" as const, name }, switch: [{ goto: "end" }] },
+      { id: "recurse", action: { type: "child_map" as const, children: { out: { name } } }, switch: [{ goto: "end" }] },
     ],
   };
 

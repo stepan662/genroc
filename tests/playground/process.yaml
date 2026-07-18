@@ -4,34 +4,19 @@ name: order-pipeline
 input_schema:
   $ref: "#/$defs/input"
 tasks:
-  - id: first
+  - id: parallel
     action:
-      type: external
-      input:
-        blob: "{{ input.blob }}"
-        additional: "{{ input.sleep }}"
+      type: child_list
+      name: child
+      over: "{{ input }}"
       result_schema:
-        $ref: "#/$defs/input"
-        
+        type: number
     output: "{{self.result}}"
     switch: end
-output: "{{ outputs.first }}"
+output: "{{ outputs.parallel }}"
 
 $defs:
   input: 
-    type: object
-    properties:
-      blob:
-        type: string
-        default: "12"
-      sleep:
-        type: integer
-      recursive:
-        $ref: "#/$defs/input"
-    required: [sleep]
-  first_output:
-    type: object
-    properties:
-      result:
-        type: string
-        secret: true
+    type: array
+    items:
+      type: integer

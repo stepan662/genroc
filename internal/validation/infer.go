@@ -29,8 +29,17 @@ func buildInputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proces
 			isREST := s.Action.Type == model.ActionTypeREST
 			hasEndpoint := isREST && s.Action.Endpoint != ""
 			hasHeaders := isREST && len(s.Action.Headers) > 0
-			if inMap || s.Action.Input.Present() || hasEndpoint || hasHeaders {
+			hasOver := s.Action.Type == model.ActionTypeChildList && s.Action.Over != ""
+			if inMap || s.Action.Input.Present() || hasEndpoint || hasHeaders || hasOver {
 				ctx := contextSchema(required[s.ID], optional[s.ID], taskSchemas, processInput, configSchema, mustErr[s.ID], mayErr[s.ID]).WithDefs(defs)
+				// The child_list `over` expression must be a non-null array; each
+				// element becomes one child's input. Type-check it here so a malformed or
+				// non-array expression is rejected at registration.
+				if hasOver {
+					if _, err := checkArrayTemplate(s.Action.Over, ctx, s.ID); err != nil {
+						return err
+					}
+				}
 				// The rest endpoint and header values are templates evaluated against the
 				// context; type-check them and reject a possibly-null result (a null URL or
 				// header value would silently stringify to "null").
@@ -105,6 +114,23 @@ func checkNonNullTemplate(expr string, ctx schema.Schema, label string) error {
 		return fmt.Errorf("%s may be null; use ?? to provide a default value", label)
 	}
 	return nil
+}
+
+// checkArrayTemplate infers a child_list `over` expression against ctx and
+// requires it to evaluate to a non-null array — the source of the per-child inputs.
+// It returns the inferred array schema so callers can extract its element type.
+func checkArrayTemplate(expr string, ctx schema.Schema, taskID string) (schema.Schema, error) {
+	inferred, err := template.InferType(expr, ctx)
+	if err != nil {
+		return schema.Schema{}, fmt.Errorf("task %q over: %w", taskID, err)
+	}
+	if inferred.HasNull() {
+		return schema.Schema{}, fmt.Errorf("task %q over may be null; use ?? to provide a default array", taskID)
+	}
+	if !inferred.IsType("array") {
+		return schema.Schema{}, fmt.Errorf("task %q over must evaluate to an array, got %q", taskID, inferred.TypeName())
+	}
+	return inferred, nil
 }
 
 func inferInput(s *model.Task, ctx schema.Schema) (schema.Schema, error) {
@@ -230,8 +256,10 @@ func actionResultType(s *model.Task, defs schema.Defs) (schema.Schema, error) {
 		return schema.Type("null"), nil
 	}
 	switch s.Action.Type {
-	case model.ActionTypeChildParallel:
-		return childParallelOutputSchema(s, defs)
+	case model.ActionTypeChildMap:
+		return childMapOutputSchema(s, defs)
+	case model.ActionTypeChildList:
+		return childListOutputSchema(s, defs)
 	case model.ActionTypeDelay:
 		return schema.Type("null"), nil
 	default:

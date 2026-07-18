@@ -30,19 +30,21 @@ func TestApplyBatch_VersionedSelfRefCreatesDep(t *testing.T) {
 		"name": "recursive",
 		"tasks": []any{
 			map[string]any{"id": "recurse", "action": map[string]any{
-				"type": "child",
-				"name": "recursive",
+				"type": "child_map",
+				"children": map[string]any{
+					"self": map[string]any{"name": "recursive"},
+				},
 			}, "switch": []any{map[string]any{"goto": "end"}}},
 		},
 	}
 	batchApply(h, "latest", false, v1)
 
-	// v2: references recursive@v1 explicitly via child_parallel — both self-ref variants.
+	// v2: references recursive@v1 explicitly via child_map — both self-ref variants.
 	v2 := map[string]any{
 		"name": "recursive",
 		"tasks": []any{
 			map[string]any{"id": "recurse", "action": map[string]any{
-				"type": "child_parallel",
+				"type": "child_map",
 				"children": map[string]any{
 					"pinned": map[string]any{"name": "recursive", "version": 1},
 					"latest": map[string]any{"name": "recursive"},

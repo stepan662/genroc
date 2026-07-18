@@ -31,7 +31,7 @@ function restDef(name: string, endpoint = "http://localhost/x") {
 function childDef(name: string, childName: string) {
   return {
     name,
-    tasks: [{ id: "spawn", action: { type: "child", name: childName }, switch: [{ goto: "end" }] }],
+    tasks: [{ id: "spawn", action: { type: "child_map", children: { out: { name: childName } } }, switch: [{ goto: "end" }] }],
   };
 }
 

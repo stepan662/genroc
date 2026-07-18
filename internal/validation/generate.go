@@ -54,7 +54,7 @@ func buildSchemaContext(def *model.ProcessDefinition) (defs schema.Defs, tasks m
 	}
 	// Process-level $defs reach the generation pool through the schemas that use
 	// them: FlattenNamed hoists the input schema's baked copies here, and
-	// actionResultType/childParallelOutputSchema MergeInto the pool when a result
+	// actionResultType/childMapOutputSchema MergeInto the pool when a result
 	// schema is embedded in a context — renaming safely on collision, so the
 	// generated names seeded above always keep theirs. Unused definitions simply
 	// never arrive.
@@ -179,7 +179,7 @@ func collectTaskRefs(tasks []*model.Task, out map[string]TaskSchemas) {
 	}
 }
 
-func childParallelOutputSchema(s *model.Task, defs schema.Defs) (schema.Schema, error) {
+func childMapOutputSchema(s *model.Task, defs schema.Defs) (schema.Schema, error) {
 	keys := make([]string, 0, len(s.Action.Children))
 	for key := range s.Action.Children {
 		keys = append(keys, key)
@@ -199,6 +199,20 @@ func childParallelOutputSchema(s *model.Task, defs schema.Defs) (schema.Schema, 
 		}
 	}
 	return out, nil
+}
+
+// childListOutputSchema types a child_list result as an array whose element type
+// is the child's declared result_schema (a permissive object when none is declared)
+// — one entry per element of the `over` array, in order.
+func childListOutputSchema(s *model.Task, defs schema.Defs) (schema.Schema, error) {
+	if s.Action.ResultSchema != nil {
+		merged, err := s.Action.ResultSchema.MergeInto(defs)
+		if err != nil {
+			return schema.Schema{}, err
+		}
+		return schema.Array(merged), nil
+	}
+	return schema.Array(schema.Object()), nil
 }
 
 func uniqueDefName(base string, defs schema.Defs) string {

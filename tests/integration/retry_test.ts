@@ -273,7 +273,7 @@ test("retry and cancel on non-root instance — rejected naming the root", async
         tasks: [
           {
             id: "spawn",
-            action: { type: "child" as const, name: leafName },
+            action: { type: "child_map" as const, children: { out: { name: leafName } } },
             switch: [{ goto: "end" }],
           },
         ],
@@ -284,11 +284,12 @@ test("retry and cancel on non-root instance — rejected naming the root", async
     const rootId = startData!.id;
     expect(await waitForInstance(rootId, 15_000)).toBe("failed");
 
-    // The spawn placeholder in the root's context (_children) holds the child id.
+    // The spawn placeholder in the root's context (_children) holds the child id,
+    // keyed by the child_map entry name.
     const { data: rootData } = await client.GET("/instances/{id}", {
       params: { path: { id: rootId } },
     });
-    const childId = (rootData?.context as any)?._children?.spawn as string;
+    const childId = (rootData?.context as any)?._children?.spawn?.out as string;
     expect(childId).toBeTruthy();
 
     const { error: retryErr } = await client.POST("/instances/{id}/retry", {
@@ -352,7 +353,7 @@ test("retry with parallel children — only the failed child re-runs", async () 
           {
             id: "fanout",
             action: {
-              type: "child_parallel" as const,
+              type: "child_map" as const,
               children: {
                 good: { name: goodName },
                 bad: { name: badName },

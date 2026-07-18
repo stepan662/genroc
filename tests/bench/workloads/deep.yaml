@@ -46,7 +46,7 @@ process:
         - goto: $descend
     - id: split
       action:
-        type: child_parallel
+        type: child_map
         children:
           first:
             name: deep
@@ -69,15 +69,17 @@ process:
         - goto: end
     - id: descend
       action:
-        type: child
-        name: deep
-        input: { ttl: "{{ input.ttl - 1 }}", c: "{{ input.c - 1 }}" }
-        result_schema:
-          type: object
-          properties:
-            processes: { type: number }
-          required: [processes]
-      output: "{{ self.result }}"
+        type: child_map
+        children:
+          out:
+            name: deep
+            input: { ttl: "{{ input.ttl - 1 }}", c: "{{ input.c - 1 }}" }
+            result_schema:
+              type: object
+              properties:
+                processes: { type: number }
+              required: [processes]
+      output: "{{ self.result.out }}"
       switch:
         - goto: end
   output:

@@ -87,7 +87,7 @@ describe.runIf(!!DSN)("single-worker overwhelm recovery — postgres", () => {
             {
               id: "recursion",
               action: {
-                type: "child_parallel" as const,
+                type: "child_map" as const,
                 children: {
                   first: {
                     name: processName,

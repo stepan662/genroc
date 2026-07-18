@@ -233,19 +233,23 @@ test(
           {
             id: "call",
             action: {
-              type: "child" as const,
-              name: leaf,
-              input: { blob: "{{ input.blob }}" },
-              result_schema: {
-                type: "object",
-                properties: {
-                  echo: { type: "string" },
-                  rounds: { type: "number" },
+              type: "child_map" as const,
+              children: {
+                out: {
+                  name: leaf,
+                  input: { blob: "{{ input.blob }}" },
+                  result_schema: {
+                    type: "object",
+                    properties: {
+                      echo: { type: "string" },
+                      rounds: { type: "number" },
+                    },
+                    required: ["echo"],
+                  },
                 },
-                required: ["echo"],
               },
             },
-            output: "{{ self.result }}",
+            output: "{{ self.result.out }}",
             switch: [{ goto: "end" }],
           },
         ],

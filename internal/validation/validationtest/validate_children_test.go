@@ -67,7 +67,7 @@ func childDef(t *testing.T, name string, rawSchema string) *model.ProcessDefinit
 	return def
 }
 
-// parentDef builds a ProcessDefinition with a child_parallel task, normalises
+// parentDef builds a ProcessDefinition with a child_map task, normalises
 // it (mirroring what Generate does), and returns it ready for
 // ValidateChildProcessRefs. Each entry gets a key "child0", "child1", etc.
 func parentDef(t *testing.T, inputSchemaRaw string, entries []model.ChildEntry) *model.ProcessDefinition {
@@ -82,7 +82,7 @@ func parentDef(t *testing.T, inputSchemaRaw string, entries []model.ChildEntry) 
 			{
 				ID: "spawn",
 				Action: &model.Action{
-					Type:     model.ActionTypeChildParallel,
+					Type:     model.ActionTypeChildMap,
 					Children: children,
 				},
 				Switch: model.SwitchMap{{Goto: model.GotoEnd}},
@@ -354,9 +354,11 @@ func TestValidateChildProcessRefs_inputWithNestedRef(t *testing.T) {
 	assertValidateOK(t, def, getter)
 }
 
-// ── child (single) tests ──────────────────────────────────────────────────────
+// ── single-child (one-entry child_map) tests ──────────────────────────────────
 
-// singleChildDef builds a ProcessDefinition using the child call type.
+// singleChildDef builds a ProcessDefinition that spawns one child via a one-entry
+// child_map — the way a single child is expressed now that the standalone `child`
+// type is gone. Subset-checking is per entry, so this exercises the same path.
 func singleChildDef(t *testing.T, inputSchemaRaw string, entry model.ChildEntry) *model.ProcessDefinition {
 	t.Helper()
 	def := &model.ProcessDefinition{
@@ -365,10 +367,8 @@ func singleChildDef(t *testing.T, inputSchemaRaw string, entry model.ChildEntry)
 			{
 				ID: "spawn",
 				Action: &model.Action{
-					Type:    model.ActionTypeChild,
-					Name:    entry.Name,
-					Version: entry.Version,
-					Input:   entry.Input,
+					Type:     model.ActionTypeChildMap,
+					Children: map[string]model.ChildEntry{"out": entry},
 				},
 				Switch: model.SwitchMap{{Goto: model.GotoEnd}},
 			},

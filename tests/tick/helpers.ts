@@ -102,12 +102,17 @@ export class TickEnv {
     const spawned = (data!.context as Record<string, unknown> | null)
       ?._children as Record<string, unknown> | null;
     const val = spawned?.[taskId];
-    if (typeof val !== "string") {
-      throw new Error(
-        `childOf(${parentId}, ${taskId}): expected string placeholder, got ${JSON.stringify(val)}`,
-      );
+    // A single child is expressed as a one-entry child_map, so its placeholder is a
+    // keyed object with exactly one id — unwrap it to the lone child id.
+    if (val && typeof val === "object" && !Array.isArray(val)) {
+      const ids = Object.values(val as Record<string, unknown>);
+      if (ids.length === 1 && typeof ids[0] === "string") {
+        return ids[0];
+      }
     }
-    return val;
+    throw new Error(
+      `childOf(${parentId}, ${taskId}): expected a single-entry child placeholder, got ${JSON.stringify(val)}`,
+    );
   }
 
   // Returns the parallel child IDs keyed by child key, recorded under the
@@ -128,6 +133,23 @@ export class TickEnv {
       );
     }
     return val as Record<string, string>;
+  }
+
+  // Returns the child_list child IDs in spawn (input) order, recorded as an array
+  // under the parent's "_children" key after SpawnChildrenAndWait.
+  async listChildrenOf(parentId: string, taskId: string): Promise<string[]> {
+    const { data } = await this.genroc.client.GET("/instances/{id}", {
+      params: { path: { id: parentId } },
+    });
+    const spawned = (data!.context as Record<string, unknown> | null)
+      ?._children as Record<string, unknown> | null;
+    const val = spawned?.[taskId];
+    if (!Array.isArray(val)) {
+      throw new Error(
+        `listChildrenOf(${parentId}, ${taskId}): expected array placeholder, got ${JSON.stringify(val)}`,
+      );
+    }
+    return val as string[];
   }
 
   stop() {

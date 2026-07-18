@@ -222,9 +222,10 @@ test("recursive + resolve inlines a child instance's externalized payload", asyn
         {
           id: "spawn",
           action: {
-            type: "child" as const,
-            name: child,
-            input: { blob: "{{ input.blob }}" },
+            type: "child_map" as const,
+            children: {
+              out: { name: child, input: { blob: "{{ input.blob }}" } },
+            },
           },
           switch: [{ goto: "end" }],
         },
@@ -296,17 +297,21 @@ test("a big value round-trips through a child's input and output back to the par
         {
           id: "spawn",
           action: {
-            type: "child" as const,
-            name: child,
-            input: { blob: "{{ input.blob }}" },
-            result_schema: {
-              type: "object",
-              properties: { echo: { type: "string" } },
-              required: ["echo"],
+            type: "child_map" as const,
+            children: {
+              out: {
+                name: child,
+                input: { blob: "{{ input.blob }}" },
+                result_schema: {
+                  type: "object",
+                  properties: { echo: { type: "string" } },
+                  required: ["echo"],
+                },
+              },
             },
           },
           // Collect the child's (big) output into this task's output…
-          output: "{{ self.result }}",
+          output: "{{ self.result.out }}",
           switch: [{ goto: "end" }],
         },
       ],

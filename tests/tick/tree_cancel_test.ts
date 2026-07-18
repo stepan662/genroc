@@ -3,8 +3,8 @@
  *
  *   grandparent
  *     └─ parent  (child call)
- *          ├─ a  (child_parallel)
- *          └─ b  (child_parallel)
+ *          ├─ a  (child_map)
+ *          └─ b  (child_map)
  *
  * The server runs in manual-tick mode (--poll 0, --max-concurrent 1) so every
  * DB state transition is inspectable between ticks.
@@ -58,7 +58,7 @@ beforeAll(async () => {
     {
       id: "run_children",
       action: {
-        type: "child_parallel" as const,
+        type: "child_map" as const,
         children: { a: { name: workerName }, b: { name: workerName } },
       },
       switch: [{ goto: "end" }],
@@ -68,7 +68,7 @@ beforeAll(async () => {
   await ctx.env.define(gpName, [
     {
       id: "run_parent",
-      action: { type: "child" as const, name: parentName },
+      action: { type: "child_map" as const, children: { out: { name: parentName } } },
       switch: [{ goto: "end" }],
     },
   ]);
