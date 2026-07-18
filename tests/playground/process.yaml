@@ -3,17 +3,6 @@ name: order-pipeline
 
 input_schema:
   $ref: "#/$defs/input"
-  $defs:
-    input: 
-      type: object
-      properties:
-        blob:
-          type: string
-          default: "13"
-        sleep:
-          type: integer
-      required: [sleep]
-
 tasks:
   - id: first
     action:
@@ -26,6 +15,7 @@ tasks:
         
     output: "{{self.result}}"
     switch: end
+output: "{{ outputs.first }}"
 
 $defs:
   input: 
@@ -45,4 +35,3 @@ $defs:
       result:
         type: string
         secret: true
-output: "{{ outputs.first }}"
