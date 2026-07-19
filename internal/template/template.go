@@ -8,6 +8,7 @@
 package template
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -48,50 +49,29 @@ func InferType(s string, sc schema.Schema) (schema.Schema, error) {
 // a secret value (see schema.Schema.ReferencesSecret). A plain string with no
 // {{ }} is never secret.
 func ReferencesSecret(s string, sc schema.Schema) (bool, error) {
-	if expr, ok := singleExpr(s); ok {
-		return sc.ReferencesSecret(expr)
-	}
-	rest := s
-	for {
-		start := strings.Index(rest, "{{")
-		if start == -1 {
-			break
-		}
-		rest = rest[start+2:]
-		end := strings.Index(rest, "}}")
-		if end == -1 {
-			break
-		}
-		expr := rest[:end]
-		rest = rest[end+2:]
+	found := false
+	err := forEachExpr(s, func(expr string) error {
 		sec, err := sc.ReferencesSecret(expr)
 		if err != nil {
-			return false, err
+			return err
 		}
 		if sec {
-			return true, nil
+			found = true
+			return errStopScan // short-circuit on the first secret
 		}
+		return nil
+	})
+	if err == errStopScan {
+		return true, nil
 	}
-	return false, nil
+	return found, err
 }
 
 // checkMixedNullability rejects mixed templates where any expression may be null.
 // Null values would silently become the string "null" at runtime, which is almost
 // never intentional. The user must add a ?? default to make the intent explicit.
 func checkMixedNullability(s string, sc schema.Schema) error {
-	rest := s
-	for {
-		start := strings.Index(rest, "{{")
-		if start == -1 {
-			break
-		}
-		rest = rest[start+2:]
-		end := strings.Index(rest, "}}")
-		if end == -1 {
-			break
-		}
-		expr := rest[:end]
-		rest = rest[end+2:]
+	return forEachExpr(s, func(expr string) error {
 		inferred, err := sc.Infer(expr)
 		if err != nil {
 			return fmt.Errorf("template expression %q: %w", expr, err)
@@ -99,15 +79,15 @@ func checkMixedNullability(s string, sc schema.Schema) error {
 		if inferred.HasNull() {
 			return fmt.Errorf("template expression %q may be null; use ?? to provide a default value", expr)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // OutputRefs returns the distinct task ids referenced via outputs.<id> across all
 // {{ }} expressions in template s (used to build the output-dependency graph).
 func OutputRefs(s string) ([]string, error) {
 	set := map[string]struct{}{}
-	addRefs := func(expr string) error {
+	err := forEachExpr(s, func(expr string) error {
 		refs, err := expression.OutputRefs(expr)
 		if err != nil {
 			return fmt.Errorf("template expression %q: %w", expr, err)
@@ -116,28 +96,9 @@ func OutputRefs(s string) ([]string, error) {
 			set[r] = struct{}{}
 		}
 		return nil
-	}
-	if expr, ok := singleExpr(s); ok {
-		if err := addRefs(expr); err != nil {
-			return nil, err
-		}
-	} else {
-		rest := s
-		for {
-			start := strings.Index(rest, "{{")
-			if start == -1 {
-				break
-			}
-			rest = rest[start+2:]
-			end := strings.Index(rest, "}}")
-			if end == -1 {
-				break
-			}
-			if err := addRefs(rest[:end]); err != nil {
-				return nil, err
-			}
-			rest = rest[end+2:]
-		}
+	})
+	if err != nil {
+		return nil, err
 	}
 	ids := make([]string, 0, len(set))
 	for id := range set {
@@ -153,7 +114,7 @@ func OutputRefs(s string) ([]string, error) {
 // externalized value-slots a template needs.
 func RootRefs(s string) (expression.Roots, error) {
 	var out expression.Roots
-	merge := func(expr string) error {
+	err := forEachExpr(s, func(expr string) error {
 		r, err := expression.RootRefs(expr)
 		if err != nil {
 			return fmt.Errorf("template expression %q: %w", expr, err)
@@ -165,27 +126,8 @@ func RootRefs(s string) (expression.Roots, error) {
 		out.SelfPrevious = out.SelfPrevious || r.SelfPrevious
 		out.SelfResult = out.SelfResult || r.SelfResult
 		return nil
-	}
-	if expr, ok := singleExpr(s); ok {
-		return out, merge(expr)
-	}
-	rest := s
-	for {
-		start := strings.Index(rest, "{{")
-		if start == -1 {
-			break
-		}
-		rest = rest[start+2:]
-		end := strings.Index(rest, "}}")
-		if end == -1 {
-			break
-		}
-		if err := merge(rest[:end]); err != nil {
-			return out, err
-		}
-		rest = rest[end+2:]
-	}
-	return out, nil
+	})
+	return out, err
 }
 
 // singleExpr reports whether s is exactly "{{expr}}" with nothing outside.
@@ -198,6 +140,33 @@ func singleExpr(s string) (string, bool) {
 		return "", false
 	}
 	return inner, true
+}
+
+// errStopScan is a sentinel a forEachExpr callback returns to end the scan early
+// without reporting a real error (e.g. once a match is found).
+var errStopScan = errors.New("stop scan")
+
+// forEachExpr calls fn with the body of each {{ }} block in s, in order. A missing
+// closing }} silently ends the scan — the inspection helpers ignore trailing
+// unterminated text, whereas evalMixed treats it as an error and scans separately.
+func forEachExpr(s string, fn func(expr string) error) error {
+	rest := s
+	for {
+		start := strings.Index(rest, "{{")
+		if start == -1 {
+			return nil
+		}
+		rest = rest[start+2:]
+		end := strings.Index(rest, "}}")
+		if end == -1 {
+			return nil
+		}
+		expr := rest[:end]
+		rest = rest[end+2:]
+		if err := fn(expr); err != nil {
+			return err
+		}
+	}
 }
 
 // evalMixed evaluates a mixed template: literal text interleaved with {{expr}} blocks.

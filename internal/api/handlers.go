@@ -308,9 +308,9 @@ func (h *Handlers) Handle(env Envelope) Reply {
 }
 
 func (h *Handlers) putDefinition(raw json.RawMessage) Reply {
-	var req PutDefinitionReq
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return errReply(fmt.Errorf("decode: %w", err))
+	req, err := decodeBody[PutDefinitionReq](raw)
+	if err != nil {
+		return errReply(err)
 	}
 	if err := req.Validate(); err != nil {
 		return errReply(err)
@@ -336,9 +336,9 @@ func (h *Handlers) putDefinition(raw json.RawMessage) Reply {
 }
 
 func (h *Handlers) startInstance(raw json.RawMessage) Reply {
-	var req StartInstanceReq
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return errReply(fmt.Errorf("decode: %w", err))
+	req, err := decodeBody[StartInstanceReq](raw)
+	if err != nil {
+		return errReply(err)
 	}
 	if req.Process == "" {
 		return errReply(fmt.Errorf("process name is required"))
@@ -410,10 +410,7 @@ func (h *Handlers) startInstance(raw json.RawMessage) Reply {
 }
 
 func (h *Handlers) listDefinitions(raw json.RawMessage) Reply {
-	var req ListDefinitionsReq
-	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &req)
-	}
+	req := decodeOptionalBody[ListDefinitionsReq](raw)
 	defs, info, err := h.db.ListDefinitions(req.page())
 	if err != nil {
 		return errReply(err)
@@ -426,10 +423,7 @@ func (h *Handlers) listDefinitions(raw json.RawMessage) Reply {
 }
 
 func (h *Handlers) listInstances(raw json.RawMessage) Reply {
-	var req ListInstancesReq
-	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &req)
-	}
+	req := decodeOptionalBody[ListInstancesReq](raw)
 	instances, info, err := h.db.ListInstances(req.Status, req.page())
 	if err != nil {
 		return errReply(err)
@@ -473,10 +467,7 @@ func (h *Handlers) listInstanceLogs(id string, raw json.RawMessage) Reply {
 	if id == "" {
 		return errReply(fmt.Errorf("id is required"))
 	}
-	var req ListLogsReq
-	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &req)
-	}
+	req := decodeOptionalBody[ListLogsReq](raw)
 	opts := db.LogQuery{
 		Level: req.Level,
 		Since: req.Since,
@@ -552,10 +543,7 @@ func (h *Handlers) retryInstance(id string, raw json.RawMessage) Reply {
 	if id == "" {
 		return errReply(fmt.Errorf("id is required"))
 	}
-	var req RetryInstanceReq
-	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &req)
-	}
+	req := decodeOptionalBody[RetryInstanceReq](raw)
 	if err := h.db.RetryProcess(context.Background(), id, req.Force); err != nil {
 		return errReply(err)
 	}
@@ -563,10 +551,7 @@ func (h *Handlers) retryInstance(id string, raw json.RawMessage) Reply {
 }
 
 func (h *Handlers) listExternalTasks(raw json.RawMessage) Reply {
-	var req ListExternalTasksReq
-	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &req)
-	}
+	req := decodeOptionalBody[ListExternalTasksReq](raw)
 	instances, info, err := h.db.ListExternalTasks(req.Process, req.Version, req.Task, req.page())
 	if err != nil {
 		return errReply(err)
@@ -605,9 +590,9 @@ func externalTaskToResp(inst *model.ProcessInstance, task *model.Task) ExternalT
 }
 
 func (h *Handlers) resolveExternalTask(raw json.RawMessage) Reply {
-	var req ResolveExternalTaskReq
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return errReply(fmt.Errorf("decode: %w", err))
+	req, err := decodeBody[ResolveExternalTaskReq](raw)
+	if err != nil {
+		return errReply(err)
 	}
 	if req.Token == "" {
 		return errReply(fmt.Errorf("token is required"))
@@ -650,9 +635,9 @@ func (h *Handlers) signalInstance(id string, raw json.RawMessage) Reply {
 	if id == "" {
 		return errReply(fmt.Errorf("id is required"))
 	}
-	var req SignalInstanceReq
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return errReply(fmt.Errorf("decode: %w", err))
+	req, err := decodeBody[SignalInstanceReq](raw)
+	if err != nil {
+		return errReply(err)
 	}
 	if req.TaskID == "" {
 		return errReply(fmt.Errorf("task_id is required"))
@@ -703,10 +688,7 @@ func (h *Handlers) tick(raw json.RawMessage) Reply {
 	if !h.engine.ManualTick() {
 		return errReply(fmt.Errorf("tick is only available in manual mode; start the server with --poll 0"))
 	}
-	var req TickReq
-	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &req)
-	}
+	req := decodeOptionalBody[TickReq](raw)
 	if req.AdvanceMs < 0 {
 		return errReply(fmt.Errorf("advance_ms must not be negative"))
 	}
@@ -923,9 +905,9 @@ func (g *batchGetter) LatestVersion(name string) (int, error) {
 }
 
 func (h *Handlers) putDefinitions(raw json.RawMessage) Reply {
-	var req PutDefinitionsBatchReq
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return errReply(fmt.Errorf("decode: %w", err))
+	req, err := decodeBody[PutDefinitionsBatchReq](raw)
+	if err != nil {
+		return errReply(err)
 	}
 	if req.Channel == "" {
 		req.Channel = defaultChannel
@@ -1184,9 +1166,9 @@ func (h *Handlers) cascadeUpdate(channel string, changedVersions map[string]int,
 }
 
 func (h *Handlers) putChannel(raw json.RawMessage) Reply {
-	var req PutChannelReq
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return errReply(fmt.Errorf("decode: %w", err))
+	req, err := decodeBody[PutChannelReq](raw)
+	if err != nil {
+		return errReply(err)
 	}
 	if req.Name == "" || req.Channel == "" || req.Version < 1 {
 		return errReply(fmt.Errorf("name, channel, and version (≥1) are required"))
@@ -1201,9 +1183,9 @@ func (h *Handlers) putChannel(raw json.RawMessage) Reply {
 }
 
 func (h *Handlers) deleteChannel(raw json.RawMessage) Reply {
-	var req DeleteChannelReq
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return errReply(fmt.Errorf("decode: %w", err))
+	req, err := decodeBody[DeleteChannelReq](raw)
+	if err != nil {
+		return errReply(err)
 	}
 	if req.Name == "" || req.Channel == "" {
 		return errReply(fmt.Errorf("name and channel are required"))
@@ -1215,9 +1197,9 @@ func (h *Handlers) deleteChannel(raw json.RawMessage) Reply {
 }
 
 func (h *Handlers) listChannels(raw json.RawMessage) Reply {
-	var req ListChannelsReq
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return errReply(fmt.Errorf("decode: %w", err))
+	req, err := decodeBody[ListChannelsReq](raw)
+	if err != nil {
+		return errReply(err)
 	}
 	if req.Name == "" {
 		return errReply(fmt.Errorf("name is required"))
@@ -1234,9 +1216,9 @@ func (h *Handlers) listChannels(raw json.RawMessage) Reply {
 }
 
 func (h *Handlers) promoteChannel(raw json.RawMessage) Reply {
-	var req PromoteChannelReq
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return errReply(fmt.Errorf("decode: %w", err))
+	req, err := decodeBody[PromoteChannelReq](raw)
+	if err != nil {
+		return errReply(err)
 	}
 	if req.From == "" || req.To == "" {
 		return errReply(fmt.Errorf("from and to are required"))
@@ -1269,9 +1251,9 @@ func (h *Handlers) promoteChannel(raw json.RawMessage) Reply {
 }
 
 func (h *Handlers) channelStatus(raw json.RawMessage) Reply {
-	var req ChannelStatusReq
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return errReply(fmt.Errorf("decode: %w", err))
+	req, err := decodeBody[ChannelStatusReq](raw)
+	if err != nil {
+		return errReply(err)
 	}
 	if req.Channel == "" {
 		return errReply(fmt.Errorf("channel is required"))
@@ -1488,9 +1470,9 @@ func subtree(defs []db.VersionedDef, rootName string) ([]db.VersionedDef, error)
 }
 
 func (h *Handlers) validateDefinitions(raw json.RawMessage) Reply {
-	var defs []model.ProcessDefinition
-	if err := json.Unmarshal(raw, &defs); err != nil {
-		return errReply(fmt.Errorf("decode: %w", err))
+	defs, err := decodeBody[[]model.ProcessDefinition](raw)
+	if err != nil {
+		return errReply(err)
 	}
 	ptrs := make([]*model.ProcessDefinition, len(defs))
 	for i := range defs {
@@ -1521,4 +1503,25 @@ func okReply(v interface{}) Reply {
 
 func errReply(err error) Reply {
 	return Reply{OK: false, Error: err.Error()}
+}
+
+// decodeBody unmarshals a required JSON request body into a T. An empty or malformed
+// body is an error, already wrapped with the "decode:" prefix for errReply.
+func decodeBody[T any](raw json.RawMessage) (T, error) {
+	var v T
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return v, fmt.Errorf("decode: %w", err)
+	}
+	return v, nil
+}
+
+// decodeOptionalBody unmarshals an optional JSON body into a T, best-effort: an empty
+// body yields the zero T and a malformed body is ignored. Used by the list/tick
+// handlers whose fields are all optional query-style params.
+func decodeOptionalBody[T any](raw json.RawMessage) T {
+	var v T
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &v)
+	}
+	return v
 }

@@ -33,16 +33,12 @@ func (db *DB) ArmExternalOrConsumeSignal(ctx context.Context, inst *model.Proces
 	}
 	defer tx.Rollback()
 
-	lock := ""
-	if db.dialect == "postgres" {
-		lock = " FOR UPDATE"
-	}
 	// Take the instance row lock first — the same lock DeliverSignal takes — so a signal
 	// arriving during arming serializes either fully before (we pop it) or fully after
 	// (it finds us parked and resolves directly). No lost signal, no deadlock. The FOR
 	// UPDATE makes this read hand-written; everything else goes through sqlc.
 	var one int
-	switch err := raw.QueryRowContext(ctx, `SELECT 1 FROM process_instances WHERE id = ?`+lock, inst.ID).Scan(&one); err {
+	switch err := raw.QueryRowContext(ctx, `SELECT 1 FROM process_instances WHERE id = ?`+db.forUpdate(), inst.ID).Scan(&one); err {
 	case nil:
 	case sql.ErrNoRows:
 		return false, nil, fmt.Errorf("instance not found")
@@ -97,10 +93,7 @@ func (db *DB) ArmExternalOrConsumeSignal(ctx context.Context, inst *model.Proces
 	if err != nil {
 		return false, nil, err
 	}
-	params, err := updateInstanceParams(inst, cols, now)
-	if err != nil {
-		return false, nil, err
-	}
+	params := updateInstanceParams(inst, cols, now)
 	if err := qtx.UpdateInstance(ctx, params); err != nil {
 		return false, nil, fmt.Errorf("park external: %w", err)
 	}
@@ -127,16 +120,12 @@ func (db *DB) DeliverSignal(ctx context.Context, instanceID, taskID, signalID st
 	}
 	defer tx.Rollback()
 
-	lock := ""
-	if db.dialect == "postgres" {
-		lock = " FOR UPDATE"
-	}
 	var status, waitState, currentTask, externalData string
 	var workerID sql.NullString
 	var leaseExpiresAt sql.NullInt64
 	switch err := raw.QueryRowContext(ctx,
 		`SELECT status, wait_state, task, external_data, worker_id, lease_expires_at
-		   FROM process_instances WHERE id = ?`+lock, instanceID).
+		   FROM process_instances WHERE id = ?`+db.forUpdate(), instanceID).
 		Scan(&status, &waitState, &currentTask, &externalData, &workerID, &leaseExpiresAt); err {
 	case nil:
 	case sql.ErrNoRows:

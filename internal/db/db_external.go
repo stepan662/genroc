@@ -71,17 +71,12 @@ func (db *DB) ResolveExternalTask(ctx context.Context, instanceID, token string,
 	}
 	defer tx.Rollback()
 
-	lock := ""
-	if db.dialect == "postgres" {
-		lock = " FOR UPDATE"
-	}
-
 	var status, waitState, externalData string
 	var workerID sql.NullString
 	var leaseExpiresAt sql.NullInt64
 	err = raw.QueryRowContext(ctx,
 		`SELECT status, wait_state, external_data, worker_id, lease_expires_at
-		   FROM process_instances WHERE id = ?`+lock, instanceID).
+		   FROM process_instances WHERE id = ?`+db.forUpdate(), instanceID).
 		Scan(&status, &waitState, &externalData, &workerID, &leaseExpiresAt)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("external task not found")

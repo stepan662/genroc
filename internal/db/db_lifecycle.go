@@ -38,16 +38,12 @@ func (db *DB) FinishChild(child *model.ProcessInstance) error {
 	// The locking CTE keeps the same lock order as CancelProcess and
 	// FailInstanceAndAncestors, preventing deadlocks; the FOR UPDATE is appended only
 	// on PostgreSQL — SQLite serialises via its single writer and runs the CTE without it.
-	lock := ""
-	if db.dialect == "postgres" {
-		lock = " FOR UPDATE"
-	}
 	var parentWaitState string
 	err = raw.QueryRowContext(ctx, `
 		WITH locked AS (
 			SELECT id, wait_state FROM process_instances
 			WHERE id IN (?, ?)
-			ORDER BY id`+lock+`
+			ORDER BY id`+db.forUpdate()+`
 		)
 		SELECT wait_state FROM locked WHERE id = ?`,
 		child.ID, child.ParentID, child.ParentID).Scan(&parentWaitState)
@@ -62,10 +58,7 @@ func (db *DB) FinishChild(child *model.ProcessInstance) error {
 	if err != nil {
 		return err
 	}
-	childParams, err := updateInstanceParams(child, cols, now)
-	if err != nil {
-		return err
-	}
+	childParams := updateInstanceParams(child, cols, now)
 	if err := qtx.UpdateInstance(ctx, childParams); err != nil {
 		return fmt.Errorf("save child: %w", err)
 	}
@@ -128,10 +121,7 @@ func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 	if err != nil {
 		return err
 	}
-	childParams, err := updateInstanceParams(child, cols, now)
-	if err != nil {
-		return err
-	}
+	childParams := updateInstanceParams(child, cols, now)
 	if err := qtx.UpdateInstance(ctx, childParams); err != nil {
 		return err
 	}
@@ -489,13 +479,9 @@ func (db *DB) SpawnChildrenAndWait(ctx context.Context, parent *model.ProcessIns
 
 	// Lock parent and read its current status to propagate to children. FOR UPDATE
 	// is appended only on PostgreSQL; SQLite serialises via its single writer.
-	lock := ""
-	if db.dialect == "postgres" {
-		lock = " FOR UPDATE"
-	}
 	var currentStatus, currentWaitState string
 	if err := raw.QueryRowContext(ctx,
-		`SELECT status, wait_state FROM process_instances WHERE id = ?`+lock,
+		`SELECT status, wait_state FROM process_instances WHERE id = ?`+db.forUpdate(),
 		parent.ID).Scan(&currentStatus, &currentWaitState); err != nil {
 		return fmt.Errorf("lock parent: %w", err)
 	}

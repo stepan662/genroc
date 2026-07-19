@@ -41,16 +41,9 @@ func (e *Engine) buildMapChildOutput(siblings []*model.ProcessInstance) (any, er
 	result := make(map[string]any, len(siblings))
 	for _, child := range siblings {
 		key, _ := child.ContextData["_spawn_child_key"].(string)
-		output, err := e.resolveValue(child, child.ContextData["output"])
+		output, err := e.resolveAndValidateChildOutput(child)
 		if err != nil {
 			return nil, err
-		}
-		if schemaRaw, _ := child.ContextData["_spawn_result_schema"].(string); schemaRaw != "" {
-			normalized, err := validateChildOutput(schemaRaw, output)
-			if err != nil {
-				return nil, fmt.Errorf("child process %q (%s) output validation: %v", child.ID, child.ProcessName, err)
-			}
-			output = normalized
 		}
 		result[key] = output
 	}
@@ -69,20 +62,32 @@ func (e *Engine) buildListChildOutput(siblings []*model.ProcessInstance) (any, e
 		if !ok || idx < 0 || idx >= len(siblings) {
 			return nil, fmt.Errorf("child process %q has an invalid _spawn_index", child.ID)
 		}
-		output, err := e.resolveValue(child, child.ContextData["output"])
+		output, err := e.resolveAndValidateChildOutput(child)
 		if err != nil {
 			return nil, err
-		}
-		if schemaRaw, _ := child.ContextData["_spawn_result_schema"].(string); schemaRaw != "" {
-			normalized, err := validateChildOutput(schemaRaw, output)
-			if err != nil {
-				return nil, fmt.Errorf("child process %q (%s) output validation: %v", child.ID, child.ProcessName, err)
-			}
-			output = normalized
 		}
 		result[idx] = output
 	}
 	return result, nil
+}
+
+// resolveAndValidateChildOutput reads a completed child's projected output, resolving
+// it from the object store if externalized and validating it against the child's
+// stored (already-normalized) result_schema when one was declared. Shared by the map
+// and list collectors, which differ only in how they place the result.
+func (e *Engine) resolveAndValidateChildOutput(child *model.ProcessInstance) (any, error) {
+	output, err := e.resolveValue(child, child.ContextData["output"])
+	if err != nil {
+		return nil, err
+	}
+	if schemaRaw, _ := child.ContextData["_spawn_result_schema"].(string); schemaRaw != "" {
+		normalized, err := validateChildOutput(schemaRaw, output)
+		if err != nil {
+			return nil, fmt.Errorf("child process %q (%s) output validation: %v", child.ID, child.ProcessName, err)
+		}
+		output = normalized
+	}
+	return output, nil
 }
 
 // spawnIndex reads a child's _spawn_index. It round-trips through JSON (engine_state),

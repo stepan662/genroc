@@ -332,7 +332,7 @@ func (db *DB) persistContext(ctx context.Context, qtx *dbgen.Queries, inst *mode
 
 // updateInstanceParams builds UpdateInstance params from inst + already-encoded
 // columns, stamping updated_at with now.
-func updateInstanceParams(inst *model.ProcessInstance, cols contextCols, now int64) (dbgen.UpdateInstanceParams, error) {
+func updateInstanceParams(inst *model.ProcessInstance, cols contextCols, now int64) dbgen.UpdateInstanceParams {
 	return dbgen.UpdateInstanceParams{
 		ID:           inst.ID,
 		Task:         inst.Task,
@@ -347,7 +347,7 @@ func updateInstanceParams(inst *model.ProcessInstance, cols contextCols, now int
 		WaitState:    string(inst.WaitState),
 		Error:        inst.Error,
 		UpdatedAt:    now,
-	}, nil
+	}
 }
 
 // insertInstanceParams builds InsertInstance params from inst + already-encoded
@@ -417,10 +417,7 @@ func (db *DB) UpdateInstance(inst *model.ProcessInstance) error {
 	if err != nil {
 		return err
 	}
-	params, err := updateInstanceParams(inst, cols, now)
-	if err != nil {
-		return err
-	}
+	params := updateInstanceParams(inst, cols, now)
 	if err := qtx.UpdateInstance(ctx, params); err != nil {
 		return err
 	}

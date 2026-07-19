@@ -139,7 +139,7 @@ func runApplyCmd(server string, args []string) {
 	fs := flag.NewFlagSet("apply", flag.ExitOnError)
 	var files multiFlag
 	fs.Var(&files, "f", "definition file (YAML or JSON); repeat for multiple files")
-	serverFlag := fs.String("server", server, "genroc server base URL ($GENROC_SERVER)")
+	serverFlag := addServerFlag(fs, server)
 	channelFlag := fs.String("channel", "latest", "channel to apply definitions to")
 	autoUpdateFlag := fs.Bool("auto-update-parents", false, "auto-update parent processes on the same channel")
 	fs.Parse(args)
@@ -181,7 +181,7 @@ func runValidateCmd(server string, args []string) {
 	fs := flag.NewFlagSet("validate", flag.ExitOnError)
 	var files multiFlag
 	fs.Var(&files, "f", "definition file (YAML or JSON); repeat for multiple files")
-	serverFlag := fs.String("server", server, "genroc server base URL ($GENROC_SERVER)")
+	serverFlag := addServerFlag(fs, server)
 	fs.Parse(args)
 
 	if len(files) == 0 {
@@ -211,7 +211,7 @@ func runChannelCmd(server string, args []string) {
 	}
 
 	fs := flag.NewFlagSet("channel", flag.ExitOnError)
-	serverFlag := fs.String("server", server, "genroc server base URL ($GENROC_SERVER)")
+	serverFlag := addServerFlag(fs, server)
 	fs.Parse(args[1:])
 	rest := fs.Args()
 
@@ -265,7 +265,7 @@ func runChannelCmd(server string, args []string) {
 
 func runPromoteCmd(server string, args []string) {
 	fs := flag.NewFlagSet("promote", flag.ExitOnError)
-	serverFlag := fs.String("server", server, "genroc server base URL ($GENROC_SERVER)")
+	serverFlag := addServerFlag(fs, server)
 	fromFlag := fs.String("from", "", "source channel")
 	toFlag := fs.String("to", "", "target channel")
 	processFlag := fs.String("process", "", "limit to this process and its dependency subtree (optional)")
@@ -295,7 +295,7 @@ func runPromoteCmd(server string, args []string) {
 
 func runStatusCmd(server string, args []string) {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
-	serverFlag := fs.String("server", server, "genroc server base URL ($GENROC_SERVER)")
+	serverFlag := addServerFlag(fs, server)
 	channelFlag := fs.String("channel", "latest", "channel to inspect")
 	fs.Parse(args)
 
@@ -342,7 +342,7 @@ func runRunCmd(server string, args []string) {
 	process := args[0]
 
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	serverFlag := fs.String("server", server, "genroc server base URL ($GENROC_SERVER)")
+	serverFlag := addServerFlag(fs, server)
 	channelFlag := fs.String("channel", "", "resolve the version via this channel")
 	versionFlag := fs.Int("version", 0, "pin an explicit process version")
 	inputFlag := fs.String("input", "", "input as a JSON/YAML literal, or - for stdin")
@@ -408,7 +408,7 @@ func runResolveCmd(server string, args []string) {
 	token := args[0]
 
 	fs := flag.NewFlagSet("resolve", flag.ExitOnError)
-	serverFlag := fs.String("server", server, "genroc server base URL ($GENROC_SERVER)")
+	serverFlag := addServerFlag(fs, server)
 	resultFlag := fs.String("result", "", "result as a JSON/YAML literal, or - for stdin")
 	fileFlag := fs.String("f", "", "read result from a file (path)")
 	var sets multiFlag
@@ -450,7 +450,7 @@ func runResolveCmd(server string, args []string) {
 // literal, or - for stdin) or -f (a file path), plus any --set key=value overrides.
 func runSignalCmd(server string, args []string) {
 	fs := flag.NewFlagSet("signal", flag.ExitOnError)
-	serverFlag := fs.String("server", server, "genroc server base URL ($GENROC_SERVER)")
+	serverFlag := addServerFlag(fs, server)
 	taskFlag := fs.String("task", "", "the external task id to signal")
 	resultFlag := fs.String("result", "", "result as a JSON/YAML literal, or - for stdin")
 	fileFlag := fs.String("f", "", "read result from a file (path)")
@@ -497,7 +497,7 @@ func runSignalCmd(server string, args []string) {
 // instance id is the first argument; pass --json for the raw response.
 func runGetCmd(server string, args []string) {
 	fs := flag.NewFlagSet("get", flag.ExitOnError)
-	serverFlag := fs.String("server", server, "genroc server base URL ($GENROC_SERVER)")
+	serverFlag := addServerFlag(fs, server)
 	jsonFlag := fs.Bool("json", false, "print the raw JSON response")
 	resolveFlag := fs.Bool("resolve", false, "resolve externalized context values inline instead of {ref, size} references")
 	id := instanceIDAndFlags(fs, args)
@@ -561,7 +561,7 @@ func runGetCmd(server string, args []string) {
 
 func runInstancesCmd(server string, args []string) {
 	fs := flag.NewFlagSet("instances", flag.ExitOnError)
-	serverFlag := fs.String("server", server, "genroc server base URL ($GENROC_SERVER)")
+	serverFlag := addServerFlag(fs, server)
 	statusFlag := fs.String("status", "", "filter by status (running, completed, failing, failed, cancelling, cancelled)")
 	sortFlag := fs.String("sort", "created", "sort key: created (newest first) or updated (most recently active)")
 	limitFlag := fs.Int("limit", 20, "max instances to show (server caps a page at 100; use --all for more)")
@@ -629,7 +629,7 @@ func runInstancesCmd(server string, args []string) {
 
 func runExternalTasksCmd(server string, args []string) {
 	fs := flag.NewFlagSet("external-tasks", flag.ExitOnError)
-	serverFlag := fs.String("server", server, "genroc server base URL ($GENROC_SERVER)")
+	serverFlag := addServerFlag(fs, server)
 	processFlag := fs.String("process", "", "filter by process name")
 	versionFlag := fs.Int("version", 0, "filter by process version (0 = any)")
 	taskFlag := fs.String("task", "", "filter by task id")
@@ -703,7 +703,7 @@ func runExternalTasksCmd(server string, args []string) {
 
 func runLogsCmd(server string, args []string) {
 	fs := flag.NewFlagSet("logs", flag.ExitOnError)
-	serverFlag := fs.String("server", server, "genroc server base URL ($GENROC_SERVER)")
+	serverFlag := addServerFlag(fs, server)
 	levelFlag := fs.String("level", "", "filter by level (debug, info, warn, error); empty = all")
 	sinceFlag := fs.Int64("since", 0, "only logs at/after this unix-millis timestamp")
 	limitFlag := fs.Int("limit", 200, "max entries to return")
@@ -1026,7 +1026,7 @@ func longTime(rfc string) string {
 
 func runCancelCmd(server string, args []string) {
 	fs := flag.NewFlagSet("cancel", flag.ExitOnError)
-	serverFlag := fs.String("server", server, "genroc server base URL ($GENROC_SERVER)")
+	serverFlag := addServerFlag(fs, server)
 	id := instanceIDAndFlags(fs, args)
 
 	if err := call(*serverFlag+"/instances/"+url.PathEscape(id)+"/cancel", http.MethodPost, nil, nil); err != nil {
@@ -1037,7 +1037,7 @@ func runCancelCmd(server string, args []string) {
 
 func runRetryCmd(server string, args []string) {
 	fs := flag.NewFlagSet("retry", flag.ExitOnError)
-	serverFlag := fs.String("server", server, "genroc server base URL ($GENROC_SERVER)")
+	serverFlag := addServerFlag(fs, server)
 	forceFlag := fs.Bool("force", false, "override only_once retry protection")
 	id := instanceIDAndFlags(fs, args)
 
@@ -1351,6 +1351,13 @@ func resolveInstanceID(arg string) string {
 		fatal("@last: no instance recorded yet — run `genctl run <process>` first")
 	}
 	return id
+}
+
+// addServerFlag registers the shared --server flag ($GENROC_SERVER) on fs,
+// defaulting to def. Every subcommand talks to the server, so this keeps the flag
+// name and help text defined in one place.
+func addServerFlag(fs *flag.FlagSet, def string) *string {
+	return fs.String("server", def, "genroc server base URL ($GENROC_SERVER)")
 }
 
 // instanceIDAndFlags parses an instance subcommand's args, where the instance id

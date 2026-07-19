@@ -776,6 +776,12 @@ func (e *Engine) setTaskOutput(inst *model.ProcessInstance, taskID string, value
 	if existed {
 		return
 	}
+	appendOutputOrder(inst, taskID)
+}
+
+// appendOutputOrder appends id to the instance's output_order list, tolerating the
+// []any shape the field takes after a JSON round-trip through engine_state.
+func appendOutputOrder(inst *model.ProcessInstance, id string) {
 	var order []string
 	switch v := inst.ContextData["output_order"].(type) {
 	case []string:
@@ -787,7 +793,7 @@ func (e *Engine) setTaskOutput(inst *model.ProcessInstance, taskID string, value
 			}
 		}
 	}
-	inst.ContextData["output_order"] = append(order, taskID)
+	inst.ContextData["output_order"] = append(order, id)
 }
 
 // evalSwitch walks the task's switch cases in order and returns the Goto target
@@ -1493,18 +1499,7 @@ func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInsta
 		children = listChildren
 	}
 
-	var order []string
-	switch v := inst.ContextData["output_order"].(type) {
-	case []string:
-		order = v
-	case []any:
-		for _, item := range v {
-			if s, ok := item.(string); ok {
-				order = append(order, s)
-			}
-		}
-	}
-	inst.ContextData["output_order"] = append(order, task.ID)
+	appendOutputOrder(inst, task.ID)
 
 	inst.RetryCount = 0
 	inst.WakeAt = nil
