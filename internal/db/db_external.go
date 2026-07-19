@@ -65,55 +65,52 @@ func (db *DB) ListExternalTasks(processName string, processVersion int, task str
 // The result is stored under _external_result; the engine consumes it on the next claim
 // (runExternal phase 2). Returns a descriptive error when the task is no longer waiting.
 func (db *DB) ResolveExternalTask(ctx context.Context, instanceID, token string, result any) error {
-	tx, qtx, raw, err := db.beginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+	return db.withTx(ctx, func(qtx *dbgen.Queries, raw dbgen.DBTX) error {
 
-	var status, waitState, externalData string
-	var workerID sql.NullString
-	var leaseExpiresAt sql.NullInt64
-	err = raw.QueryRowContext(ctx,
-		`SELECT status, wait_state, external_data, worker_id, lease_expires_at
+		var status, waitState, externalData string
+		var workerID sql.NullString
+		var leaseExpiresAt sql.NullInt64
+		err := raw.QueryRowContext(ctx,
+			`SELECT status, wait_state, external_data, worker_id, lease_expires_at
 		   FROM process_instances WHERE id = ?`+db.forUpdate(), instanceID).
-		Scan(&status, &waitState, &externalData, &workerID, &leaseExpiresAt)
-	if err == sql.ErrNoRows {
-		return fmt.Errorf("external task not found")
-	}
-	if err != nil {
-		return fmt.Errorf("lock instance: %w", err)
-	}
+			Scan(&status, &waitState, &externalData, &workerID, &leaseExpiresAt)
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("external task not found")
+		}
+		if err != nil {
+			return fmt.Errorf("lock instance: %w", err)
+		}
 
-	if status != string(model.StatusRunning) || model.WaitState(waitState) != model.WaitStateExternal {
-		return fmt.Errorf("task is not waiting for an external result")
-	}
-	// A live lease means a worker already claimed this instance (a timeout firing); the
-	// timeout wins, so reject the submit rather than racing its advance.
-	if workerID.Valid && leaseExpiresAt.Valid && leaseExpiresAt.Int64 > nowMillis() {
-		return fmt.Errorf("external task is being processed; try again")
-	}
+		if status != string(model.StatusRunning) || model.WaitState(waitState) != model.WaitStateExternal {
+			return fmt.Errorf("task is not waiting for an external result")
+		}
+		// A live lease means a worker already claimed this instance (a timeout firing); the
+		// timeout wins, so reject the submit rather than racing its advance.
+		if workerID.Valid && leaseExpiresAt.Valid && leaseExpiresAt.Int64 > nowMillis() {
+			return fmt.Errorf("external task is being processed; try again")
+		}
 
-	storedToken, err := externalToken(externalData)
-	if err != nil {
-		return err
-	}
-	if storedToken == "" || storedToken != token {
-		return fmt.Errorf("token does not match the waiting task (it may have already been resolved or re-armed)")
-	}
+		storedToken, err := externalToken(externalData)
+		if err != nil {
+			return err
+		}
+		if storedToken == "" || storedToken != token {
+			return fmt.Errorf("token does not match the waiting task (it may have already been resolved or re-armed)")
+		}
 
-	newExt, err := withExternalResult(externalData, result)
-	if err != nil {
-		return fmt.Errorf("marshal external_data: %w", err)
-	}
-	// The status/wait_state/token/lease checks above ran under the row lock, so the
-	// un-park is unconditional here.
-	if err := qtx.SetExternalResult(ctx, dbgen.SetExternalResultParams{
-		ExternalData: newExt,
-		UpdatedAt:    nowMillis(),
-		ID:           instanceID,
-	}); err != nil {
-		return fmt.Errorf("resolve external task: %w", err)
-	}
-	return tx.Commit()
+		newExt, err := withExternalResult(externalData, result)
+		if err != nil {
+			return fmt.Errorf("marshal external_data: %w", err)
+		}
+		// The status/wait_state/token/lease checks above ran under the row lock, so the
+		// un-park is unconditional here.
+		if err := qtx.SetExternalResult(ctx, dbgen.SetExternalResultParams{
+			ExternalData: newExt,
+			UpdatedAt:    nowMillis(),
+			ID:           instanceID,
+		}); err != nil {
+			return fmt.Errorf("resolve external task: %w", err)
+		}
+		return nil
+	})
 }

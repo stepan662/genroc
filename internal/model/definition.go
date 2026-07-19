@@ -185,14 +185,18 @@ type SwitchCase struct {
 // rather than decoding into a map.
 type SwitchMap []SwitchCase
 
+// switchWireCase is the JSON wire form of a SwitchCase, shared by SwitchMap's
+// MarshalJSON and UnmarshalJSON so the tags can't drift. omitempty is ignored on
+// decode, so the same type serves both directions.
+type switchWireCase struct {
+	Case string `json:"case,omitempty"`
+	Goto string `json:"goto"`
+}
+
 func (s SwitchMap) MarshalJSON() ([]byte, error) {
-	type wireCase struct {
-		Case string `json:"case,omitempty"`
-		Goto string `json:"goto"`
-	}
-	items := make([]wireCase, len(s))
+	items := make([]switchWireCase, len(s))
 	for i, c := range s {
-		items[i] = wireCase{Case: c.Case, Goto: c.Goto}
+		items[i] = switchWireCase{Case: c.Case, Goto: c.Goto}
 	}
 	return json.Marshal(items)
 }
@@ -215,10 +219,7 @@ func (s *SwitchMap) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	// Array form.
-	var items []struct {
-		Case string `json:"case"`
-		Goto string `json:"goto"`
-	}
+	var items []switchWireCase
 	if err := json.Unmarshal(data, &items); err != nil {
 		return fmt.Errorf("switch: %w", err)
 	}
@@ -367,14 +368,17 @@ type ErrorCase struct {
 	NotReached *bool    `json:"not_reached,omitempty" description:"Assert that this error code means the remote call was never reached. When true, retries are allowed even on only_once:true tasks. Omit to use the engine's default classification (pre.* = not reached, everything else = potentially reached)."`
 }
 
+// errorCaseWire is the JSON wire form of an ErrorCase, shared by its MarshalJSON and
+// UnmarshalJSON so the tags stay in lockstep.
+type errorCaseWire struct {
+	Code       []string `json:"code,omitempty"`
+	Retries    int      `json:"retries,omitempty"`
+	Goto       string   `json:"goto,omitempty"`
+	NotReached *bool    `json:"not_reached,omitempty"`
+}
+
 func (e ErrorCase) MarshalJSON() ([]byte, error) {
-	type wire struct {
-		Code       []string `json:"code,omitempty"`
-		Retries    int      `json:"retries,omitempty"`
-		Goto       string   `json:"goto,omitempty"`
-		NotReached *bool    `json:"not_reached,omitempty"`
-	}
-	w := wire{Code: e.Code, Retries: e.Retries, NotReached: e.NotReached}
+	w := errorCaseWire{Code: e.Code, Retries: e.Retries, NotReached: e.NotReached}
 	if e.Goto != "" {
 		if e.Goto == GotoEnd {
 			w.Goto = "end"
@@ -386,13 +390,7 @@ func (e ErrorCase) MarshalJSON() ([]byte, error) {
 }
 
 func (e *ErrorCase) UnmarshalJSON(data []byte) error {
-	type wire struct {
-		Code       []string `json:"code,omitempty"`
-		Retries    int      `json:"retries,omitempty"`
-		Goto       string   `json:"goto,omitempty"`
-		NotReached *bool    `json:"not_reached,omitempty"`
-	}
-	var w wire
+	var w errorCaseWire
 	if err := json.Unmarshal(data, &w); err != nil {
 		return err
 	}
@@ -538,45 +536,62 @@ func validateTask(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int, po
 	if s.ID == GotoEnd || s.ID == GotoNext {
 		return fmt.Errorf("task ID %q is reserved", s.ID)
 	}
-
-	if s.Action != nil {
-		switch s.Action.Type {
-		case ActionTypeFetch:
-			if s.Action.URL == "" {
-				return fmt.Errorf("task %q: action.url is required for type %q", s.ID, s.Action.Type)
-			}
-		case ActionTypeChildMap:
-			if len(s.Action.Children) == 0 {
-				return fmt.Errorf("task %q: action.children is required for type %q", s.ID, s.Action.Type)
-			}
-			for key, entry := range s.Action.Children {
-				if entry.Name == "" {
-					return fmt.Errorf("task %q: action.children[%q].name is required", s.ID, key)
-				}
-			}
-		case ActionTypeChildList:
-			if s.Action.Name == "" {
-				return fmt.Errorf("task %q: action.name is required for type %q", s.ID, s.Action.Type)
-			}
-			if s.Action.Over == "" {
-				return fmt.Errorf("task %q: action.over is required for type %q", s.ID, s.Action.Type)
-			}
-		case ActionTypeDelay:
-			if s.Action.Ms == "" {
-				return fmt.Errorf("task %q: action.ms is required for type %q", s.ID, s.Action.Type)
-			}
-		case ActionTypeExternal:
-			// No required action fields: input and result_schema are both optional
-			// (mirroring rest). The wait timeout is the task's timeout_ms (0 = forever).
-		default:
-			return fmt.Errorf("task %q: action.type must be one of: fetch, child_map, child_list, delay, external", s.ID)
-		}
+	if err := validateActionRequiredFields(s); err != nil {
+		return err
 	}
+	if err := validateSwitch(s, taskIDs, taskIdx, lastIdx); err != nil {
+		return err
+	}
+	if err := validateOnError(s, taskIDs); err != nil {
+		return err
+	}
+	return validateActionSchemas(s, pool)
+}
 
+// validateActionRequiredFields checks the per-action-type required fields.
+func validateActionRequiredFields(s *Task) error {
+	if s.Action == nil {
+		return nil
+	}
+	switch s.Action.Type {
+	case ActionTypeFetch:
+		if s.Action.URL == "" {
+			return fmt.Errorf("task %q: action.url is required for type %q", s.ID, s.Action.Type)
+		}
+	case ActionTypeChildMap:
+		if len(s.Action.Children) == 0 {
+			return fmt.Errorf("task %q: action.children is required for type %q", s.ID, s.Action.Type)
+		}
+		for key, entry := range s.Action.Children {
+			if entry.Name == "" {
+				return fmt.Errorf("task %q: action.children[%q].name is required", s.ID, key)
+			}
+		}
+	case ActionTypeChildList:
+		if s.Action.Name == "" {
+			return fmt.Errorf("task %q: action.name is required for type %q", s.ID, s.Action.Type)
+		}
+		if s.Action.Over == "" {
+			return fmt.Errorf("task %q: action.over is required for type %q", s.ID, s.Action.Type)
+		}
+	case ActionTypeDelay:
+		if s.Action.Ms == "" {
+			return fmt.Errorf("task %q: action.ms is required for type %q", s.ID, s.Action.Type)
+		}
+	case ActionTypeExternal:
+		// No required action fields: input and result_schema are both optional
+		// (mirroring rest). The wait timeout is the task's timeout_ms (0 = forever).
+	default:
+		return fmt.Errorf("task %q: action.type must be one of: fetch, child_map, child_list, delay, external", s.ID)
+	}
+	return nil
+}
+
+// validateSwitch checks the task's switch cases: catch-all ordering and goto targets.
+func validateSwitch(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int) error {
 	if len(s.Switch) == 0 {
 		return fmt.Errorf("task %q: switch is required", s.ID)
 	}
-
 	for i, c := range s.Switch {
 		isLast := i == len(s.Switch)-1
 		if c.Case == "" && !isLast {
@@ -601,6 +616,12 @@ func validateTask(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int, po
 	if s.Switch[len(s.Switch)-1].Case != "" {
 		return fmt.Errorf("task %q switch: last case must be a catch-all (omit 'case' to match unconditionally)", s.ID)
 	}
+	return nil
+}
+
+// validateOnError checks the task's on_error rules: code patterns, catch-all ordering,
+// goto targets, and the only_once retry restrictions.
+func validateOnError(s *Task, taskIDs map[string]struct{}) error {
 	onlyOnce := s.OnlyOnce != nil && *s.OnlyOnce
 	for i, ec := range s.OnError {
 		for _, pat := range ec.Code {
@@ -636,22 +657,29 @@ func validateTask(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int, po
 			}
 		}
 	}
-	if s.Action != nil && s.Action.Type == ActionTypeFetch {
+	return nil
+}
+
+// validateActionSchemas checks fetch accepted_status patterns and that any attached
+// result_schema documents (task-level and child_map entries) are valid schemas.
+func validateActionSchemas(s *Task, pool schema.Defs) error {
+	if s.Action == nil {
+		return nil
+	}
+	if s.Action.Type == ActionTypeFetch {
 		for _, pat := range s.Action.AcceptedStatus {
 			if !validAcceptedStatusPattern(pat) {
 				return fmt.Errorf("task %q: accepted_status %q must be \"2xx\"/\"3xx\"/\"4xx\"/\"5xx\" or a 3-digit code", s.ID, pat)
 			}
 		}
 	}
-	if s.Action != nil {
-		if err := checkSchemaDoc(fmt.Sprintf("task %q action.result_schema", s.ID), s.Action.ResultSchema, pool); err != nil {
-			return err
-		}
-		if s.Action.Type == ActionTypeChildMap {
-			for key, entry := range s.Action.Children {
-				if err := checkSchemaDoc(fmt.Sprintf("task %q action.children[%q].result_schema", s.ID, key), entry.ResultSchema, pool); err != nil {
-					return err
-				}
+	if err := checkSchemaDoc(fmt.Sprintf("task %q action.result_schema", s.ID), s.Action.ResultSchema, pool); err != nil {
+		return err
+	}
+	if s.Action.Type == ActionTypeChildMap {
+		for key, entry := range s.Action.Children {
+			if err := checkSchemaDoc(fmt.Sprintf("task %q action.children[%q].result_schema", s.ID, key), entry.ResultSchema, pool); err != nil {
+				return err
 			}
 		}
 	}

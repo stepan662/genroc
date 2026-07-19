@@ -210,20 +210,9 @@ func (db *DB) ListLogs(instanceID string, opts LogQuery) ([]*model.LogEntry, Pag
 	if err != nil {
 		return nil, PageInfo{}, err
 	}
-	rows, err := db.exec.QueryContext(context.Background(), b.pageSQL, b.pageArgs...)
-	if err != nil {
-		return nil, PageInfo{}, err
-	}
-	out, err := scanLogPage(rows, false)
-	if err != nil {
-		return nil, PageInfo{}, err
-	}
-	items, first, last := orient(b, out, logCursorVals)
-	info, err := db.pageInfo(b, first, last)
-	if err != nil {
-		return nil, PageInfo{}, err
-	}
-	return items, info, nil
+	return runPage(db, b, func(s rowScanner) (*model.LogEntry, error) {
+		return scanLogRow(s, false)
+	}, logCursorVals)
 }
 
 // ListTreeLogs returns a page of every log for the subtree rooted at the given
@@ -240,50 +229,29 @@ func (db *DB) ListTreeLogs(rootID string, opts LogQuery) ([]*model.LogEntry, Pag
 	if err != nil {
 		return nil, PageInfo{}, err
 	}
-	rows, err := db.exec.QueryContext(context.Background(), b.pageSQL, b.pageArgs...)
-	if err != nil {
-		return nil, PageInfo{}, err
-	}
-	out, err := scanLogPage(rows, true)
-	if err != nil {
-		return nil, PageInfo{}, err
-	}
-	items, first, last := orient(b, out, logCursorVals)
-	info, err := db.pageInfo(b, first, last)
-	if err != nil {
-		return nil, PageInfo{}, err
-	}
-	return items, info, nil
+	return runPage(db, b, func(s rowScanner) (*model.LogEntry, error) {
+		return scanLogRow(s, true)
+	}, logCursorVals)
 }
 
-// scanLogPage scans a log page. When withDepth, each row carries a trailing
+// scanLogRow scans one log row. When withDepth, the row carries a trailing
 // st.depth column (the subtree query); otherwise it is the flat column list.
-func scanLogPage(rows interface {
-	Next() bool
-	Scan(...any) error
-	Err() error
-	Close() error
-}, withDepth bool) ([]*model.LogEntry, error) {
-	defer rows.Close()
-	var out []*model.LogEntry
-	for rows.Next() {
-		var r dbgen.ProcessLog
-		var depth int64
-		dest := []any{&r.ID, &r.InstanceID, &r.Level, &r.Event, &r.TaskID, &r.Message, &r.Code, &r.Data, &r.Meta, &r.CreatedAt}
-		if withDepth {
-			dest = append(dest, &depth)
-		}
-		if err := rows.Scan(dest...); err != nil {
-			return nil, err
-		}
-		e, err := toLogEntry(r)
-		if err != nil {
-			return nil, err
-		}
-		e.Depth = int(depth)
-		out = append(out, e)
+func scanLogRow(s rowScanner, withDepth bool) (*model.LogEntry, error) {
+	var r dbgen.ProcessLog
+	var depth int64
+	dest := []any{&r.ID, &r.InstanceID, &r.Level, &r.Event, &r.TaskID, &r.Message, &r.Code, &r.Data, &r.Meta, &r.CreatedAt}
+	if withDepth {
+		dest = append(dest, &depth)
 	}
-	return out, rows.Err()
+	if err := s.Scan(dest...); err != nil {
+		return nil, err
+	}
+	e, err := toLogEntry(r)
+	if err != nil {
+		return nil, err
+	}
+	e.Depth = int(depth)
+	return e, nil
 }
 
 // PruneLogs deletes every log older than the given cutoff (unix millis) and

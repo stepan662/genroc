@@ -73,3 +73,20 @@ func (db *DB) beginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, *dbgen
 	}
 	return tx, dbgen.New(dbtx), dbtx, nil
 }
+
+// withTx runs fn inside a transaction, rolling back if fn returns an error and
+// committing otherwise. fn receives the pgRewriter-wrapped *dbgen.Queries and DBTX
+// executor from beginTx — use those (never the raw *sql.Tx) for hand-written SQL so
+// ? placeholders keep working on both engines. It is the single owner of the
+// begin / defer-rollback / commit dance for the error-returning transactional methods.
+func (db *DB) withTx(ctx context.Context, fn func(qtx *dbgen.Queries, exec dbgen.DBTX) error) error {
+	tx, qtx, exec, err := db.beginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := fn(qtx, exec); err != nil {
+		return err
+	}
+	return tx.Commit()
+}

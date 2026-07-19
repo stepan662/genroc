@@ -70,7 +70,9 @@ func (a actionDef) envelope(r *http.Request) (Envelope, error) {
 			return Envelope{}, err
 		}
 	}
-	return Envelope{Action: a.Name, Payload: payload}, nil
+	// PathValue("id") is "" when the route has no {id} segment, so this is harmless
+	// for body-only endpoints and spares id-based actions a custom fromHTTP.
+	return Envelope{Action: a.Name, Payload: payload, ID: r.PathValue("id")}, nil
 }
 
 // schemaPtr adapts a built schema value to the pointer fields on model structs
@@ -301,8 +303,10 @@ var registry = func() []actionDef {
 				Resolve bool   `query:"resolve" description:"Resolve externalized context values inline; default false returns large values as {ref, size} references"`
 			}{},
 			Resp: InstanceStatusResp{
-				ID: "550e8400-e29b-41d4-a716-446655440000", Process: "order_pipeline",
-				Version: 1, Status: model.StatusCompleted,
+				InstanceSummaryResp: InstanceSummaryResp{
+					ID: "550e8400-e29b-41d4-a716-446655440000", Process: "order_pipeline",
+					Version: 1, Status: model.StatusCompleted,
+				},
 				Context: map[string]any{"order_id": 42, "charged": true},
 			},
 			fromHTTP: func(r *http.Request) (Envelope, error) {
@@ -384,9 +388,6 @@ var registry = func() []actionDef {
 				ID string `path:"id" format:"uuid"`
 			}{},
 			Resp: map[string]any{"cancelled": true},
-			fromHTTP: func(r *http.Request) (Envelope, error) {
-				return Envelope{Action: "cancel_instance", ID: r.PathValue("id")}, nil
-			},
 			handle: func(h *Handlers, env Envelope) Reply {
 				return h.cancelInstance(env.ID)
 			},
@@ -465,15 +466,6 @@ var registry = func() []actionDef {
 			}{},
 			Req:  SignalInstanceReq{TaskID: "approval", Result: map[string]any{"approved": true}},
 			Resp: map[string]any{"delivered": true, "buffered": false},
-			fromHTTP: func(r *http.Request) (Envelope, error) {
-				var payload json.RawMessage
-				if r.ContentLength != 0 {
-					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-						return Envelope{}, err
-					}
-				}
-				return Envelope{Action: "signal_instance", ID: r.PathValue("id"), Payload: payload}, nil
-			},
 			handle: func(h *Handlers, env Envelope) Reply {
 				return h.signalInstance(env.ID, env.Payload)
 			},

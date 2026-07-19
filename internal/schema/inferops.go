@@ -2,6 +2,7 @@ package schema
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -36,17 +37,38 @@ func alwaysBoolean(_, _ Schema) (Schema, error) {
 	return Type("boolean"), nil
 }
 
-func inferOrderingCmp(left, right Schema) (Schema, error) {
+// binOperands runs the guard every binary numeric/comparison op shares — reject a
+// nullable operand, then resolve both to a single concrete type, rejecting an
+// ambiguous one — and returns the two operand types. nullErr/ambiguousErr are the
+// op-specific messages (already resolved: pass a literal "%", not "%%").
+func binOperands(left, right Schema, nullErr, ambiguousErr string) (lt, rt string, err error) {
 	if left.HasNull() || right.HasNull() {
-		return Schema{}, fmt.Errorf("comparison requires non-nullable operands")
+		return "", "", errors.New(nullErr)
 	}
-	lt, ok := concreteTypeOf(left)
-	if !ok {
-		return Schema{}, fmt.Errorf("comparison requires an unambiguous operand")
+	ltype, ltOK := concreteTypeOf(left)
+	rtype, rtOK := concreteTypeOf(right)
+	if !ltOK || !rtOK {
+		return "", "", errors.New(ambiguousErr)
 	}
-	rt, ok := concreteTypeOf(right)
+	return ltype, rtype, nil
+}
+
+// unaryOperand is the single-operand counterpart of binOperands.
+func unaryOperand(operand Schema, nullErr, ambiguousErr string) (string, error) {
+	if operand.HasNull() {
+		return "", errors.New(nullErr)
+	}
+	t, ok := concreteTypeOf(operand)
 	if !ok {
-		return Schema{}, fmt.Errorf("comparison requires an unambiguous operand")
+		return "", errors.New(ambiguousErr)
+	}
+	return t, nil
+}
+
+func inferOrderingCmp(left, right Schema) (Schema, error) {
+	lt, rt, err := binOperands(left, right, "comparison requires non-nullable operands", "comparison requires an unambiguous operand")
+	if err != nil {
+		return Schema{}, err
 	}
 	if !isNumeric(lt) || !isNumeric(rt) {
 		return Schema{}, fmt.Errorf("comparison requires numeric operands, got %q and %q", lt, rt)
@@ -55,16 +77,9 @@ func inferOrderingCmp(left, right Schema) (Schema, error) {
 }
 
 func inferLogical(left, right Schema) (Schema, error) {
-	if left.HasNull() || right.HasNull() {
-		return Schema{}, fmt.Errorf("logical operator requires non-nullable boolean operands")
-	}
-	lt, ok := concreteTypeOf(left)
-	if !ok {
-		return Schema{}, fmt.Errorf("logical operator requires an unambiguous operand")
-	}
-	rt, ok := concreteTypeOf(right)
-	if !ok {
-		return Schema{}, fmt.Errorf("logical operator requires an unambiguous operand")
+	lt, rt, err := binOperands(left, right, "logical operator requires non-nullable boolean operands", "logical operator requires an unambiguous operand")
+	if err != nil {
+		return Schema{}, err
 	}
 	if lt != "boolean" || rt != "boolean" {
 		return Schema{}, fmt.Errorf("logical operator requires boolean operands, got %q and %q", lt, rt)
@@ -73,12 +88,9 @@ func inferLogical(left, right Schema) (Schema, error) {
 }
 
 func inferNot(operand Schema) (Schema, error) {
-	if operand.HasNull() {
-		return Schema{}, fmt.Errorf("! requires a non-nullable boolean operand")
-	}
-	t, ok := concreteTypeOf(operand)
-	if !ok {
-		return Schema{}, fmt.Errorf("! requires an unambiguous operand")
+	t, err := unaryOperand(operand, "! requires a non-nullable boolean operand", "! requires an unambiguous operand")
+	if err != nil {
+		return Schema{}, err
 	}
 	if t != "boolean" {
 		return Schema{}, fmt.Errorf("! requires a boolean operand, got %q", t)
@@ -87,13 +99,9 @@ func inferNot(operand Schema) (Schema, error) {
 }
 
 func inferAdd(left, right Schema) (Schema, error) {
-	if left.HasNull() || right.HasNull() {
-		return Schema{}, fmt.Errorf("operator requires non-nullable operands")
-	}
-	lt, ltOK := concreteTypeOf(left)
-	rt, rtOK := concreteTypeOf(right)
-	if !ltOK || !rtOK {
-		return Schema{}, fmt.Errorf("operator requires an unambiguous operand")
+	lt, rt, err := binOperands(left, right, "operator requires non-nullable operands", "operator requires an unambiguous operand")
+	if err != nil {
+		return Schema{}, err
 	}
 	if lt == "string" && rt == "string" {
 		return Type("string"), nil
@@ -102,13 +110,9 @@ func inferAdd(left, right Schema) (Schema, error) {
 }
 
 func inferArith(left, right Schema) (Schema, error) {
-	if left.HasNull() || right.HasNull() {
-		return Schema{}, fmt.Errorf("operator requires non-nullable operands")
-	}
-	lt, ltOK := concreteTypeOf(left)
-	rt, rtOK := concreteTypeOf(right)
-	if !ltOK || !rtOK {
-		return Schema{}, fmt.Errorf("operator requires an unambiguous numeric operand")
+	lt, rt, err := binOperands(left, right, "operator requires non-nullable operands", "operator requires an unambiguous numeric operand")
+	if err != nil {
+		return Schema{}, err
 	}
 	if !isNumeric(lt) || !isNumeric(rt) {
 		return Schema{}, fmt.Errorf("operator requires numeric operands, got %q and %q", lt, rt)
@@ -120,13 +124,9 @@ func inferArith(left, right Schema) (Schema, error) {
 }
 
 func inferMod(left, right Schema) (Schema, error) {
-	if left.HasNull() || right.HasNull() {
-		return Schema{}, fmt.Errorf("%% requires non-nullable operands")
-	}
-	lt, ltOK := concreteTypeOf(left)
-	rt, rtOK := concreteTypeOf(right)
-	if !ltOK || !rtOK {
-		return Schema{}, fmt.Errorf("%% requires an unambiguous integer operand")
+	lt, rt, err := binOperands(left, right, "% requires non-nullable operands", "% requires an unambiguous integer operand")
+	if err != nil {
+		return Schema{}, err
 	}
 	if lt != "integer" || rt != "integer" {
 		return Schema{}, fmt.Errorf("%% requires integer operands, got %q and %q", lt, rt)
@@ -135,13 +135,9 @@ func inferMod(left, right Schema) (Schema, error) {
 }
 
 func inferDiv(left, right Schema) (Schema, error) {
-	if left.HasNull() || right.HasNull() {
-		return Schema{}, fmt.Errorf("/ requires non-nullable operands")
-	}
-	lt, ltOK := concreteTypeOf(left)
-	rt, rtOK := concreteTypeOf(right)
-	if !ltOK || !rtOK {
-		return Schema{}, fmt.Errorf("/ requires an unambiguous numeric operand")
+	lt, rt, err := binOperands(left, right, "/ requires non-nullable operands", "/ requires an unambiguous numeric operand")
+	if err != nil {
+		return Schema{}, err
 	}
 	if !isNumeric(lt) || !isNumeric(rt) {
 		return Schema{}, fmt.Errorf("/ requires numeric operands, got %q and %q", lt, rt)
@@ -150,12 +146,9 @@ func inferDiv(left, right Schema) (Schema, error) {
 }
 
 func numericPassthrough(operand Schema) (Schema, error) {
-	if operand.HasNull() {
-		return Schema{}, fmt.Errorf("unary operator requires a non-nullable numeric operand")
-	}
-	t, ok := concreteTypeOf(operand)
-	if !ok {
-		return Schema{}, fmt.Errorf("unary operator requires an unambiguous numeric operand")
+	t, err := unaryOperand(operand, "unary operator requires a non-nullable numeric operand", "unary operator requires an unambiguous numeric operand")
+	if err != nil {
+		return Schema{}, err
 	}
 	if !isNumeric(t) {
 		return Schema{}, fmt.Errorf("unary operator requires a numeric operand, got %q", t)

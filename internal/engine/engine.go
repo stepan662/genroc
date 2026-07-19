@@ -1525,6 +1525,53 @@ func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInsta
 // buildMapChildren resolves definitions, evaluates inputs, and constructs
 // ProcessInstances for all keyed (child_map) children. Does not persist anything; a
 // non-nil outcome means the parent failed and the caller should stop and persist it.
+// resolveChildVersion picks the version to spawn a child at. A non-zero declared
+// version is used as-is. Otherwise a self-reference (same process name) inherits the
+// parent's version; a cross-process reference resolves the version pinned for this task
+// at registration (GetDependencyVersion), falling back to the child's latest published
+// version. depKey is the child_map key ("" for child_list).
+func (e *Engine) resolveChildVersion(inst *model.ProcessInstance, taskID, name string, declared int, depKey string) (int, error) {
+	if declared != 0 {
+		return declared, nil
+	}
+	if name == inst.ProcessName {
+		return inst.ProcessVersion, nil
+	}
+	if v, err := e.db.GetDependencyVersion(inst.ProcessName, inst.ProcessVersion, taskID, depKey); err == nil {
+		return v, nil
+	}
+	return e.db.LatestVersion(name)
+}
+
+// newChildInstance builds a running child ProcessInstance rooted at parent. id is the
+// caller-assigned sibling id (base+i of the batch's ChildBase, so siblings form a
+// contiguous run that sorts after the parent and among itself in spawn order). spawnCtx
+// carries the per-type discriminant keys (_spawn_action_type plus _spawn_child_key /
+// _spawn_index, and _spawn_result_schema when declared), merged over the common child
+// context.
+func newChildInstance(parent *model.ProcessInstance, task *model.Task, def *model.ProcessDefinition, version int, input any, callStack []string, id string, spawnCtx map[string]any) *model.ProcessInstance {
+	childCtx := map[string]any{
+		"input":        input,
+		"outputs":      map[string]any{},
+		"output_order": []string{},
+		"error":        nil,
+	}
+	for k, v := range spawnCtx {
+		childCtx[k] = v
+	}
+	return &model.ProcessInstance{
+		ID:             id,
+		ProcessName:    def.Name,
+		ProcessVersion: version,
+		Task:           def.Tasks[0].ID,
+		ContextData:    childCtx,
+		Status:         model.StatusRunning,
+		ParentID:       parent.ID,
+		SpawnTaskID:    task.ID,
+		CallStack:      callStack,
+	}
+}
+
 func (e *Engine) buildMapChildren(ctx context.Context, inst *model.ProcessInstance, task *model.Task, callStack []string) ([]*model.ProcessInstance, *advanceOutcome) {
 	keys := make([]string, 0, len(task.Action.Children))
 	for key := range task.Action.Children {
@@ -1540,20 +1587,9 @@ func (e *Engine) buildMapChildren(ctx context.Context, inst *model.ProcessInstan
 	children := make([]*model.ProcessInstance, 0, len(task.Action.Children))
 	for i, key := range keys {
 		entry := task.Action.Children[key]
-		version := entry.Version
-		if version == 0 {
-			if entry.Name == inst.ProcessName {
-				version = inst.ProcessVersion
-			} else {
-				var err error
-				version, err = e.db.GetDependencyVersion(inst.ProcessName, inst.ProcessVersion, task.ID, key)
-				if err != nil {
-					version, err = e.db.LatestVersion(entry.Name)
-					if err != nil {
-						return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_map[%q]: %v", task.ID, key, err)))
-					}
-				}
-			}
+		version, err := e.resolveChildVersion(inst, task.ID, entry.Name, entry.Version, key)
+		if err != nil {
+			return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_map[%q]: %v", task.ID, key, err)))
 		}
 		def, err := e.db.GetDefinition(entry.Name, version)
 		if err != nil {
@@ -1567,30 +1603,16 @@ func (e *Engine) buildMapChildren(ctx context.Context, inst *model.ProcessInstan
 		if err != nil {
 			return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_map[%q] input validation: %v", task.ID, key, err)))
 		}
-		childCtx := map[string]any{
-			"input":              input,
-			"outputs":            map[string]any{},
-			"output_order":       []string{},
-			"error":              nil,
+		spawnCtx := map[string]any{
 			"_spawn_action_type": string(model.ActionTypeChildMap),
 			"_spawn_child_key":   key,
 		}
 		if entry.ResultSchema != nil {
 			if b, err := json.Marshal(entry.ResultSchema); err == nil {
-				childCtx["_spawn_result_schema"] = string(b)
+				spawnCtx["_spawn_result_schema"] = string(b)
 			}
 		}
-		children = append(children, &model.ProcessInstance{
-			ID:             idgen.Add(base, uint64(i)).String(),
-			ProcessName:    def.Name,
-			ProcessVersion: version,
-			Task:           def.Tasks[0].ID,
-			ContextData:    childCtx,
-			Status:         model.StatusRunning,
-			ParentID:       inst.ID,
-			SpawnTaskID:    task.ID,
-			CallStack:      callStack,
-		})
+		children = append(children, newChildInstance(inst, task, def, version, input, callStack, idgen.Add(base, uint64(i)).String(), spawnCtx))
 	}
 	return children, nil
 }
@@ -1602,23 +1624,11 @@ func (e *Engine) buildMapChildren(ctx context.Context, inst *model.ProcessInstan
 // anything; a non-nil outcome means the parent failed and the caller should stop and
 // persist it.
 func (e *Engine) buildListChildren(ctx context.Context, inst *model.ProcessInstance, task *model.Task, callStack []string) ([]*model.ProcessInstance, *advanceOutcome) {
-	name := task.Action.Name
-	version := task.Action.Version
-	if version == 0 {
-		if name == inst.ProcessName {
-			version = inst.ProcessVersion
-		} else {
-			var err error
-			version, err = e.db.GetDependencyVersion(inst.ProcessName, inst.ProcessVersion, task.ID, "")
-			if err != nil {
-				version, err = e.db.LatestVersion(name)
-				if err != nil {
-					return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_list: %v", task.ID, err)))
-				}
-			}
-		}
+	version, err := e.resolveChildVersion(inst, task.ID, task.Action.Name, task.Action.Version, "")
+	if err != nil {
+		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_list: %v", task.ID, err)))
 	}
-	def, err := e.db.GetDefinition(name, version)
+	def, err := e.db.GetDefinition(task.Action.Name, version)
 	if err != nil {
 		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_list: %v", task.ID, err)))
 	}
@@ -1653,28 +1663,14 @@ func (e *Engine) buildListChildren(ctx context.Context, inst *model.ProcessInsta
 		if err != nil {
 			return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_list[%d] input validation: %v", task.ID, i, err)))
 		}
-		childCtx := map[string]any{
-			"input":              input,
-			"outputs":            map[string]any{},
-			"output_order":       []string{},
-			"error":              nil,
+		spawnCtx := map[string]any{
 			"_spawn_action_type": string(model.ActionTypeChildList),
 			"_spawn_index":       i,
 		}
 		if resultSchema != "" {
-			childCtx["_spawn_result_schema"] = resultSchema
+			spawnCtx["_spawn_result_schema"] = resultSchema
 		}
-		children = append(children, &model.ProcessInstance{
-			ID:             idgen.Add(base, uint64(i)).String(),
-			ProcessName:    def.Name,
-			ProcessVersion: version,
-			Task:           def.Tasks[0].ID,
-			ContextData:    childCtx,
-			Status:         model.StatusRunning,
-			ParentID:       inst.ID,
-			SpawnTaskID:    task.ID,
-			CallStack:      callStack,
-		})
+		children = append(children, newChildInstance(inst, task, def, version, input, callStack, idgen.Add(base, uint64(i)).String(), spawnCtx))
 	}
 	return children, nil
 }

@@ -49,28 +49,34 @@ func ValidateChildProcessRefs(def *model.ProcessDefinition, currentVersion int, 
 	return nil
 }
 
+// resolveChild resolves the (name, version) a child task references to its definition
+// and concrete version. A self-reference (same name, version 0 or the current version)
+// resolves to current without a lookup; otherwise version 0 means the child's latest
+// published version. Shared by the child_map and child_list validators.
+func resolveChild(name string, version int, current *model.ProcessDefinition, currentVersion int, getter DefinitionGetter) (*model.ProcessDefinition, int, error) {
+	if name == current.Name && (version == 0 || version == currentVersion) {
+		return current, currentVersion, nil
+	}
+	if version == 0 {
+		v, err := getter.LatestVersion(name)
+		if err != nil {
+			return nil, 0, err
+		}
+		version = v
+	}
+	child, err := getter.GetDefinition(name, version)
+	if err != nil {
+		return nil, 0, err
+	}
+	return child, version, nil
+}
+
 func validateChildEntry(taskID string, label string, p model.ChildEntry, ctx schema.Schema, defs schema.Defs, current *model.ProcessDefinition, currentVersion int, getter DefinitionGetter) error {
 	prefix := fmt.Sprintf("task %q: %s", taskID, label)
 
-	var child *model.ProcessDefinition
-	var childVersion int
-	if p.Name == current.Name && (p.Version == 0 || p.Version == currentVersion) {
-		child = current
-		childVersion = currentVersion
-	} else {
-		childVersion = p.Version
-		if childVersion == 0 {
-			v, err := getter.LatestVersion(p.Name)
-			if err != nil {
-				return fmt.Errorf("%s: %w", prefix, err)
-			}
-			childVersion = v
-		}
-		var err error
-		child, err = getter.GetDefinition(p.Name, childVersion)
-		if err != nil {
-			return fmt.Errorf("%s: %w", prefix, err)
-		}
+	child, childVersion, err := resolveChild(p.Name, p.Version, current, currentVersion, getter)
+	if err != nil {
+		return fmt.Errorf("%s: %w", prefix, err)
 	}
 
 	if child.InputSchema == nil {
@@ -79,7 +85,6 @@ func validateChildEntry(taskID string, label string, p model.ChildEntry, ctx sch
 
 	var inferred schema.Schema
 	if p.Input.Present() {
-		var err error
 		inferred, err = inferShape(p.Input.Raw, ctx, fmt.Sprintf("%s input", prefix))
 		if err != nil {
 			return err
@@ -108,25 +113,9 @@ func validateChildEntry(taskID string, label string, p model.ChildEntry, ctx sch
 func validateChildListEntry(taskID string, action *model.Action, ctx schema.Schema, defs schema.Defs, current *model.ProcessDefinition, currentVersion int, getter DefinitionGetter) error {
 	prefix := fmt.Sprintf("task %q: child_list", taskID)
 
-	var child *model.ProcessDefinition
-	var childVersion int
-	if action.Name == current.Name && (action.Version == 0 || action.Version == currentVersion) {
-		child = current
-		childVersion = currentVersion
-	} else {
-		childVersion = action.Version
-		if childVersion == 0 {
-			v, err := getter.LatestVersion(action.Name)
-			if err != nil {
-				return fmt.Errorf("%s: %w", prefix, err)
-			}
-			childVersion = v
-		}
-		var err error
-		child, err = getter.GetDefinition(action.Name, childVersion)
-		if err != nil {
-			return fmt.Errorf("%s: %w", prefix, err)
-		}
+	child, childVersion, err := resolveChild(action.Name, action.Version, current, currentVersion, getter)
+	if err != nil {
+		return fmt.Errorf("%s: %w", prefix, err)
 	}
 
 	// Infer `over` and confirm it is a non-null array. This also type-checks the

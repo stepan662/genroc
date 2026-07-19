@@ -49,51 +49,47 @@ func (db *DB) SaveDefinition(def *model.ProcessDefinition, version int, deps []D
 		return err
 	}
 	ctx := context.Background()
-	tx, qtx, _, err := db.beginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	now := nowMillis()
-
-	if err := qtx.InsertDefinition(ctx, dbgen.InsertDefinitionParams{
-		Name:        def.Name,
-		Version:     int64(version),
-		Definition:  string(data),
-		ContentHash: hash,
-		CreatedAt:   now,
-	}); err != nil {
-		return err
-	}
-	if err := qtx.DeleteDependencies(ctx, dbgen.DeleteDependenciesParams{
-		ParentName:    def.Name,
-		ParentVersion: int64(version),
-	}); err != nil {
-		return err
-	}
-	for _, d := range deps {
-		if err := qtx.InsertDependency(ctx, dbgen.InsertDependencyParams{
-			ParentName:    d.ParentName,
-			ParentVersion: int64(d.ParentVersion),
-			TaskID:        d.TaskID,
-			ChildKey:      d.ChildKey,
-			ChildName:     d.ChildName,
-			ChildVersion:  int64(d.ChildVersion),
+	if err := db.withTx(ctx, func(qtx *dbgen.Queries, _ dbgen.DBTX) error {
+		if err := qtx.InsertDefinition(ctx, dbgen.InsertDefinitionParams{
+			Name:        def.Name,
+			Version:     int64(version),
+			Definition:  string(data),
+			ContentHash: hash,
+			CreatedAt:   now,
 		}); err != nil {
 			return err
 		}
-	}
-	if channel != "" {
-		if err := qtx.UpsertChannel(ctx, dbgen.UpsertChannelParams{
-			Name:      def.Name,
-			Channel:   channel,
-			Version:   int64(version),
-			UpdatedAt: now,
+		if err := qtx.DeleteDependencies(ctx, dbgen.DeleteDependenciesParams{
+			ParentName:    def.Name,
+			ParentVersion: int64(version),
 		}); err != nil {
 			return err
 		}
-	}
-	if err := tx.Commit(); err != nil {
+		for _, d := range deps {
+			if err := qtx.InsertDependency(ctx, dbgen.InsertDependencyParams{
+				ParentName:    d.ParentName,
+				ParentVersion: int64(d.ParentVersion),
+				TaskID:        d.TaskID,
+				ChildKey:      d.ChildKey,
+				ChildName:     d.ChildName,
+				ChildVersion:  int64(d.ChildVersion),
+			}); err != nil {
+				return err
+			}
+		}
+		if channel != "" {
+			if err := qtx.UpsertChannel(ctx, dbgen.UpsertChannelParams{
+				Name:      def.Name,
+				Channel:   channel,
+				Version:   int64(version),
+				UpdatedAt: now,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
 	// Drop any stale cache entry: InsertDefinition uses ON CONFLICT DO UPDATE, so
@@ -160,33 +156,18 @@ func (db *DB) ListDefinitions(req PageReq) ([]VersionedDef, PageInfo, error) {
 	if err != nil {
 		return nil, PageInfo{}, err
 	}
-	rows, err := db.exec.QueryContext(context.Background(), b.pageSQL, b.pageArgs...)
-	if err != nil {
-		return nil, PageInfo{}, err
-	}
-	defer rows.Close()
-	var out []VersionedDef
-	for rows.Next() {
+	return runPage(db, b, func(s rowScanner) (VersionedDef, error) {
 		var name, definition string
 		var version int64
-		if err := rows.Scan(&name, &version, &definition); err != nil {
-			return nil, PageInfo{}, err
+		if err := s.Scan(&name, &version, &definition); err != nil {
+			return VersionedDef{}, err
 		}
 		var def model.ProcessDefinition
 		if err := json.Unmarshal([]byte(definition), &def); err != nil {
-			return nil, PageInfo{}, err
+			return VersionedDef{}, err
 		}
-		out = append(out, VersionedDef{Version: int(version), Def: &def})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, PageInfo{}, err
-	}
-	items, first, last := orient(b, out, definitionCursorVals)
-	info, err := db.pageInfo(b, first, last)
-	if err != nil {
-		return nil, PageInfo{}, err
-	}
-	return items, info, nil
+		return VersionedDef{Version: int(version), Def: &def}, nil
+	}, definitionCursorVals)
 }
 
 func (db *DB) FindVersionByHash(name, hash string) (int, error) {
@@ -351,30 +332,15 @@ func (db *DB) ListChannels(name string, req PageReq) ([]ChannelRow, PageInfo, er
 	if err != nil {
 		return nil, PageInfo{}, err
 	}
-	rows, err := db.exec.QueryContext(context.Background(), b.pageSQL, b.pageArgs...)
-	if err != nil {
-		return nil, PageInfo{}, err
-	}
-	defer rows.Close()
-	var out []ChannelRow
-	for rows.Next() {
+	return runPage(db, b, func(s rowScanner) (ChannelRow, error) {
 		var r ChannelRow
 		var version int64
-		if err := rows.Scan(&r.Channel, &version); err != nil {
-			return nil, PageInfo{}, err
+		if err := s.Scan(&r.Channel, &version); err != nil {
+			return ChannelRow{}, err
 		}
 		r.Version = int(version)
-		out = append(out, r)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, PageInfo{}, err
-	}
-	items, first, last := orient(b, out, channelCursorVals)
-	info, err := db.pageInfo(b, first, last)
-	if err != nil {
-		return nil, PageInfo{}, err
-	}
-	return items, info, nil
+		return r, nil
+	}, channelCursorVals)
 }
 
 func (db *DB) LoadDefinitionsOnChannel(channel string) ([]VersionedDef, error) {

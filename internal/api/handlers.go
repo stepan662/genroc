@@ -211,22 +211,9 @@ type BatchApplyResult struct {
 	Saved   bool   `json:"saved"`
 }
 
-type InstanceStatusResp struct {
-	ID         string          `json:"id"`
-	Process    string          `json:"process"`
-	Version    int             `json:"version"`
-	Status     model.Status    `json:"status"`
-	WaitState  model.WaitState `json:"wait_state,omitempty"`
-	RetryCount int             `json:"retry_count"`
-	Context    map[string]any  `json:"context"`
-	Error      string          `json:"error,omitempty"`
-	CreatedAt  string          `json:"created_at"`
-	UpdatedAt  string          `json:"updated_at"`
-}
-
-// InstanceSummaryResp is the per-row shape returned by the instance list. It is
-// InstanceStatusResp without the (potentially large) context — listing many
-// instances should stay light; fetch a single instance for its full context.
+// InstanceSummaryResp is the per-row shape returned by the instance list. Listing
+// many instances should stay light, so it omits the (potentially large) context; it
+// is embedded in InstanceStatusResp, which adds the context for a single-instance fetch.
 type InstanceSummaryResp struct {
 	ID         string          `json:"id"`
 	Process    string          `json:"process"`
@@ -237,6 +224,12 @@ type InstanceSummaryResp struct {
 	Error      string          `json:"error,omitempty"`
 	CreatedAt  string          `json:"created_at"`
 	UpdatedAt  string          `json:"updated_at"`
+}
+
+// InstanceStatusResp is the single-instance shape: the summary plus the full context.
+type InstanceStatusResp struct {
+	InstanceSummaryResp
+	Context map[string]any `json:"context"`
 }
 
 type LogEntryResp struct {
@@ -704,16 +697,18 @@ func (h *Handlers) tick(raw json.RawMessage) Reply {
 
 func instanceToResp(inst *model.ProcessInstance) InstanceStatusResp {
 	return InstanceStatusResp{
-		ID:         inst.ID,
-		Process:    inst.ProcessName,
-		Version:    inst.ProcessVersion,
-		Status:     inst.Status,
-		WaitState:  inst.WaitState,
-		RetryCount: inst.RetryCount,
-		Context:    orderedContext(inst.ContextData),
-		Error:      inst.Error,
-		CreatedAt:  inst.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:  inst.UpdatedAt.Format(time.RFC3339),
+		InstanceSummaryResp: InstanceSummaryResp{
+			ID:         inst.ID,
+			Process:    inst.ProcessName,
+			Version:    inst.ProcessVersion,
+			Status:     inst.Status,
+			WaitState:  inst.WaitState,
+			RetryCount: inst.RetryCount,
+			Error:      inst.Error,
+			CreatedAt:  inst.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:  inst.UpdatedAt.Format(time.RFC3339),
+		},
+		Context: orderedContext(inst.ContextData),
 	}
 }
 

@@ -386,42 +386,29 @@ func insertInstanceParams(inst *model.ProcessInstance, cols contextCols, status 
 func (db *DB) SaveInstance(inst *model.ProcessInstance) error {
 	ctx := context.Background()
 	now := nowMillis()
-	tx, qtx, _, err := db.beginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	cols, err := db.persistContext(ctx, qtx, inst, now)
-	if err != nil {
-		return err
-	}
-	params, err := insertInstanceParams(inst, cols, string(inst.Status), now, now)
-	if err != nil {
-		return err
-	}
-	if err := qtx.InsertInstance(ctx, params); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return db.withTx(ctx, func(qtx *dbgen.Queries, _ dbgen.DBTX) error {
+		cols, err := db.persistContext(ctx, qtx, inst, now)
+		if err != nil {
+			return err
+		}
+		params, err := insertInstanceParams(inst, cols, string(inst.Status), now, now)
+		if err != nil {
+			return err
+		}
+		return qtx.InsertInstance(ctx, params)
+	})
 }
 
 func (db *DB) UpdateInstance(inst *model.ProcessInstance) error {
 	ctx := context.Background()
 	now := nowMillis()
-	tx, qtx, _, err := db.beginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	cols, err := db.persistContext(ctx, qtx, inst, now)
-	if err != nil {
-		return err
-	}
-	params := updateInstanceParams(inst, cols, now)
-	if err := qtx.UpdateInstance(ctx, params); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return db.withTx(ctx, func(qtx *dbgen.Queries, _ dbgen.DBTX) error {
+		cols, err := db.persistContext(ctx, qtx, inst, now)
+		if err != nil {
+			return err
+		}
+		return qtx.UpdateInstance(ctx, updateInstanceParams(inst, cols, now))
+	})
 }
 
 // UpdateInstanceProgress writes the mutable task state (queue, context, retry
@@ -435,30 +422,24 @@ func (db *DB) UpdateInstance(inst *model.ProcessInstance) error {
 func (db *DB) UpdateInstanceProgress(inst *model.ProcessInstance) error {
 	ctx := context.Background()
 	now := nowMillis()
-	tx, qtx, _, err := db.beginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	cols, err := db.persistContext(ctx, qtx, inst, now)
-	if err != nil {
-		return err
-	}
-	if err := qtx.UpdateInstanceProgress(ctx, dbgen.UpdateInstanceProgressParams{
-		ID:           inst.ID,
-		Task:         inst.Task,
-		OutputsData:  cols.OutputsData,
-		ErrorData:    cols.ErrorData,
-		ExternalData: cols.ExternalData,
-		EngineState:  cols.EngineState,
-		RetryCount:   int64(inst.RetryCount),
-		WakeAt:       fromTimePtr(inst.WakeAt),
-		WaitState:    string(inst.WaitState),
-		UpdatedAt:    now,
-	}); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return db.withTx(ctx, func(qtx *dbgen.Queries, _ dbgen.DBTX) error {
+		cols, err := db.persistContext(ctx, qtx, inst, now)
+		if err != nil {
+			return err
+		}
+		return qtx.UpdateInstanceProgress(ctx, dbgen.UpdateInstanceProgressParams{
+			ID:           inst.ID,
+			Task:         inst.Task,
+			OutputsData:  cols.OutputsData,
+			ErrorData:    cols.ErrorData,
+			ExternalData: cols.ExternalData,
+			EngineState:  cols.EngineState,
+			RetryCount:   int64(inst.RetryCount),
+			WakeAt:       fromTimePtr(inst.WakeAt),
+			WaitState:    string(inst.WaitState),
+			UpdatedAt:    now,
+		})
+	})
 }
 
 func (db *DB) GetInstance(id string) (*model.ProcessInstance, error) {
@@ -481,60 +462,20 @@ func (db *DB) ListInstances(status string, req PageReq) ([]*model.InstanceSummar
 	if err != nil {
 		return nil, PageInfo{}, err
 	}
-	rows, err := db.exec.QueryContext(context.Background(), b.pageSQL, b.pageArgs...)
-	if err != nil {
-		return nil, PageInfo{}, err
-	}
-	defer rows.Close()
-	var out []*model.InstanceSummary
-	for rows.Next() {
-		s, err := scanInstanceSummary(rows)
-		if err != nil {
-			return nil, PageInfo{}, err
-		}
-		out = append(out, s)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, PageInfo{}, err
-	}
-	items, first, last := orient(b, out, instanceSummaryCursorVals)
-	info, err := db.pageInfo(b, first, last)
-	if err != nil {
-		return nil, PageInfo{}, err
-	}
-	return items, info, nil
+	return runPage(db, b, scanInstanceSummary, instanceSummaryCursorVals)
 }
 
 // queryInstancePage runs a built instance-listing query (page + count) and returns
 // the scanned page plus its PageInfo. Shared by ListInstances and
 // ListExternalTasks, which select the same columns and cursor on the same keys.
 func (db *DB) queryInstancePage(b built) ([]*model.ProcessInstance, PageInfo, error) {
-	rows, err := db.exec.QueryContext(context.Background(), b.pageSQL, b.pageArgs...)
-	if err != nil {
-		return nil, PageInfo{}, err
-	}
-	defer rows.Close()
-	var out []*model.ProcessInstance
-	for rows.Next() {
-		r, err := scanInstance(rows)
+	return runPage(db, b, func(s rowScanner) (*model.ProcessInstance, error) {
+		r, err := scanInstance(s)
 		if err != nil {
-			return nil, PageInfo{}, err
+			return nil, err
 		}
-		inst, err := toInstance(r)
-		if err != nil {
-			return nil, PageInfo{}, err
-		}
-		out = append(out, inst)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, PageInfo{}, err
-	}
-	items, first, last := orient(b, out, instanceCursorVals)
-	info, err := db.pageInfo(b, first, last)
-	if err != nil {
-		return nil, PageInfo{}, err
-	}
-	return items, info, nil
+		return toInstance(r)
+	}, instanceCursorVals)
 }
 
 // ChildrenForTask returns all child instances spawned by the given task of a

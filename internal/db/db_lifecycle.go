@@ -28,129 +28,39 @@ func (db *DB) FinishChild(child *model.ProcessInstance) error {
 	}
 
 	ctx := context.Background()
-	tx, qtx, raw, err := db.beginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+	return db.withTx(ctx, func(qtx *dbgen.Queries, raw dbgen.DBTX) error {
 
-	// Acquire row locks (oldest-first) and read the parent's wait_state in one shot.
-	// The locking CTE keeps the same lock order as CancelProcess and
-	// FailInstanceAndAncestors, preventing deadlocks; the FOR UPDATE is appended only
-	// on PostgreSQL — SQLite serialises via its single writer and runs the CTE without it.
-	var parentWaitState string
-	err = raw.QueryRowContext(ctx, `
+		// Acquire row locks (oldest-first) and read the parent's wait_state in one shot.
+		// The locking CTE keeps the same lock order as CancelProcess and
+		// FailInstanceAndAncestors, preventing deadlocks; the FOR UPDATE is appended only
+		// on PostgreSQL — SQLite serialises via its single writer and runs the CTE without it.
+		var parentWaitState string
+		err := raw.QueryRowContext(ctx, `
 		WITH locked AS (
 			SELECT id, wait_state FROM process_instances
 			WHERE id IN (?, ?)
 			ORDER BY id`+db.forUpdate()+`
 		)
 		SELECT wait_state FROM locked WHERE id = ?`,
-		child.ID, child.ParentID, child.ParentID).Scan(&parentWaitState)
-	if err != nil && err != sql.ErrNoRows {
-		return fmt.Errorf("lock parent: %w", err)
-	}
-	parentFound := err == nil
-
-	// Save child as terminal.
-	now := nowMillis()
-	cols, err := db.persistContext(ctx, qtx, child, now)
-	if err != nil {
-		return err
-	}
-	childParams := updateInstanceParams(child, cols, now)
-	if err := qtx.UpdateInstance(ctx, childParams); err != nil {
-		return fmt.Errorf("save child: %w", err)
-	}
-
-	// If the parent was found and is waiting, check whether all siblings are terminal.
-	if parentFound && model.WaitState(parentWaitState) == model.WaitStateWaiting {
-		active, err := qtx.CountActiveSiblings(ctx, dbgen.CountActiveSiblingsParams{
-			ParentID:    child.ParentID,
-			SpawnTaskID: child.SpawnTaskID,
-		})
-		if err != nil {
-			return fmt.Errorf("count siblings: %w", err)
-		}
-		if active == 0 {
-			if err := qtx.WakeParent(ctx, dbgen.WakeParentParams{
-				ID:        child.ParentID,
-				UpdatedAt: nowMillis(),
-			}); err != nil {
-				return fmt.Errorf("wake parent: %w", err)
-			}
-		}
-	}
-
-	return tx.Commit()
-}
-
-// FailInstanceAndAncestors atomically marks a child instance as failed,
-// propagates 'failing' to all ancestors in its call stack, and — when the
-// failed child was the last active member of its spawn batch — wakes the
-// parent (to ”, the parent is failing by then) so the engine can settle it
-// on the next tick. All in a single transaction; the safe replacement for
-// calling UpdateInstance + FailAncestors separately.
-func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
-	ctx := context.Background()
-	tx, qtx, raw, err := db.beginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	now := nowMillis()
-
-	// Lock child and all ancestors oldest-first — consistent with FinishChild and
-	// CancelProcess. This task exists only to take FOR UPDATE locks, so it runs on
-	// PostgreSQL alone; SQLite serialises via its single writer. Ancestors are read
-	// from the child's call_stack in the DB; no Go-side ID list needed.
-	if db.dialect == "postgres" {
-		lockRows, lockErr := raw.QueryContext(ctx, `
-			SELECT id FROM process_instances
-			WHERE id = ?
-			   OR id IN (SELECT value FROM json_each(
-			                 (SELECT call_stack FROM process_instances WHERE id = ?)))
-			ORDER BY id FOR UPDATE`, child.ID, child.ID)
-		if lockErr != nil {
-			return fmt.Errorf("lock rows: %w", lockErr)
-		}
-		lockRows.Close()
-	}
-
-	cols, err := db.persistContext(ctx, qtx, child, now)
-	if err != nil {
-		return err
-	}
-	childParams := updateInstanceParams(child, cols, now)
-	if err := qtx.UpdateInstance(ctx, childParams); err != nil {
-		return err
-	}
-
-	// Bulk-mark all ancestors as failing in a single UPDATE via json_each.
-	if len(child.CallStack) > 0 {
-		idsJSON, err := json.Marshal(child.CallStack)
-		if err != nil {
-			return err
-		}
-		if err := qtx.FailAncestors(ctx, dbgen.FailAncestorsParams{
-			Error:     child.Error,
-			UpdatedAt: now,
-			Ids:       string(idsJSON),
-		}); err != nil {
-			return err
-		}
-	}
-
-	// If this failure settled the last active child of the batch, wake the
-	// waiting parent (mirrors FinishChild) so the engine can claim it and
-	// transition failing → failed. WakeParent picks '' here — the parent is
-	// failing, so it must never enter the collect phase.
-	if child.ParentID != "" {
-		parentWaitState, err := qtx.GetWaitState(ctx, child.ParentID)
+			child.ID, child.ParentID, child.ParentID).Scan(&parentWaitState)
 		if err != nil && err != sql.ErrNoRows {
-			return fmt.Errorf("read parent wait_state: %w", err)
+			return fmt.Errorf("lock parent: %w", err)
 		}
-		if err == nil && model.WaitState(parentWaitState) == model.WaitStateWaiting {
+		parentFound := err == nil
+
+		// Save child as terminal.
+		now := nowMillis()
+		cols, err := db.persistContext(ctx, qtx, child, now)
+		if err != nil {
+			return err
+		}
+		childParams := updateInstanceParams(child, cols, now)
+		if err := qtx.UpdateInstance(ctx, childParams); err != nil {
+			return fmt.Errorf("save child: %w", err)
+		}
+
+		// If the parent was found and is waiting, check whether all siblings are terminal.
+		if parentFound && model.WaitState(parentWaitState) == model.WaitStateWaiting {
 			active, err := qtx.CountActiveSiblings(ctx, dbgen.CountActiveSiblingsParams{
 				ParentID:    child.ParentID,
 				SpawnTaskID: child.SpawnTaskID,
@@ -161,15 +71,99 @@ func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 			if active == 0 {
 				if err := qtx.WakeParent(ctx, dbgen.WakeParentParams{
 					ID:        child.ParentID,
-					UpdatedAt: now,
+					UpdatedAt: nowMillis(),
 				}); err != nil {
 					return fmt.Errorf("wake parent: %w", err)
 				}
 			}
 		}
-	}
 
-	return tx.Commit()
+		return nil
+	})
+}
+
+// FailInstanceAndAncestors atomically marks a child instance as failed,
+// propagates 'failing' to all ancestors in its call stack, and — when the
+// failed child was the last active member of its spawn batch — wakes the
+// parent (to ”, the parent is failing by then) so the engine can settle it
+// on the next tick. All in a single transaction; the safe replacement for
+// calling UpdateInstance + FailAncestors separately.
+func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
+	ctx := context.Background()
+	return db.withTx(ctx, func(qtx *dbgen.Queries, raw dbgen.DBTX) error {
+		now := nowMillis()
+
+		// Lock child and all ancestors oldest-first — consistent with FinishChild and
+		// CancelProcess. This task exists only to take FOR UPDATE locks, so it runs on
+		// PostgreSQL alone; SQLite serialises via its single writer. Ancestors are read
+		// from the child's call_stack in the DB; no Go-side ID list needed.
+		if db.dialect == "postgres" {
+			lockRows, lockErr := raw.QueryContext(ctx, `
+			SELECT id FROM process_instances
+			WHERE id = ?
+			   OR id IN (SELECT value FROM json_each(
+			                 (SELECT call_stack FROM process_instances WHERE id = ?)))
+			ORDER BY id FOR UPDATE`, child.ID, child.ID)
+			if lockErr != nil {
+				return fmt.Errorf("lock rows: %w", lockErr)
+			}
+			lockRows.Close()
+		}
+
+		cols, err := db.persistContext(ctx, qtx, child, now)
+		if err != nil {
+			return err
+		}
+		childParams := updateInstanceParams(child, cols, now)
+		if err := qtx.UpdateInstance(ctx, childParams); err != nil {
+			return err
+		}
+
+		// Bulk-mark all ancestors as failing in a single UPDATE via json_each.
+		if len(child.CallStack) > 0 {
+			idsJSON, err := json.Marshal(child.CallStack)
+			if err != nil {
+				return err
+			}
+			if err := qtx.FailAncestors(ctx, dbgen.FailAncestorsParams{
+				Error:     child.Error,
+				UpdatedAt: now,
+				Ids:       string(idsJSON),
+			}); err != nil {
+				return err
+			}
+		}
+
+		// If this failure settled the last active child of the batch, wake the
+		// waiting parent (mirrors FinishChild) so the engine can claim it and
+		// transition failing → failed. WakeParent picks '' here — the parent is
+		// failing, so it must never enter the collect phase.
+		if child.ParentID != "" {
+			parentWaitState, err := qtx.GetWaitState(ctx, child.ParentID)
+			if err != nil && err != sql.ErrNoRows {
+				return fmt.Errorf("read parent wait_state: %w", err)
+			}
+			if err == nil && model.WaitState(parentWaitState) == model.WaitStateWaiting {
+				active, err := qtx.CountActiveSiblings(ctx, dbgen.CountActiveSiblingsParams{
+					ParentID:    child.ParentID,
+					SpawnTaskID: child.SpawnTaskID,
+				})
+				if err != nil {
+					return fmt.Errorf("count siblings: %w", err)
+				}
+				if active == 0 {
+					if err := qtx.WakeParent(ctx, dbgen.WakeParentParams{
+						ID:        child.ParentID,
+						UpdatedAt: now,
+					}); err != nil {
+						return fmt.Errorf("wake parent: %w", err)
+					}
+				}
+			}
+		}
+
+		return nil
+	})
 }
 
 // subtreeCTE is a `WITH RECURSIVE subtree(id) AS (...)` clause binding the CTE
@@ -217,16 +211,12 @@ func (db *DB) CancelProcess(ctx context.Context, id string) error {
 		return err
 	}
 
-	tx, _, exec, err := db.beginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+	return db.withTx(ctx, func(_ *dbgen.Queries, exec dbgen.DBTX) error {
 
-	// The locked CTE pre-locks the subtree in id order before the UPDATE
-	// (Postgres); on SQLite the ORDER BY is a harmless no-op (single writer, no
-	// FOR UPDATE). One query for both engines — only the lock clause differs.
-	if _, err := exec.ExecContext(ctx, subtreeCTE+`,
+		// The locked CTE pre-locks the subtree in id order before the UPDATE
+		// (Postgres); on SQLite the ORDER BY is a harmless no-op (single writer, no
+		// FOR UPDATE). One query for both engines — only the lock clause differs.
+		if _, err := exec.ExecContext(ctx, subtreeCTE+`,
 		locked AS (
 			SELECT id FROM process_instances
 			WHERE id IN (SELECT id FROM subtree)
@@ -234,11 +224,12 @@ func (db *DB) CancelProcess(ctx context.Context, id string) error {
 		)
 		UPDATE process_instances SET status = 'cancelling', updated_at = ?
 		WHERE id IN (SELECT id FROM locked) AND status = 'running'`,
-		id, nowMillis()); err != nil {
-		return fmt.Errorf("cancel process: %w", err)
-	}
+			id, nowMillis()); err != nil {
+			return fmt.Errorf("cancel process: %w", err)
+		}
 
-	return tx.Commit()
+		return nil
+	})
 }
 
 // requireRoot rejects operations on non-root instances, pointing the caller at
@@ -471,65 +462,62 @@ func (db *DB) SpawnChildrenAndWait(ctx context.Context, parent *model.ProcessIns
 		return nil
 	}
 
-	tx, qtx, raw, err := db.beginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+	return db.withTx(ctx, func(qtx *dbgen.Queries, raw dbgen.DBTX) error {
 
-	// Lock parent and read its current status to propagate to children. FOR UPDATE
-	// is appended only on PostgreSQL; SQLite serialises via its single writer.
-	var currentStatus, currentWaitState string
-	if err := raw.QueryRowContext(ctx,
-		`SELECT status, wait_state FROM process_instances WHERE id = ?`+db.forUpdate(),
-		parent.ID).Scan(&currentStatus, &currentWaitState); err != nil {
-		return fmt.Errorf("lock parent: %w", err)
-	}
-	if currentWaitState != "" {
-		return fmt.Errorf("parent %q is already in wait_state %q", parent.ID, currentWaitState)
-	}
+		// Lock parent and read its current status to propagate to children. FOR UPDATE
+		// is appended only on PostgreSQL; SQLite serialises via its single writer.
+		var currentStatus, currentWaitState string
+		if err := raw.QueryRowContext(ctx,
+			`SELECT status, wait_state FROM process_instances WHERE id = ?`+db.forUpdate(),
+			parent.ID).Scan(&currentStatus, &currentWaitState); err != nil {
+			return fmt.Errorf("lock parent: %w", err)
+		}
+		if currentWaitState != "" {
+			return fmt.Errorf("parent %q is already in wait_state %q", parent.ID, currentWaitState)
+		}
 
-	// Insert children with the parent's current status (propagates cancelling if needed).
-	// Each child gets created_at = now+i so siblings have a strict ordering by definition
-	// position — ClaimInstances (ORDER BY created_at) always processes them in spawn order.
-	now := nowMillis()
-	for i, child := range children {
-		ts := now + int64(i)
-		cols, err := db.persistContext(ctx, qtx, child, ts)
+		// Insert children with the parent's current status (propagates cancelling if needed).
+		// Each child gets created_at = now+i so siblings have a strict ordering by definition
+		// position — ClaimInstances (ORDER BY created_at) always processes them in spawn order.
+		now := nowMillis()
+		for i, child := range children {
+			ts := now + int64(i)
+			cols, err := db.persistContext(ctx, qtx, child, ts)
+			if err != nil {
+				return err
+			}
+			params, err := insertInstanceParams(child, cols, currentStatus, ts, ts)
+			if err != nil {
+				return err
+			}
+			if err := qtx.InsertInstance(ctx, params); err != nil {
+				return fmt.Errorf("insert child: %w", err)
+			}
+		}
+
+		// Suspend parent: keep status, set wait_state='waiting'.
+		parentCols, err := db.persistContext(ctx, qtx, parent, now)
 		if err != nil {
 			return err
 		}
-		params, err := insertInstanceParams(child, cols, currentStatus, ts, ts)
-		if err != nil {
-			return err
+		if err := qtx.UpdateInstance(ctx, dbgen.UpdateInstanceParams{
+			ID:           parent.ID,
+			Task:         parent.Task,
+			OutputsData:  parentCols.OutputsData,
+			OutputData:   parentCols.OutputData,
+			ErrorData:    parentCols.ErrorData,
+			ExternalData: parentCols.ExternalData,
+			EngineState:  parentCols.EngineState,
+			RetryCount:   int64(parent.RetryCount),
+			WakeAt:       sql.NullInt64{},
+			Status:       currentStatus,
+			WaitState:    string(model.WaitStateWaiting),
+			Error:        parent.Error,
+			UpdatedAt:    now,
+		}); err != nil {
+			return fmt.Errorf("suspend parent: %w", err)
 		}
-		if err := qtx.InsertInstance(ctx, params); err != nil {
-			return fmt.Errorf("insert child: %w", err)
-		}
-	}
 
-	// Suspend parent: keep status, set wait_state='waiting'.
-	parentCols, err := db.persistContext(ctx, qtx, parent, now)
-	if err != nil {
-		return err
-	}
-	if err := qtx.UpdateInstance(ctx, dbgen.UpdateInstanceParams{
-		ID:           parent.ID,
-		Task:         parent.Task,
-		OutputsData:  parentCols.OutputsData,
-		OutputData:   parentCols.OutputData,
-		ErrorData:    parentCols.ErrorData,
-		ExternalData: parentCols.ExternalData,
-		EngineState:  parentCols.EngineState,
-		RetryCount:   int64(parent.RetryCount),
-		WakeAt:       sql.NullInt64{},
-		Status:       currentStatus,
-		WaitState:    string(model.WaitStateWaiting),
-		Error:        parent.Error,
-		UpdatedAt:    now,
-	}); err != nil {
-		return fmt.Errorf("suspend parent: %w", err)
-	}
-
-	return tx.Commit()
+		return nil
+	})
 }

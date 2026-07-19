@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -353,6 +354,39 @@ func orient[T any](b built, rows []T, valsOf func(sort string, row T) []any) (it
 		return rows, nil, nil
 	}
 	return rows, valsOf(b.sort, rows[0]), valsOf(b.sort, rows[len(rows)-1])
+}
+
+// rowScanner is the read side of *sql.Rows / *sql.Row. Per-row scan helpers accept
+// it so a single helper works for both the list-page loop and single-row reads.
+type rowScanner = interface{ Scan(dest ...any) error }
+
+// runPage executes a built page query, scans each row via scanRow, restores display
+// order, and returns the page together with its navigation metadata. It centralizes
+// the query → scan-loop → orient → pageInfo tail shared by every list endpoint;
+// callers supply only the per-row scan and the cursor-value extractor.
+func runPage[T any](db *DB, b built, scanRow func(rowScanner) (T, error), cursorVals func(sort string, row T) []any) ([]T, PageInfo, error) {
+	rows, err := db.exec.QueryContext(context.Background(), b.pageSQL, b.pageArgs...)
+	if err != nil {
+		return nil, PageInfo{}, err
+	}
+	defer rows.Close()
+	var out []T
+	for rows.Next() {
+		item, err := scanRow(rows)
+		if err != nil {
+			return nil, PageInfo{}, err
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, PageInfo{}, err
+	}
+	items, first, last := orient(b, out, cursorVals)
+	info, err := db.pageInfo(b, first, last)
+	if err != nil {
+		return nil, PageInfo{}, err
+	}
+	return items, info, nil
 }
 
 // keysetPredicate builds the lexicographic OR-chain that selects rows strictly
