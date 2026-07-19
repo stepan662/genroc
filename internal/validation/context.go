@@ -251,8 +251,11 @@ func computeContextSets(tasks []*model.Task) (required, optional map[string][]st
 	}
 
 	// mustOut[i][j] = task j's output is ALWAYS available when entering task i.
-	// Error edges clear the failing task's own output bit.
+	// Error edges clear the failing task's own output bit. mustIn[i] is the in-set
+	// (available on entry, before task i's own output) captured on the converging pass,
+	// so the projection below reuses it instead of recomputing the same walk.
 	mustOut := make([][]bool, n)
+	mustIn := make([][]bool, n)
 	for i := range mustOut {
 		mustOut[i] = allTrue()
 	}
@@ -277,6 +280,7 @@ func computeContextSets(tasks []*model.Task) (required, optional map[string][]st
 			if len(preds[i]) == 0 {
 				in = allFalse()
 			}
+			mustIn[i] = in
 			out := append([]bool{}, in...)
 			if hasOutput[i] {
 				out[i] = true
@@ -292,7 +296,9 @@ func computeContextSets(tasks []*model.Task) (required, optional map[string][]st
 	}
 
 	// mayOut[i][j] = task j's output is POSSIBLY available when entering task i.
+	// mayIn[i] is captured like mustIn above.
 	mayOut := make([][]bool, n)
+	mayIn := make([][]bool, n)
 	for i := range mayOut {
 		mayOut[i] = allFalse()
 	}
@@ -313,6 +319,7 @@ func computeContextSets(tasks []*model.Task) (required, optional map[string][]st
 					in[j] = in[j] || src[j]
 				}
 			}
+			mayIn[i] = in
 			out := append([]bool{}, in...)
 			if hasOutput[i] {
 				out[i] = true
@@ -380,45 +387,11 @@ func computeContextSets(tasks []*model.Task) (required, optional map[string][]st
 	}
 
 	for i, s := range tasks {
-		mustIn := allTrue()
-		for _, p := range preds[i] {
-			if p.idx == -1 {
-				mustIn = allFalse()
-				break
-			}
-			src := mustOut[p.idx]
-			if p.isErr && hasOutput[p.idx] {
-				src = append([]bool{}, mustOut[p.idx]...)
-				src[p.idx] = false
-			}
-			for j := range mustIn {
-				mustIn[j] = mustIn[j] && src[j]
-			}
-		}
-		if len(preds[i]) == 0 {
-			mustIn = allFalse()
-		}
-
-		mayIn := allFalse()
-		for _, p := range preds[i] {
-			if p.idx == -1 {
-				continue
-			}
-			src := mayOut[p.idx]
-			if p.isErr && hasOutput[p.idx] {
-				src = append([]bool{}, mayOut[p.idx]...)
-				src[p.idx] = false
-			}
-			for j := range mayIn {
-				mayIn[j] = mayIn[j] || src[j]
-			}
-		}
-
 		for j, ss := range tasks {
 			switch {
-			case mustIn[j]:
+			case mustIn[i][j]:
 				required[s.ID] = append(required[s.ID], ss.ID)
-			case mayIn[j]:
+			case mayIn[i][j]:
 				optional[s.ID] = append(optional[s.ID], ss.ID)
 			}
 		}

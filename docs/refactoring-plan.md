@@ -71,20 +71,31 @@ unchanged; `go vet` + `gofmt` clean.
 
 ## Tier 3 — larger / higher-risk (plan deliberately, one at a time)
 
-- ☐ **Reflective param binder + typed action adapters (API)** — GET params are declared
-  twice (struct tags + hand-written `fromHTTP`) and round-tripped through
-  `json.Marshal`→`Unmarshal`. A `bindParams(r, &dst)` binder removes ~8 closures + the
-  round-trips (~60+ lines) and kills the two-places-to-edit drift. New machinery — roll
-  out endpoint-by-endpoint.
-- ☐ **`computeContextSets` dataflow fixpoints** (`validation/context.go`) — 4 pairwise-dual
-  worklist loops + a redundant recomputation; one parameterized `boolFlowFixpoint`
-  removes ~100 lines. Highest single reduction, medium-high risk (subtle must/may
-  start-edge asymmetries) — needs strong coverage.
-- ☐ **Decompose `advance()`** (~200 lines) — split one-time pre-loop setup from the
-  per-task loop (`engine.go`). Med (intricate early-return control flow).
-- ☐ **Unify goto parse/format** — `SwitchCase.Goto` keeps the `$` prefix while
-  `ErrorCase.Goto` strips it; validated 4 different ways. Touches an internal stored
-  form, so every engine reader must move together.
+- ⊘ **Reflective param binder + typed action adapters (API)** — **SKIPPED (user decision).**
+  Assessed as net-neutral-to-negative: it would replace explicit, greppable, type-checked
+  `fromHTTP` closures with tag-driven reflection that must exactly replicate the
+  int/int64/bool/string + empty-vs-absent parse semantics and risks changing the generated
+  `openapi.json`. The JSON round-trip it removes is partly intentional — `Payload` is the
+  shared currency across the HTTP/TCP/UDS transports.
+- ◐ **`computeContextSets` dataflow fixpoints** (`validation/context.go`) — **partial (safe
+  subset done).** The final block recomputed `mustIn`/`mayIn` with logic byte-identical to
+  what the `mustOut`/`mayOut` fixpoints already compute and discard; now captured on the
+  converging pass and reused, dropping the redundant recomputation (~33 lines). The
+  fixpoint loops themselves were **left unparameterized** — the must/may start-edge and
+  empty-preds asymmetries make a shared `boolFlowFixpoint` genuinely risky for the extra
+  savings, not worth it in correctness-critical inference code. Full suite green.
+- ☑ **Decompose `advance()`** — extracted `prepareAdvance()` (def load + config resolve +
+  task-index resolution + lease-takeover/only_once guard + work_started audit) from the
+  per-task loop (`engine.go`); returns `(def, idx, *advanceOutcome)` via the existing
+  `stop()` wrapper. Pure extraction, no behavior change. Full suite green.
+- ⊘ **Unify goto parse/format** — **SKIPPED (net-negative).** `SwitchCase.Goto` keeps the
+  `$` prefix; `ErrorCase.Goto` strips it. Normalizing to one form touches control-flow
+  representation across model + validation + engine purely for consistency, and it would
+  degrade a user-facing error (`goto "$nonexistent" is not a known task` → bare
+  `"nonexistent"`, i.e. not what the user wrote — asserted in definition_test.go:356) or
+  re-add the `$` just for the message. The two forms are actually defensible: on_error has
+  no `next` and the engine wants the bare id for a direct task lookup; switch keeps the raw
+  form the user typed. Risk/degradation outweighs the consistency gain.
 
 ---
 

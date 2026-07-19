@@ -470,21 +470,19 @@ func (e *Engine) runAdvance(ctx context.Context, inst *model.ProcessInstance) er
 // The call runs first; then the switch is evaluated with the call's output
 // available as "self". A matching switch case jumps to the named task; no match
 // advances to the next task in the queue.
-func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advanceOutcome {
-	if inst.Status == model.StatusFailing {
-		return e.settleFailing(inst)
-	}
-	if inst.Status == model.StatusCancelling {
-		return e.cancelInstance(inst)
-	}
-
+// prepareAdvance runs the once-per-tick setup before the task loop: it loads the
+// definition, resolves config from the environment, locates the instance's current
+// task, handles a lease-takeover reclaim (failing an interrupted only_once task), and
+// emits work_started. It returns the loaded definition and the resolved task index, or
+// a non-nil outcome the caller must return immediately (a failure).
+func (e *Engine) prepareAdvance(inst *model.ProcessInstance) (*model.ProcessDefinition, int, *advanceOutcome) {
 	// Load the definition once for the whole tick: it drives config resolution and
 	// is the source of truth for the task list (the instance stores only its current
 	// task id; successors are implied by definition order). An instance whose
 	// definition cannot be loaded cannot run, so fail it with a clear reason.
 	def, err := e.db.GetDefinition(inst.ProcessName, inst.ProcessVersion)
 	if err != nil {
-		return e.failInstance(inst, fmt.Sprintf("load definition: %v", err))
+		return nil, 0, stop(e.failInstance(inst, fmt.Sprintf("load definition: %v", err)))
 	}
 
 	// Resolve config from the OS environment for this tick. Config is never
@@ -494,17 +492,17 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 	if def.ConfigSchema != nil {
 		cfg, err := def.ResolveConfig(os.LookupEnv)
 		if err != nil {
-			return e.failInstance(inst, fmt.Sprintf("config: %v", err))
+			return nil, 0, stop(e.failInstance(inst, fmt.Sprintf("config: %v", err)))
 		}
 		inst.Config = cfg
 	}
 
 	// Resolve the instance's position in the task list. An empty Task means it has
-	// run off the end (nothing left) — the loop below completes it. A non-empty Task
-	// that isn't in the definition is a corrupt/mismatched row: fail it.
+	// run off the end (nothing left) — the loop completes it. A non-empty Task that
+	// isn't in the definition is a corrupt/mismatched row: fail it.
 	idx := taskIndex(def.Tasks, inst.Task)
 	if inst.Task != "" && idx < 0 {
-		return e.failInstance(inst, fmt.Sprintf("current task %q not found in definition", inst.Task))
+		return nil, 0, stop(e.failInstance(inst, fmt.Sprintf("current task %q not found in definition", inst.Task)))
 	}
 
 	// Lease takeover: this instance was reclaimed from an expired lease, so its
@@ -519,8 +517,8 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 		if idx >= 0 {
 			s := def.Tasks[idx]
 			if s.Action != nil && s.OnlyOnce != nil && *s.OnlyOnce {
-				return e.failInstance(inst, fmt.Sprintf(
-					"task %q is only_once and was interrupted by a lease takeover; cannot re-execute", s.ID))
+				return nil, 0, stop(e.failInstance(inst, fmt.Sprintf(
+					"task %q is only_once and was interrupted by a lease takeover; cannot re-execute", s.ID)))
 			}
 		}
 	}
@@ -530,6 +528,22 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 	// tagged with the worker so the unified log shows who is doing what.
 	if idx >= 0 {
 		e.audit(inst, logEvent{Level: model.LogInfo, Event: model.EventWorkStarted, Task: inst.Task, Meta: map[string]any{"worker": e.workerID}})
+	}
+
+	return def, idx, nil
+}
+
+func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advanceOutcome {
+	if inst.Status == model.StatusFailing {
+		return e.settleFailing(inst)
+	}
+	if inst.Status == model.StatusCancelling {
+		return e.cancelInstance(inst)
+	}
+
+	def, idx, done := e.prepareAdvance(inst)
+	if done != nil {
+		return *done
 	}
 
 	// Process tasks in a loop. A call-less task (pure switch/routing) has no
