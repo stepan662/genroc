@@ -1,10 +1,8 @@
 package expressiontest
 
 import (
-	"errors"
+	"strings"
 	"testing"
-
-	"genroc/internal/expression"
 )
 
 // --- Literals ---
@@ -233,10 +231,12 @@ func TestEval_NullCoalesce_ShortCircuit(t *testing.T) {
 
 // --- Unsupported ---
 
+// An unsupported builtin is now rejected by the parser rather than by the
+// evaluator's node switch, so the failure names the function and lists what is
+// available instead of surfacing an opaque node type.
 func TestEval_FunctionCall_Unsupported(t *testing.T) {
 	err := evalErr(t, `len("hello")`, nil)
-	var e expression.ErrUnsupported
-	if !errors.As(err, &e) {
-		t.Errorf("expected ErrUnsupported, got %T: %v", err, err)
+	if !strings.Contains(err.Error(), "unknown function") {
+		t.Errorf("expected an unknown-function error, got %T: %v", err, err)
 	}
 }

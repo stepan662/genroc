@@ -5,12 +5,9 @@ input_schema:
   $ref: "#/$defs/map"
 tasks:
   - id: parallel
-    action:
-      type: external
-      input: "{{input.first}}"
-    output: "{{self.result}}"
+    output: "{{ 10 }}"
     switch: end
-output: "{{ outputs.parallel }}"
+output: "{{ 10 / 3 }}"
 
 $defs:
   input: 

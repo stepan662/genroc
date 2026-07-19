@@ -48,8 +48,9 @@ func inferOutputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proce
 		}
 		ctx := outputMapContext(base, resultType, typed, id, loops).WithDefs(defs)
 		node := s.Output.Raw
+		label := fmt.Sprintf("task %q output", id)
 		solver.Declare(id+"_output", func() (schema.Schema, error) {
-			return inferShape(node, ctx, "output")
+			return inferShape(node, ctx, label)
 		})
 		declared = true
 	}
@@ -64,11 +65,11 @@ func inferOutputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proce
 func shapeRefsSelfResult(node any) (bool, error) {
 	switch n := node.(type) {
 	case string:
-		roots, err := template.RootRefs(n)
+		t, err := template.Get(n)
 		if err != nil {
 			return false, err
 		}
-		return roots.SelfResult, nil
+		return t.RootRefs().SelfResult, nil
 	case map[string]any:
 		for _, v := range n {
 			ref, err := shapeRefsSelfResult(v)

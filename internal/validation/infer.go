@@ -115,6 +115,15 @@ func checkNonNullTemplate(expr string, ctx schema.Schema, label string) error {
 	if inferred.HasNull() {
 		return fmt.Errorf("%s may be null; use ?? to provide a default value", label)
 	}
+	// The engine renders these with fmt.Sprintf("%v", …), so an array or object
+	// would silently become "[a b c]" in a real request URL or HTTP verb. A mixed
+	// template already rejects this inside template.InferType; a single-expression
+	// template returns the raw type, so the same rule has to be applied here.
+	// IsType means "resolves uniformly to", so this only fires when the value
+	// certainly cannot render as text.
+	if inferred.IsType("array") || inferred.IsType("object") {
+		return fmt.Errorf("%s is %s; it must be a string, number or boolean", label, inferred.TypeName())
+	}
 	return nil
 }
 
@@ -122,7 +131,11 @@ func checkNonNullTemplate(expr string, ctx schema.Schema, label string) error {
 // requires it to evaluate to a non-null array — the source of the per-child inputs.
 // It returns the inferred array schema so callers can extract its element type.
 func checkArrayTemplate(expr string, ctx schema.Schema, taskID string) (schema.Schema, error) {
-	inferred, err := template.InferType(expr, ctx)
+	t, err := template.Get(expr)
+	if err != nil {
+		return schema.Schema{}, fmt.Errorf("task %q over: %w", taskID, err)
+	}
+	inferred, err := t.InferType(ctx)
 	if err != nil {
 		return schema.Schema{}, fmt.Errorf("task %q over: %w", taskID, err)
 	}
@@ -170,7 +183,11 @@ func checkHeadersShape(raw any, ctx schema.Schema, taskID string) error {
 func inferShape(node any, ctx schema.Schema, label string) (schema.Schema, error) {
 	switch n := node.(type) {
 	case string:
-		inferred, err := template.InferType(n, ctx)
+		t, err := template.Get(n)
+		if err != nil {
+			return schema.Schema{}, fmt.Errorf("%s: %w", label, err)
+		}
+		inferred, err := t.InferType(ctx)
 		if err != nil {
 			return schema.Schema{}, fmt.Errorf("%s: %w", label, err)
 		}
@@ -182,7 +199,7 @@ func inferShape(node any, ctx schema.Schema, label string) (schema.Schema, error
 		// Taint the leaf if its expression reads a secret. Structural secrets (a
 		// passed-through secret node) are already carried on `out`; this adds the
 		// reference-taint that survives any transformation the expression applies.
-		if sec, serr := template.ReferencesSecret(n, ctx); serr == nil && sec {
+		if t.ReferencesSecret(ctx) {
 			out = out.Taint()
 		}
 		return out, nil

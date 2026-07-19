@@ -42,52 +42,37 @@ const secretContextJSON = `{
 	"required": ["config", "self", "box", "input"]
 }`
 
-func TestReferencesSecret(t *testing.T) {
+// Every one of these reads a secret somewhere — must taint regardless of what
+// the expression then does with it.
+func TestReferencesSecret_Tainted(t *testing.T) {
 	c := ctx(t, secretContextJSON)
+	secretRefAll(t, c, true, []secretCase{
+		{"secret_field", `config.api_key`},
+		{"secret_concatenated", `config.api_key + "x"`},
+		{"secret_appended_to_a_prefix", `"Bearer " + config.api_key`},
+		{"secret_with_a_default", `config.api_key ?? "default"`},
+		{"secret_only_in_a_branch", `config.url == "x" ? config.api_key : "fallback"`},
+		{"secret_as_a_comparison_operand", `config.url == config.api_key`},
+		{"secret_only_in_the_condition", `config.api_key == "" ? "a" : "b"`},
+		{"secret_under_self_result", `self.result.token`},
+		{"field_inside_a_secret_object", `box.inner`},
+		{"the_secret_object_itself", `box`},
+	})
+}
 
-	// Every one of these reads a secret somewhere — must taint regardless of what
-	// the expression then does with it.
-	secret := []string{
-		`config.api_key`,
-		`config.api_key + "x"`,
-		`"Bearer " + config.api_key`,
-		`config.api_key ?? "default"`,
-		`config.url == "x" ? config.api_key : "fallback"`, // secret only in a branch
-		`config.url == config.api_key`,                    // secret as a comparison operand
-		`config.api_key == "" ? "a" : "b"`,                // secret only in the condition
-		`self.result.token`,
-		`box.inner`, // reading from inside a secret object
-		`box`,       // the secret object itself
-	}
-	// None of these touch a secret.
-	notSecret := []string{
-		`config.url`,
-		`input`,
-		`"Bearer " + config.url`,
-		`self.result.name`,
-		`self.result`, // object whose sub-field is secret, but the object node itself is not
-		`config.url == "x"`,
-		`config.url ?? "default"`,
-		`"static text"`,
-		`42`,
-	}
-
-	for _, e := range secret {
-		got, err := c.ReferencesSecret(e)
-		if err != nil {
-			t.Fatalf("ReferencesSecret(%q): %v", e, err)
-		}
-		if !got {
-			t.Errorf("ReferencesSecret(%q) = false, want true (secret leak!)", e)
-		}
-	}
-	for _, e := range notSecret {
-		got, err := c.ReferencesSecret(e)
-		if err != nil {
-			t.Fatalf("ReferencesSecret(%q): %v", e, err)
-		}
-		if got {
-			t.Errorf("ReferencesSecret(%q) = true, want false (over-redaction)", e)
-		}
-	}
+// None of these touch a secret.
+func TestReferencesSecret_NotTainted(t *testing.T) {
+	c := ctx(t, secretContextJSON)
+	secretRefAll(t, c, false, []secretCase{
+		{"plain_field", `config.url`},
+		{"plain_root", `input`},
+		{"plain_field_concatenated", `"Bearer " + config.url`},
+		{"plain_sibling_of_a_secret", `self.result.name`},
+		// object whose sub-field is secret, but the object node itself is not
+		{"object_with_a_secret_sub_field", `self.result`},
+		{"plain_comparison", `config.url == "x"`},
+		{"plain_field_with_a_default", `config.url ?? "default"`},
+		{"string_literal", `"static text"`},
+		{"number_literal", `42`},
+	})
 }

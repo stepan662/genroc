@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"genroc/internal/numeric"
 	"net/http"
 	"strconv"
 
@@ -64,7 +65,7 @@ func (a actionDef) envelope(r *http.Request) (Envelope, error) {
 	}
 	var payload json.RawMessage
 	if r.ContentLength != 0 {
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		if err := numeric.DecodeReader(r.Body, &payload); err != nil {
 			return Envelope{}, err
 		}
 	}
@@ -314,7 +315,7 @@ var registry = func() []actionDef {
 				var p struct {
 					Resolve bool `json:"resolve"`
 				}
-				_ = json.Unmarshal(env.Payload, &p)
+				_ = numeric.Decode(env.Payload, &p)
 				return h.getInstance(env.ID, p.Resolve)
 			},
 		},
@@ -370,7 +371,7 @@ var registry = func() []actionDef {
 				var p struct {
 					Ref string `json:"ref"`
 				}
-				_ = json.Unmarshal(env.Payload, &p)
+				_ = numeric.Decode(env.Payload, &p)
 				return h.getLogObject(env.ID, p.Ref)
 			},
 		},

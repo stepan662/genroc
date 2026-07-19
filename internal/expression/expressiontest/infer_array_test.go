@@ -1,10 +1,8 @@
 package expressiontest
 
 import (
-	"errors"
 	"testing"
 
-	"genroc/internal/expression"
 	"genroc/internal/schema"
 )
 
@@ -76,13 +74,20 @@ func TestInfer_Array_ArithmeticFails(t *testing.T) {
 	inferErr(t, "input.counts + 1", c, "operator requires numeric operands")
 }
 
-// Array literals are outside the supported subset.
-func TestInfer_Array_LiteralUnsupported(t *testing.T) {
-	err := inferErr(t, "[1, 2, 3]", schema.Schema{}, "")
-	var e expression.ErrUnsupported
-	if !errors.As(err, &e) {
-		t.Errorf("expected ErrUnsupported, got %T: %v", err, err)
-	}
+// Array literals are supported: the element type is the join of the members, so
+// a homogeneous literal stays precise and a mixed one widens to a union.
+func TestInfer_Array_Literal(t *testing.T) {
+	assertSchema(t, infer(t, "[1, 2, 3]", schema.Schema{}), `{
+		"type": "array",
+		"items": {"type": "integer"}
+	}`)
+}
+
+// An empty literal records maxItems 0 — it can never hold an element. That is
+// what lets `xs ?? []` keep xs's element type instead of widening to an
+// unconstrained array.
+func TestInfer_Array_EmptyLiteral(t *testing.T) {
+	assertSchema(t, infer(t, "[]", schema.Schema{}), `{"type": "array", "maxItems": 0}`)
 }
 
 // Nullable array: conditional with nil preserves the items schema.
@@ -127,7 +132,7 @@ func TestInfer_Array_Index_NonArrayFails(t *testing.T) {
 // Dynamic index is unsupported.
 func TestInfer_Array_DynamicIndexUnsupported(t *testing.T) {
 	c := ctx(t, arrayCtxJSON)
-	assertUnsupported(t, inferErr(t, "input.tags[input.counts[0]]", c, ""))
+	inferErr(t, "input.tags[input.counts[0]]", c, "literal integer")
 }
 
 // Indexing a nullable array (type-array form: {"type":["array","null"]}) returns

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -223,6 +224,12 @@ func durationFromValue(expr string, v any) (int64, error) {
 		ms = n
 	case float64:
 		ms = int64(n)
+	case json.Number:
+		parsed, perr := n.Int64()
+		if perr != nil {
+			return 0, fmt.Errorf("ms %q is not a whole number of milliseconds", expr)
+		}
+		ms = parsed
 	case string:
 		parsed, perr := strconv.ParseInt(strings.TrimSpace(n), 10, 64)
 		if perr != nil {

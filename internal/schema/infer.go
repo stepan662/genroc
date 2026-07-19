@@ -1,23 +1,27 @@
-// Static type inference for a subset of expr-lang expressions evaluated
-// against a Schema context. The matching runtime evaluator lives in
-// internal/expression (Eval); the two must accept the same subset:
+// Static type inference for the genroc expression language, evaluated against a
+// Schema context. The grammar lives in internal/expression/syntax and the
+// matching runtime evaluator in internal/expression (Eval); the two must accept
+// the same constructs:
 //
 //   - Literals: integer, float, string, bool, null
 //   - Field access via dot notation: input.x, outputs.task.y
+//   - Constant indexing: input.items[0]
+//   - Object and array literals: {a: x, b: y}, [x, y]
+//   - map with a lambda: map(input.items, item => {id: item.id})
 //   - Arithmetic: +, -, *, /, % (numbers; + also concatenates strings)
 //   - Comparison: ==, !=, <, >, <=, >= → boolean
 //   - Logical: &&, || → boolean (short-circuit); ! → boolean
 //   - Conditional: cond ? a : b
 //   - Null coalescing: a ?? b (returns a if non-nil, else b)
-//
-// All other expr-lang constructs return ErrUnsupported.
 package schema
 
 import (
+	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
-	"github.com/expr-lang/expr/ast"
-	"github.com/expr-lang/expr/parser"
+	"genroc/internal/expression/syntax"
 )
 
 // ErrUnsupported is returned when an expression uses a construct outside the
@@ -32,10 +36,12 @@ func (e ErrUnsupported) Error() string {
 // inferCtx is the immutable type-inference context threaded through all infer
 // calls. s is the context schema (carrying the root $defs every navigation
 // resolves against); guards is a shallow-copied overlay mapping dot-paths to
-// schema overrides for type-narrowed branches.
+// schema overrides for type-narrowed branches; vars holds the lambda parameters
+// currently in scope, which shadow context roots of the same name.
 type inferCtx struct {
 	s      Schema
 	guards map[string]Schema
+	vars   map[string]Schema
 }
 
 func (c inferCtx) withGuard(path string, narrowed Schema) inferCtx {
@@ -44,133 +50,417 @@ func (c inferCtx) withGuard(path string, narrowed Schema) inferCtx {
 		guards[k] = v
 	}
 	guards[path] = narrowed
-	return inferCtx{s: c.s, guards: guards}
+	return inferCtx{s: c.s, guards: guards, vars: c.vars}
 }
 
-// Infer statically determines the JSON Schema type of an expr-lang expression against
-// s (e.g. "user.issues[0].value ?? 0"). The result carries s's root $defs, so it stays
+// withParams binds a lambda's parameters to the element type. Guards rooted at a
+// name the lambda shadows are dropped: a narrowing established outside says
+// nothing about the parameter that now owns that name.
+func (c inferCtx) withParams(lam *syntax.LambdaNode, elem Schema) inferCtx {
+	vars := make(map[string]Schema, len(c.vars)+2)
+	for k, v := range c.vars {
+		vars[k] = v
+	}
+	vars[lam.Param] = elem
+	if lam.IndexParam != "" {
+		vars[lam.IndexParam] = Type("integer")
+	}
+	guards := make(map[string]Schema, len(c.guards))
+	for k, v := range c.guards {
+		if root := pathRoot(k); root == lam.Param || root == lam.IndexParam {
+			continue
+		}
+		guards[k] = v
+	}
+	return inferCtx{s: c.s, guards: guards, vars: vars}
+}
+
+// Infer statically determines the JSON Schema type of an expression against s
+// (e.g. "user.issues[0].value ?? 0"). The result carries s's root $defs, so it stays
 // navigable/validatable. For plain sub-path lookup without expression semantics, see At.
 func (s Schema) Infer(expression string) (Schema, error) {
-	tree, err := parser.Parse(expression)
+	node, err := syntax.Parse(expression)
 	if err != nil {
 		return Schema{}, fmt.Errorf("parse %q: %w", expression, err)
 	}
-	return inferNode(tree.Node, inferCtx{s: s})
+	return s.InferNode(node)
+}
+
+// InferNode is Infer over an already-parsed expression. Callers that hold a
+// parsed tree — internal/template — use this to avoid re-parsing the source.
+func (s Schema) InferNode(node syntax.Node) (Schema, error) {
+	return inferNode(node, inferCtx{s: s})
 }
 
 // ReferencesSecret reports whether expression reads any value whose schema — or an
 // enclosing object's along the access path — is secret. Conservative: any path through
 // a secret node taints the whole expression, whatever it then does with the value.
 func (s Schema) ReferencesSecret(expression string) (bool, error) {
-	tree, err := parser.Parse(expression)
+	node, err := syntax.Parse(expression)
 	if err != nil {
 		return false, fmt.Errorf("parse %q: %w", expression, err)
 	}
-	return walkSecretRefs(tree.Node, s), nil
+	return s.ReferencesSecretNode(node), nil
 }
 
-func walkSecretRefs(n ast.Node, s Schema) bool {
+// ReferencesSecretNode is ReferencesSecret over an already-parsed expression.
+func (s Schema) ReferencesSecretNode(node syntax.Node) bool {
+	return walkSecretRefs(node, inferCtx{s: s})
+}
+
+// walkSecretRefs looks for a read of a secret value. A path rooted at a lambda
+// parameter is resolved against that parameter's element type rather than the
+// root context, so a secret that lives on the element — reachable only as
+// item.token, never as a path from the root — still taints.
+func walkSecretRefs(n syntax.Node, ictx inferCtx) bool {
 	if n == nil {
 		return false
 	}
-	if path := nodePath(n); path != "" && s.SecretAt(path) {
-		return true
+	if root, sub, ok := nodeSplit(n); ok {
+		if elem, bound := ictx.vars[root]; bound {
+			if secretAtSub(elem, sub) {
+				return true
+			}
+		} else if ictx.s.SecretAt(nodePath(n)) {
+			return true
+		}
 	}
 	switch x := n.(type) {
-	case *ast.MemberNode:
-		return walkSecretRefs(x.Node, s) || walkSecretRefs(x.Property, s)
-	case *ast.BinaryNode:
-		return walkSecretRefs(x.Left, s) || walkSecretRefs(x.Right, s)
-	case *ast.UnaryNode:
-		return walkSecretRefs(x.Node, s)
-	case *ast.ConditionalNode:
-		return walkSecretRefs(x.Cond, s) || walkSecretRefs(x.Exp1, s) || walkSecretRefs(x.Exp2, s)
+	case *syntax.MemberNode:
+		return walkSecretRefs(x.Base, ictx)
+	case *syntax.IndexNode:
+		return walkSecretRefs(x.Base, ictx)
+	case *syntax.ArrayNode:
+		for _, item := range x.Items {
+			if walkSecretRefs(item, ictx) {
+				return true
+			}
+		}
+	case *syntax.ObjectNode:
+		for _, v := range x.Values {
+			if walkSecretRefs(v, ictx) {
+				return true
+			}
+		}
+	case *syntax.CallNode:
+		return callSecretRefs(x, ictx)
+	case *syntax.BinaryNode:
+		return walkSecretRefs(x.Left, ictx) || walkSecretRefs(x.Right, ictx)
+	case *syntax.UnaryNode:
+		return walkSecretRefs(x.Operand, ictx)
+	case *syntax.CondNode:
+		return walkSecretRefs(x.Cond, ictx) || walkSecretRefs(x.Then, ictx) || walkSecretRefs(x.Else, ictx)
 	}
 	return false
 }
 
-func inferNode(node ast.Node, ictx inferCtx) (Schema, error) {
-	switch n := node.(type) {
-	case *ast.IntegerNode:
-		return Type("integer"), nil
-	case *ast.FloatNode:
-		return Type("number"), nil
-	case *ast.StringNode:
-		return Type("string"), nil
-	case *ast.BoolNode:
-		return Type("boolean"), nil
-	case *ast.NilNode:
-		return Schema{}, fmt.Errorf("nil is not supported; use null")
-	case *ast.IdentifierNode:
-		if n.Value == "null" {
-			return Type("null"), nil
+func callSecretRefs(x *syntax.CallNode, ictx inferCtx) bool {
+	for _, a := range x.Args {
+		lam, isLambda := a.(*syntax.LambdaNode)
+		if !isLambda {
+			if walkSecretRefs(a, ictx) {
+				return true
+			}
+			continue
 		}
-		if s, ok := ictx.guards[n.Value]; ok {
+		elem, err := mapElement(x, ictx)
+		if err != nil {
+			// The expression will not type-check anyway; taint rather than risk a
+			// leak, since over-tainting only costs log verbosity.
+			return true
+		}
+		if walkSecretRefs(lam.Body, ictx.withParams(lam, elem)) {
+			return true
+		}
+	}
+	return false
+}
+
+// secretAtSub checks a path below an already-resolved schema; an empty sub-path
+// means the value itself.
+func secretAtSub(s Schema, sub string) bool {
+	if sub != "" {
+		return s.SecretAt(sub)
+	}
+	// IsSecret reads only the node's own flag. SecretAt derefs, so reading one
+	// field of a secret-marked definition taints while copying the whole element
+	// did not — the wrong way round, since the copy exposes strictly more. Marking
+	// a definition secret is a shape a user's result_schema carries verbatim
+	// through MergeInto, so the ref has to be followed here too.
+	if s.IsSecret() {
+		return true
+	}
+	if s.HasRef() {
+		if target, err := s.Resolve(); err == nil {
+			return target.IsSecret()
+		}
+	}
+	return false
+}
+
+func inferNode(node syntax.Node, ictx inferCtx) (Schema, error) {
+	switch n := node.(type) {
+	case *syntax.IntNode:
+		return Type("integer"), nil
+	case *syntax.FloatNode:
+		return Type("number"), nil
+	case *syntax.StringNode:
+		return Type("string"), nil
+	case *syntax.BoolNode:
+		return Type("boolean"), nil
+	case *syntax.NullNode:
+		return Type("null"), nil
+	case *syntax.IdentNode:
+		if s, ok := ictx.guards[n.Name]; ok {
 			return s, nil
 		}
-		return ictx.s.Property(n.Value)
-	case *ast.MemberNode:
+		if s, ok := ictx.vars[n.Name]; ok {
+			return s, nil
+		}
+		return ictx.s.Property(n.Name)
+	case *syntax.MemberNode:
 		return inferMember(n, ictx)
-	case *ast.BinaryNode:
+	case *syntax.IndexNode:
+		return inferIndexNode(n, ictx)
+	case *syntax.ArrayNode:
+		return inferArray(n, ictx)
+	case *syntax.ObjectNode:
+		return inferObject(n, ictx)
+	case *syntax.CallNode:
+		return inferCall(n, ictx)
+	case *syntax.BinaryNode:
 		return inferBinary(n, ictx)
-	case *ast.UnaryNode:
+	case *syntax.UnaryNode:
 		return inferUnary(n, ictx)
-	case *ast.ConditionalNode:
+	case *syntax.CondNode:
 		return inferConditional(n, ictx)
+	case *syntax.LambdaNode:
+		return Schema{}, ErrUnsupported{Detail: "a lambda is only valid as a map argument"}
 	default:
 		return Schema{}, ErrUnsupported{Detail: fmt.Sprintf("node type %T", node)}
 	}
 }
 
-func inferMember(n *ast.MemberNode, ictx inferCtx) (Schema, error) {
-	if path := nodePath(n); path != "" {
-		if s, ok := ictx.guards[path]; ok {
-			return s, nil
-		}
-	}
-	base, err := inferNode(n.Node, ictx)
+// inferBase resolves the base of a member or index access, applying the shared
+// null-base rule. ok is false when the whole access collapses to null.
+func inferBase(node syntax.Node, ictx inferCtx) (base Schema, ok bool, err error) {
+	base, err = inferNode(node, ictx)
 	if err != nil {
-		return Schema{}, err
+		return Schema{}, false, err
 	}
 	// The base may be a composed result (an operator-built union) that carries no
 	// resolution context of its own — re-anchor it to the context's root $defs so
 	// any $refs inside still resolve.
 	base = base.WithDefs(ictx.s.DefsHandle())
-	// Member access on a known-null base is null, matching runtime optional
-	// chaining (eval returns nil for a nil base). This is also what lets the
-	// recursive-inference seed work: the self-reference's previous value is null
-	// on the first iteration, and `self.previous.x` must resolve to null so a
+	// Access on a known-null base is null, matching runtime optional chaining
+	// (eval returns nil for a nil base). This is also what lets the recursive
+	// inference seed work: the self-reference's previous value is null on the
+	// first iteration, and `self.previous.x` must resolve to null so a
 	// `?? default` base case can fire rather than erroring on a missing property.
-	// A $ref base is resolved for this check — mid-solve it lands on the null
-	// seed estimate, which must behave exactly like a structural null.
+	// A $ref base is resolved for this check — mid-solve it lands on the null seed
+	// estimate, which must behave exactly like a structural null.
 	if base.IsNull() {
-		return Type("null"), nil
+		return Schema{}, false, nil
 	}
 	if base.HasRef() {
 		rb, rerr := base.Resolve()
 		if rerr != nil {
-			// Resolution may have demanded solving the referenced definition;
-			// its failure is the real error and must not be masked.
-			return Schema{}, rerr
+			// Resolution may have demanded solving the referenced definition; its
+			// failure is the real error and must not be masked.
+			return Schema{}, false, rerr
 		}
 		if rb.IsNull() {
-			return Type("null"), nil
+			return Schema{}, false, nil
 		}
 	}
-	switch prop := n.Property.(type) {
-	case *ast.StringNode:
-		return base.Property(prop.Value)
-	case *ast.IntegerNode:
-		return base.Index()
-	default:
-		return Schema{}, ErrUnsupported{Detail: "computed member access [expr]"}
-	}
+	return base, true, nil
 }
 
-func inferBinary(n *ast.BinaryNode, ictx inferCtx) (Schema, error) {
-	op, ok := inferBinaryOps[n.Operator]
+func inferMember(n *syntax.MemberNode, ictx inferCtx) (Schema, error) {
+	if path := nodePath(n); path != "" {
+		if s, ok := ictx.guards[path]; ok {
+			return s, nil
+		}
+	}
+	base, ok, err := inferBase(n.Base, ictx)
+	if err != nil || !ok {
+		return nullOr(err)
+	}
+	return base.Property(n.Name)
+}
+
+func inferIndexNode(n *syntax.IndexNode, ictx inferCtx) (Schema, error) {
+	if path := nodePath(n); path != "" {
+		if s, ok := ictx.guards[path]; ok {
+			return s, nil
+		}
+	}
+	base, ok, err := inferBase(n.Base, ictx)
+	if err != nil || !ok {
+		return nullOr(err)
+	}
+	return base.Index()
+}
+
+func nullOr(err error) (Schema, error) {
+	if err != nil {
+		return Schema{}, err
+	}
+	return Type("null"), nil
+}
+
+// inferArray types an array literal as an array of the joined element types. An
+// empty literal is an itemless array, which is what makes `?? []` usable as a
+// default without asserting an element type.
+func inferArray(n *syntax.ArrayNode, ictx inferCtx) (Schema, error) {
+	if len(n.Items) == 0 {
+		return emptyArray(), nil
+	}
+	var joined Schema
+	for i, item := range n.Items {
+		it, err := inferNode(item, ictx)
+		if err != nil {
+			return Schema{}, err
+		}
+		it = it.WithoutDefs()
+		switch merged, ok := absorbEmptyArray(joined, it); {
+		case i == 0:
+			joined = it
+		case ok:
+			// [xs, []] — the empty arm would overlap, see absorbEmptyArray.
+			joined = merged
+		default:
+			joined = joined.Join(it)
+		}
+	}
+	return Array(joined.Canonicalize()).WithDefs(ictx.s.DefsHandle()), nil
+}
+
+// inferObject types an object literal as a closed object with every key required,
+// mirroring how a Shape's object node is inferred. Keys are emitted in sorted
+// order so the generated schema is deterministic.
+func inferObject(n *syntax.ObjectNode, ictx inferCtx) (Schema, error) {
+	type entry struct {
+		key string
+		sc  Schema
+	}
+	entries := make([]entry, 0, len(n.Keys))
+	for i, k := range n.Keys {
+		v, err := inferNode(n.Values[i], ictx)
+		if err != nil {
+			return Schema{}, fmt.Errorf("key %q: %w", k, err)
+		}
+		entries = append(entries, entry{key: k, sc: v.WithoutDefs()})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].key < entries[j].key })
+	out := Object()
+	for _, e := range entries {
+		out = out.WithProperty(e.key, e.sc, true)
+	}
+	return out.WithDefs(ictx.s.DefsHandle()), nil
+}
+
+// inferCall types a builtin. map's source position is a look-inside construct: it
+// must resolve the operand to read its element type. The lambda body is inferred
+// in a child scope and may itself stay symbolic, so a $ref surviving into the
+// result sits under `items`, which the productivity rule counts as productive.
+func inferCall(n *syntax.CallNode, ictx inferCtx) (Schema, error) {
+	if n.Name != "map" {
+		return Schema{}, ErrUnsupported{Detail: fmt.Sprintf("function %q", n.Name)}
+	}
+	elem, err := mapElement(n, ictx)
+	if err != nil {
+		return Schema{}, err
+	}
+	lam, ok := n.Args[1].(*syntax.LambdaNode)
 	if !ok {
-		return Schema{}, ErrUnsupported{Detail: fmt.Sprintf("operator %q", n.Operator)}
+		return Schema{}, ErrUnsupported{Detail: "map expects a lambda"}
+	}
+	body, err := inferNode(lam.Body, ictx.withParams(lam, elem))
+	if err != nil {
+		return Schema{}, err
+	}
+	return Array(body).WithDefs(ictx.s.DefsHandle()), nil
+}
+
+// mapElement infers a map's source and returns its element type.
+func mapElement(n *syntax.CallNode, ictx inferCtx) (Schema, error) {
+	if len(n.Args) != 2 {
+		return Schema{}, ErrUnsupported{Detail: "map takes 2 arguments"}
+	}
+	src, err := inferNode(n.Args[0], ictx)
+	if err != nil {
+		return Schema{}, err
+	}
+	src = src.WithDefs(ictx.s.DefsHandle())
+	if src.HasNull() {
+		return Schema{}, errors.New("map source may be null; use ?? to provide a default array")
+	}
+	if !src.IsType("array") {
+		return Schema{}, fmt.Errorf("map source must be an array, got %q", src.TypeName())
+	}
+	return elementOf(resolveTolerant(src))
+}
+
+// errNoElement is returned when a source array declares no element type. Binding
+// an unconstrained element would turn a typo in the lambda body into a runtime
+// null instead of a registration error.
+var errNoElement = errors.New("map source array has no element type")
+
+// emptyArray types the `[]` literal. maxItems 0 records that it can never hold an
+// element, which is what lets `xs ?? []` keep xs's element type: the union the
+// coalesce builds has a provably-empty variant that elementOf can discard.
+func emptyArray() Schema {
+	zero := 0
+	return Schema{&node{Type: SchemaType{"array"}, MaxItems: &zero}}
+}
+
+// elementOf reads the element type of an array source. A union source — which is
+// what `xs ?? []` or a ternary produces — contributes the join of its variants'
+// element types; a variant that provably holds no elements is skipped, since it
+// can never supply one.
+//
+// Items, not Index: Index is nullable because a constant index may be out of
+// bounds, whereas map only ever visits real elements.
+func elementOf(src Schema) (Schema, error) {
+	variants := src.Variants()
+	if variants == nil {
+		if isProvablyEmpty(src) || !src.HasItems() {
+			return Schema{}, errNoElement
+		}
+		return src.Items(), nil
+	}
+	var joined Schema
+	found := false
+	for _, v := range variants {
+		v = resolveTolerant(v)
+		if v.IsNull() || isProvablyEmpty(v) {
+			continue
+		}
+		if !v.HasItems() {
+			return Schema{}, errNoElement
+		}
+		if !found {
+			joined, found = v.Items(), true
+			continue
+		}
+		joined = joined.Join(v.Items())
+	}
+	if !found {
+		return Schema{}, errNoElement
+	}
+	return joined.Canonicalize(), nil
+}
+
+func isProvablyEmpty(s Schema) bool {
+	max, ok := s.MaxItems()
+	return ok && max == 0
+}
+
+func inferBinary(n *syntax.BinaryNode, ictx inferCtx) (Schema, error) {
+	op, ok := inferBinaryOps[n.Op]
+	if !ok {
+		return Schema{}, ErrUnsupported{Detail: fmt.Sprintf("operator %q", n.Op)}
 	}
 	left, err := inferNode(n.Left, ictx)
 	if err != nil {
@@ -187,12 +477,12 @@ func inferBinary(n *ast.BinaryNode, ictx inferCtx) (Schema, error) {
 	return op(unwrapSingleVariant(left), unwrapSingleVariant(right))
 }
 
-func inferUnary(n *ast.UnaryNode, ictx inferCtx) (Schema, error) {
-	op, ok := inferUnaryOps[n.Operator]
+func inferUnary(n *syntax.UnaryNode, ictx inferCtx) (Schema, error) {
+	op, ok := inferUnaryOps[n.Op]
 	if !ok {
-		return Schema{}, ErrUnsupported{Detail: fmt.Sprintf("unary operator %q", n.Operator)}
+		return Schema{}, ErrUnsupported{Detail: fmt.Sprintf("unary operator %q", n.Op)}
 	}
-	operand, err := inferNode(n.Node, ictx)
+	operand, err := inferNode(n.Operand, ictx)
 	if err != nil {
 		return Schema{}, err
 	}
@@ -200,16 +490,16 @@ func inferUnary(n *ast.UnaryNode, ictx inferCtx) (Schema, error) {
 	return op(unwrapSingleVariant(operand))
 }
 
-func inferConditional(n *ast.ConditionalNode, ictx inferCtx) (Schema, error) {
+func inferConditional(n *syntax.CondNode, ictx inferCtx) (Schema, error) {
 	if _, err := inferNode(n.Cond, ictx); err != nil {
 		return Schema{}, err
 	}
 	thenCtx, elseCtx := narrowCondition(n.Cond, ictx)
-	t, err := inferNode(n.Exp1, thenCtx)
+	t, err := inferNode(n.Then, thenCtx)
 	if err != nil {
 		return Schema{}, err
 	}
-	f, err := inferNode(n.Exp2, elseCtx)
+	f, err := inferNode(n.Else, elseCtx)
 	if err != nil {
 		return Schema{}, err
 	}
@@ -219,18 +509,21 @@ func inferConditional(n *ast.ConditionalNode, ictx inferCtx) (Schema, error) {
 	if s, ok := nullableSchema(t, f); ok {
 		return s, nil
 	}
+	if merged, ok := absorbEmptyArray(t, f); ok {
+		return merged, nil
+	}
 	return OneOf(t, f), nil
 }
 
 // narrowCondition returns then/else contexts narrowed by an equality condition.
-func narrowCondition(cond ast.Node, ictx inferCtx) (thenCtx, elseCtx inferCtx) {
+func narrowCondition(cond syntax.Node, ictx inferCtx) (thenCtx, elseCtx inferCtx) {
 	thenCtx, elseCtx = ictx, ictx
-	bin, ok := cond.(*ast.BinaryNode)
-	if !ok || (bin.Operator != "==" && bin.Operator != "!=") {
+	bin, ok := cond.(*syntax.BinaryNode)
+	if !ok || (bin.Op != "==" && bin.Op != "!=") {
 		return
 	}
 
-	var subject, litNode ast.Node
+	var subject, litNode syntax.Node
 	switch {
 	case isLiteralNode(bin.Right):
 		subject, litNode = bin.Left, bin.Right
@@ -250,9 +543,9 @@ func narrowCondition(cond ast.Node, ictx inferCtx) (thenCtx, elseCtx inferCtx) {
 		return
 	}
 
-	litIsNull := isNullLiteral(litNode)
+	_, litIsNull := litNode.(*syntax.NullNode)
 
-	if bin.Operator == "==" {
+	if bin.Op == "==" {
 		thenCtx = ictx.withGuard(path, litSchema)
 		if litIsNull {
 			if subjectSchema, err := inferNode(subject, ictx); err == nil {
@@ -270,37 +563,46 @@ func narrowCondition(cond ast.Node, ictx inferCtx) (thenCtx, elseCtx inferCtx) {
 	return
 }
 
-func isLiteralNode(n ast.Node) bool {
-	switch n := n.(type) {
-	case *ast.BoolNode, *ast.StringNode, *ast.IntegerNode, *ast.FloatNode:
+func isLiteralNode(n syntax.Node) bool {
+	switch n.(type) {
+	case *syntax.BoolNode, *syntax.StringNode, *syntax.IntNode, *syntax.FloatNode, *syntax.NullNode:
 		return true
-	case *ast.IdentifierNode:
-		return n.Value == "null"
 	}
 	return false
 }
 
-func isNullLiteral(n ast.Node) bool {
-	id, ok := n.(*ast.IdentifierNode)
-	return ok && id.Value == "null"
-}
-
-func nodePath(node ast.Node) string {
-	if node == nil {
-		return ""
-	}
+// nodePath renders a member/index chain as a dot-path, or "" when the chain is
+// not rooted at a bare identifier.
+func nodePath(node syntax.Node) string {
 	switch n := node.(type) {
-	case *ast.IdentifierNode:
-		return n.Value
-	case *ast.MemberNode:
-		if base := nodePath(n.Node); base != "" {
-			switch prop := n.Property.(type) {
-			case *ast.StringNode:
-				return base + "." + prop.Value
-			case *ast.IntegerNode:
-				return fmt.Sprintf("%s[%d]", base, prop.Value)
-			}
+	case *syntax.IdentNode:
+		return n.Name
+	case *syntax.MemberNode:
+		if base := nodePath(n.Base); base != "" {
+			return base + "." + n.Name
+		}
+	case *syntax.IndexNode:
+		if base := nodePath(n.Base); base != "" {
+			return fmt.Sprintf("%s[%d]", base, n.Index)
 		}
 	}
 	return ""
+}
+
+// nodeSplit splits a chain's path into its root identifier and the remainder,
+// which is "" when the node is the bare identifier.
+func nodeSplit(n syntax.Node) (root, sub string, ok bool) {
+	path := nodePath(n)
+	if path == "" {
+		return "", "", false
+	}
+	root = pathRoot(path)
+	return root, strings.TrimPrefix(path[len(root):], "."), true
+}
+
+func pathRoot(path string) string {
+	if i := strings.IndexAny(path, ".["); i >= 0 {
+		return path[:i]
+	}
+	return path
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"genroc/internal/numeric"
 
 	dbgen "genroc/internal/db/gen"
 	"genroc/internal/model"
@@ -244,7 +245,7 @@ func encodeExternalData(cd map[string]any) (string, error) {
 func withExternalResult(externalData string, result any) (string, error) {
 	ext := map[string]any{}
 	if externalData != "" {
-		if err := json.Unmarshal([]byte(externalData), &ext); err != nil {
+		if err := numeric.Decode([]byte(externalData), &ext); err != nil {
 			return "", fmt.Errorf("decode external_data: %w", err)
 		}
 	}
@@ -260,7 +261,7 @@ func externalToken(externalData string) (string, error) {
 		return "", nil
 	}
 	var ext map[string]any
-	if err := json.Unmarshal([]byte(externalData), &ext); err != nil {
+	if err := numeric.Decode([]byte(externalData), &ext); err != nil {
 		return "", fmt.Errorf("decode external_data: %w", err)
 	}
 	tok, _ := ext["token"].(string)
@@ -525,7 +526,7 @@ func decodeContext(r dbgen.ProcessInstance) (map[string]any, map[string]struct{}
 			return nil
 		}
 		var env model.Envelope
-		if err := json.Unmarshal([]byte(s), &env); err != nil {
+		if err := numeric.Decode([]byte(s), &env); err != nil {
 			return fmt.Errorf("decode %s envelope: %w", key, err)
 		}
 		if env.IsRef() {
@@ -540,13 +541,13 @@ func decodeContext(r dbgen.ProcessInstance) (map[string]any, map[string]struct{}
 	}
 	if r.OutputsData != "" {
 		var oc outputsColumn
-		if err := json.Unmarshal([]byte(r.OutputsData), &oc); err != nil {
+		if err := numeric.Decode([]byte(r.OutputsData), &oc); err != nil {
 			return nil, nil, fmt.Errorf("decode outputs_data: %w", err)
 		}
 		items := make(map[string]any, len(oc.Items))
 		for k, raw := range oc.Items {
 			var env model.Envelope
-			if err := json.Unmarshal(raw, &env); err != nil {
+			if err := numeric.Decode(raw, &env); err != nil {
 				return nil, nil, fmt.Errorf("decode output %s envelope: %w", k, err)
 			}
 			if env.IsRef() {
@@ -564,14 +565,14 @@ func decodeContext(r dbgen.ProcessInstance) (map[string]any, map[string]struct{}
 	}
 	if r.ErrorData != "" {
 		var ev any
-		if err := json.Unmarshal([]byte(r.ErrorData), &ev); err != nil {
+		if err := numeric.Decode([]byte(r.ErrorData), &ev); err != nil {
 			return nil, nil, fmt.Errorf("decode error_data: %w", err)
 		}
 		cd["error"] = ev
 	}
 	if r.ExternalData != "" {
 		var ext map[string]any
-		if err := json.Unmarshal([]byte(r.ExternalData), &ext); err != nil {
+		if err := numeric.Decode([]byte(r.ExternalData), &ext); err != nil {
 			return nil, nil, fmt.Errorf("decode external_data: %w", err)
 		}
 		hasResult, _ := ext["has_result"].(bool)
@@ -587,7 +588,7 @@ func decodeContext(r dbgen.ProcessInstance) (map[string]any, map[string]struct{}
 	}
 	if r.EngineState != "" {
 		var es map[string]any
-		if err := json.Unmarshal([]byte(r.EngineState), &es); err != nil {
+		if err := numeric.Decode([]byte(r.EngineState), &es); err != nil {
 			return nil, nil, fmt.Errorf("decode engine_state: %w", err)
 		}
 		for ctxKey, col := range engineStateKeys {

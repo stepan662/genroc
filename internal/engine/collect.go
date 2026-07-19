@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"genroc/internal/model"
@@ -97,6 +98,12 @@ func spawnIndex(child *model.ProcessInstance) (int, bool) {
 		return int(v), true
 	case float64:
 		return int(v), true
+	case json.Number:
+		// Context data decodes with UseNumber, so a stored index arrives as its
+		// literal. Missing this case is silent: children lose their order rather
+		// than erroring.
+		n, err := v.Int64()
+		return int(n), err == nil
 	}
 	return 0, false
 }

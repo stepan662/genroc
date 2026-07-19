@@ -10,193 +10,50 @@ import (
 	"genroc/internal/validation"
 )
 
+// Inference tests: what Generate derives for a task's input, a task's output and
+// the switch expressions in between. The definitions are assembled by the
+// inferTask / inferDef builders in mapcases_test.go, so each test shows only the
+// fields that matter to it.
+
+// --- task input inference ---------------------------------------------------
+
 func TestGenerate_Input_FirstTaskNoInput(t *testing.T) {
-	out := runGenerate(t, `{
-  "name": "p",
-  "tasks": [
-    {
-      "id": "charge",
-      "action": {
-        "type": "fetch",
-        "url": "http://x",
-        "result_schema": {
-          "type": "object",
-          "properties": {
-            "ok": {
-              "type": "boolean"
-            }
-          }
-        }
-      },
-      "output": "{{ self.result }}"
-    }
-  ]
-}`)
+	out := runGenerate(t, inferDef("",
+		inferTask{id: "charge", result: inferObjSchema(`"ok":{"type":"boolean"}`), output: inferSelfResult},
+	))
 	assertJSON(t, out.Tasks["charge"].Input, `{"type": "object"}`)
 }
 
 func TestGenerate_Input_WithProcessInput(t *testing.T) {
-	out := runGenerate(t, `{
-  "name": "p",
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "order_id": {
-        "type": "integer"
-      }
-    }
-  },
-  "tasks": [
-    {
-      "id": "charge",
-      "action": {
-        "type": "fetch",
-        "url": "http://x",
-        "result_schema": {
-          "type": "object",
-          "properties": {
-            "ok": {
-              "type": "boolean"
-            }
-          }
-        }
-      },
-      "output": "{{ self.result }}"
-    }
-  ]
-}`)
+	out := runGenerate(t, inferDef(inferObjSchema(`"order_id":{"type":"integer"}`),
+		inferTask{id: "charge", result: inferObjSchema(`"ok":{"type":"boolean"}`), output: inferSelfResult},
+	))
 	assertJSON(t, out.Tasks["charge"].Input, `{"type": "object"}`)
 }
 
 func TestGenerate_Input_PrecedingTaskOutput(t *testing.T) {
-	out := runGenerate(t, `{
-  "name": "p",
-  "tasks": [
-    {
-      "id": "charge",
-      "action": {
-        "type": "fetch",
-        "url": "http://x",
-        "result_schema": {
-          "type": "object",
-          "properties": {
-            "charged": {
-              "type": "boolean"
-            }
-          }
-        }
-      },
-      "switch": "next",
-      "output": "{{ self.result }}"
-    },
-    {
-      "id": "notify",
-      "action": {
-        "type": "fetch",
-        "url": "http://x",
-        "result_schema": {
-          "type": "object",
-          "properties": {
-            "sent": {
-              "type": "boolean"
-            }
-          }
-        }
-      },
-      "switch": "end",
-      "output": "{{ self.result }}"
-    }
-  ]
-}`)
+	out := runGenerate(t, inferDef("",
+		inferTask{id: "charge", result: inferObjSchema(`"charged":{"type":"boolean"}`), sw: inferNext, output: inferSelfResult},
+		inferTask{id: "notify", result: inferObjSchema(`"sent":{"type":"boolean"}`), sw: inferEnd, output: inferSelfResult},
+	))
 	assertJSON(t, out.Tasks["charge"].Input, `{"type": "object"}`)
 	assertJSON(t, out.Tasks["notify"].Input, `{"type": "object"}`)
 }
 
 func TestGenerate_Input_TaskWithNoOutputSkippedInContext(t *testing.T) {
-	out := runGenerate(t, `{
-  "name": "p",
-  "tasks": [
-    {
-      "id": "log",
-      "action": {
-        "type": "fetch",
-        "url": "http://x"
-      },
-      "switch": "next"
-    },
-    {
-      "id": "notify",
-      "action": {
-        "type": "fetch",
-        "url": "http://x",
-        "result_schema": {
-          "type": "object",
-          "properties": {
-            "sent": {
-              "type": "boolean"
-            }
-          }
-        }
-      },
-      "switch": "end",
-      "output": "{{ self.result }}"
-    }
-  ]
-}`)
+	out := runGenerate(t, inferDef("",
+		inferTask{id: "log", fetch: true, sw: inferNext},
+		inferTask{id: "notify", result: inferObjSchema(`"sent":{"type":"boolean"}`), sw: inferEnd, output: inferSelfResult},
+	))
 	assertJSON(t, out.Tasks["notify"].Input, `{"type": "object"}`)
 }
 
 func TestGenerate_Input_SwitchOnlyStepSkippedInContext(t *testing.T) {
-	out := runGenerate(t, `{
-  "name": "p",
-  "tasks": [
-    {
-      "id": "charge",
-      "action": {
-        "type": "fetch",
-        "url": "http://x",
-        "result_schema": {
-          "type": "object",
-          "properties": {
-            "charged": {
-              "type": "boolean"
-            }
-          }
-        }
-      },
-      "switch": "next",
-      "output": "{{ self.result }}"
-    },
-    {
-      "id": "route",
-      "switch": [
-        {
-          "case": "outputs.charge.charged == true",
-          "goto": "$ship"
-        },
-        {
-          "goto": "end"
-        }
-      ]
-    },
-    {
-      "id": "ship",
-      "action": {
-        "type": "fetch",
-        "url": "http://x",
-        "result_schema": {
-          "type": "object",
-          "properties": {
-            "tracking": {
-              "type": "string"
-            }
-          }
-        }
-      },
-      "output": "{{ self.result }}"
-    }
-  ]
-}`)
+	out := runGenerate(t, inferDef("",
+		inferTask{id: "charge", result: inferObjSchema(`"charged":{"type":"boolean"}`), sw: inferNext, output: inferSelfResult},
+		inferTask{id: "route", sw: `[{"case":"outputs.charge.charged == true","goto":"$ship"},{"goto":"end"}]`},
+		inferTask{id: "ship", result: inferObjSchema(`"tracking":{"type":"string"}`), output: inferSelfResult},
+	))
 	if _, ok := out.Tasks["route"]; ok {
 		t.Error("switch-only task should not appear in tasks")
 	}
@@ -206,46 +63,15 @@ func TestGenerate_Input_SwitchOnlyStepSkippedInContext(t *testing.T) {
 }
 
 func TestGenerate_Input_Params(t *testing.T) {
-	out := runGenerate(t, `{
-  "name": "p",
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "order_id": {
-        "type": "integer"
-      },
-      "amount": {
-        "type": "number"
-      }
-    },
-    "required": [
-      "order_id",
-      "amount"
-    ]
-  },
-  "tasks": [
-    {
-      "id": "charge",
-      "action": {
-        "type": "fetch",
-        "url": "http://x",
-        "result_schema": {
-          "type": "object",
-          "properties": {
-            "ok": {
-              "type": "boolean"
-            }
-          }
-        },
-        "body": {
-          "id": "{{input.order_id}}",
-          "sum": "{{input.amount}}"
-        }
-      },
-      "output": "{{ self.result }}"
-    }
-  ]
-}`)
+	out := runGenerate(t, inferDef(
+		inferObjSchema(`"order_id":{"type":"integer"},"amount":{"type":"number"}`, "order_id", "amount"),
+		inferTask{
+			id:     "charge",
+			result: inferObjSchema(`"ok":{"type":"boolean"}`),
+			body:   `{"id":"{{input.order_id}}","sum":"{{input.amount}}"}`,
+			output: inferSelfResult,
+		},
+	))
 	assertJSON(t, out.Tasks["charge"].Input, `{"$ref": "#/$defs/charge_input"}`)
 	input := defOf(out, "charge_input")
 	if input.IsZero() {
@@ -259,14 +85,9 @@ func TestGenerate_Input_Params(t *testing.T) {
 }
 
 func TestGenerate_Input_InputOnlyTask(t *testing.T) {
-	out := runGenerate(t, `{
-		"name": "p",
-		"input_schema": { "type": "object", "properties": { "user_id": { "type": "string" } }, "required": ["user_id"] },
-		"tasks": [{
-			"id": "log",
-			"action": {"type": "fetch", "url": "http://x", "body": { "uid": "{{input.user_id}}" }}
-		}]
-	}`)
+	out := runGenerate(t, inferDef(inferObjSchema(`"user_id":{"type":"string"}`, "user_id"),
+		inferTask{id: "log", body: `{"uid":"{{input.user_id}}"}`},
+	))
 	if _, ok := out.Tasks["log"]; !ok {
 		t.Fatal("task with action input but no result_schema should appear in tasks")
 	}
@@ -279,46 +100,15 @@ func TestGenerate_Input_InputOnlyTask(t *testing.T) {
 }
 
 func TestGenerate_Input_OneOfOutputPropertyAccess(t *testing.T) {
-	out := runGenerate(t, `{
-  "name": "p",
-  "tasks": [
-    {
-      "id": "save_order",
-      "action": {
-        "type": "fetch",
-        "url": "http://x",
-        "result_schema": {
-          "oneOf": [
-            {
-              "type": "object",
-              "properties": {
-                "valid": {
-                  "type": "boolean"
-                }
-              }
-            },
-            {
-              "type": "string"
-            }
-          ]
-        }
-      },
-      "switch": "next",
-      "output": "{{ self.result }}"
-    },
-    {
-      "id": "check_fraud",
-      "action": {
-        "type": "fetch",
-        "url": "http://x",
-        "body": {
-          "result": "{{outputs.save_order.valid}}"
-        }
-      },
-      "switch": "end"
-    }
-  ]
-}`)
+	out := runGenerate(t, inferDef("",
+		inferTask{
+			id:     "save_order",
+			result: `{"oneOf":[{"type":"object","properties":{"valid":{"type":"boolean"}}},{"type":"string"}]}`,
+			sw:     inferNext,
+			output: inferSelfResult,
+		},
+		inferTask{id: "check_fraud", body: `{"result":"{{outputs.save_order.valid}}"}`, sw: inferEnd},
+	))
 	assertJSON(t, out.Tasks["check_fraud"].Input, `{"$ref": "#/$defs/check_fraud_input"}`)
 	cfInput := defOf(out, "check_fraud_input")
 	if cfInput.IsZero() {
@@ -327,25 +117,61 @@ func TestGenerate_Input_OneOfOutputPropertyAccess(t *testing.T) {
 	assertJSON(t, cfInput.Properties()["result"], `{"type":["boolean","null"]}`)
 }
 
+func TestGenerate_RecursiveStep_OwnOutputOptionalInParams(t *testing.T) {
+	out := runGenerate(t, inferDef(inferObjSchema(`"tasks":{"type":"array","items":{"type":"string"}}`, "tasks"),
+		inferTask{
+			id:     "loop",
+			result: inferObjSchema(`"finished_index":{"type":"number"},"done":{"type":"boolean"}`, "finished_index", "done"),
+			body:   `{"tasks":"{{input.tasks}}","task_index":"{{outputs.loop.finished_index ? outputs.loop.finished_index : 0}}"}`,
+			sw:     `[{"case":"!self.result.done","goto":"$loop"},{"goto":"end"}]`,
+			output: inferSelfResult,
+		},
+	))
+	assertJSON(t, out.Tasks["loop"].Input, `{"$ref": "#/$defs/loop_input"}`)
+	loopInput := defOf(out, "loop_input")
+	if loopInput.IsZero() || !loopInput.HasProperties() {
+		t.Fatal("loop input should have properties")
+	}
+	if loopInput.Properties()["task_index"].IsZero() {
+		t.Error("task_index input field should be inferred")
+	}
+	if loopInput.Properties()["tasks"].IsZero() {
+		t.Error("tasks input field should be inferred")
+	}
+}
+
+func TestGenerate_SwitchStep_NextStepNotReachableViaFallthrough(t *testing.T) {
+	out := runGenerate(t, inferDef("",
+		inferTask{
+			id:     "decide",
+			result: inferObjSchema(`"ok":{"type":"boolean"}`, "ok"),
+			sw:     `[{"case":"self.result.ok","goto":"$work"},{"goto":"end"}]`,
+			output: inferSelfResult,
+		},
+		inferTask{
+			id:     "work",
+			result: inferObjSchema(`"done":{"type":"boolean"}`),
+			body:   `{"flag":"{{outputs.decide.ok}}"}`,
+			output: inferSelfResult,
+		},
+	))
+	assertJSON(t, out.Tasks["work"].Input, `{"$ref": "#/$defs/work_input"}`)
+	workInput := defOf(out, "work_input")
+	if workInput.IsZero() || !workInput.HasProperties() {
+		t.Fatal("work input should have properties")
+	}
+	assertJSON(t, workInput.Properties()["flag"], `{"type": "boolean"}`)
+}
+
+// --- templates and refs -----------------------------------------------------
+
 func TestGenerate_MixedTemplate_NullableExpressionRejected(t *testing.T) {
 	// error is nullable on finale (reachable via both normal and on_error paths).
 	// Using it in a mixed template would silently produce "null_null" at runtime.
-	err := runGenerateErr(t, `{
-		"name": "p",
-		"tasks": [
-			{
-				"id": "start",
-				"action": {"type": "fetch", "url": "http://x"},
-				"on_error": [{"goto": "$finale"}],
-				"switch": "next"
-			},
-			{
-				"id": "finale",
-				"action": {"type": "fetch", "url": "http://x", "body": {"msg": "{{error.code}}_{{error.message}}"}},
-				"switch": "end"
-			}
-		]
-	}`)
+	err := runGenerateErr(t, inferDef("",
+		inferTask{id: "start", fetch: true, onError: `[{"goto":"$finale"}]`, sw: inferNext},
+		inferTask{id: "finale", body: `{"msg":"{{error.code}}_{{error.message}}"}`, sw: inferEnd},
+	))
 	if err == nil {
 		t.Fatal("expected error for nullable expression in mixed template, got nil")
 	}
@@ -356,32 +182,16 @@ func TestGenerate_MixedTemplate_NullableExpressionRejected(t *testing.T) {
 
 func TestGenerate_MixedTemplate_NonNullableExpressionAccepted(t *testing.T) {
 	// error is required (exclusive error path), so using it in a mixed template is fine.
-	runGenerate(t, `{
-		"name": "p",
-		"tasks": [
-			{
-				"id": "worker",
-				"action": {"type": "fetch", "url": "http://x"},
-				"switch": "end",
-				"on_error": [{"goto": "$handler"}]
-			},
-			{
-				"id": "handler",
-				"action": {"type": "fetch", "url": "http://x", "body": {"msg": "{{error.code}}_{{error.message}}"}},
-				"switch": "end"
-			}
-		]
-	}`)
+	runGenerate(t, inferDef("",
+		inferTask{id: "worker", fetch: true, sw: inferEnd, onError: `[{"goto":"$handler"}]`},
+		inferTask{id: "handler", body: `{"msg":"{{error.code}}_{{error.message}}"}`, sw: inferEnd},
+	))
 }
 
 func TestGenerate_InvalidRef(t *testing.T) {
-	err := runGenerateErr(t, `{
-		"name": "p",
-		"tasks": [{"id":"s1","action":{"type":"fetch","url":"http://x"}}],
-		"input_schema": {
-			"properties": { "x": { "$ref": "#/$defs/Missing" } }
-		}
-	}`)
+	err := runGenerateErr(t, inferDef(`{"properties":{"x":{"$ref":"#/$defs/Missing"}}}`,
+		inferTask{id: "s1", fetch: true},
+	))
 	if err == nil {
 		t.Fatal("expected error for unresolved $ref, got nil")
 	}
@@ -390,76 +200,137 @@ func TestGenerate_InvalidRef(t *testing.T) {
 	}
 }
 
-func TestGenerate_Switch_SelfExpressionTypeChecked(t *testing.T) {
-	out := runGenerate(t, `{
-  "name": "p",
-  "tasks": [
-    {
-      "id": "charge",
-      "action": {
-        "type": "fetch",
-        "url": "http://x",
-        "result_schema": {
-          "type": "object",
-          "properties": {
-            "charged": {
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "charged"
-          ]
-        }
-      },
-      "switch": [
-        {
-          "case": "self.result.charged == true",
-          "goto": "$ship"
-        },
-        {
-          "case": "self.result.charged == false",
-          "goto": "$refund"
-        }
-      ],
-      "output": "{{ self.result }}"
-    },
-    {
-      "id": "ship",
-      "action": {
-        "type": "fetch",
-        "url": "http://x"
-      }
-    },
-    {
-      "id": "refund",
-      "action": {
-        "type": "fetch",
-        "url": "http://x"
-      }
-    }
-  ]
-}`)
-	assertJSON(t, out.Tasks["charge"].Output, `{"$ref": "#/$defs/charge_output"}`)
+// --- self namespace scoping -------------------------------------------------
+
+// self is the task's transient scope. self.result (the raw action result) and,
+// for a looping output task, self.previous are available in both the output map
+// and the switch. self.output (the projection) is available only in the switch,
+// and only when the task defines an output. The next six tests walk those
+// boundaries: crossing one — or projecting a field from an untyped raw result —
+// is an error.
+
+func TestGenerate_Self_OutputInSwitchWithoutProjectionRejected(t *testing.T) {
+	def := inferDef("", inferTask{
+		id:     "s",
+		result: inferObjSchema(`"x":{"type":"boolean"}`, "x"),
+		sw:     `[{"case":"self.output.x","goto":"end"},{"goto":"end"}]`,
+	})
+	if err := runGenerateErr(t, def); err == nil {
+		t.Errorf("self.output in a switch without a projection: expected error, got nil")
+	}
 }
 
-func TestGenerate_SelfReferenceRequiresLoop(t *testing.T) {
-	// A task that references its own output but never loops back to itself has no
-	// prior iteration (it is not its own predecessor), so the self-reference — by
-	// outputs.<id> or by self.previous — must be rejected.
-	for _, expr := range []string{
-		"{{ (outputs.loop.num ?? 0) + 1 }}",
-		"{{ (self.previous.num ?? 0) + 1 }}",
-	} {
-		def := `{
-			"name": "p",
-			"tasks": [
-				{"id":"loop","output":{"num":"` + expr + `"},"switch":[{"goto":"end"}]}
-			]
-		}`
-		if err := runGenerateErr(t, def); err == nil {
-			t.Errorf("expected error for non-looping self-reference %q", expr)
-		}
+func TestGenerate_Self_OutputInOutputMapRejected(t *testing.T) {
+	def := inferDef("", inferTask{
+		id:     "s",
+		result: inferObjSchema(`"x":{"type":"boolean"}`, "x"),
+		output: `{"y":"{{ self.output.x }}"}`,
+		sw:     `[{"goto":"end"}]`,
+	})
+	if err := runGenerateErr(t, def); err == nil {
+		t.Errorf("self.output in an output map: expected error, got nil")
 	}
+}
+
+func TestGenerate_Self_ResultFieldWithoutResultSchemaRejected(t *testing.T) {
+	def := inferDef("", inferTask{
+		id:     "s",
+		fetch:  true,
+		output: `{"id":"{{ self.result.job_id }}"}`,
+		sw:     `[{"goto":"end"}]`,
+	})
+	if err := runGenerateErr(t, def); err == nil {
+		t.Errorf("self.result.field without result_schema: expected error, got nil")
+	}
+}
+
+func TestGenerate_Self_PreviousInNonLoopingSwitchRejected(t *testing.T) {
+	def := inferDef("", inferTask{
+		id:     "s",
+		result: inferObjSchema(`"x":{"type":"boolean"}`, "x"),
+		output: `{"y":"{{ self.result.x }}"}`,
+		sw:     `[{"case":"self.previous.y","goto":"end"},{"goto":"end"}]`,
+	})
+	if err := runGenerateErr(t, def); err == nil {
+		t.Errorf("self.previous in a non-looping switch: expected error, got nil")
+	}
+}
+
+func TestGenerate_Self_ResultInSwitchAccepted(t *testing.T) {
+	def := inferDef("", inferTask{
+		id:     "s",
+		result: inferObjSchema(`"x":{"type":"boolean"}`, "x"),
+		sw:     `[{"case":"self.result.x","goto":"end"},{"goto":"end"}]`,
+	})
+	if err := runGenerateErr(t, def); err != nil {
+		t.Errorf("self.result in a switch: expected no error, got %v", err)
+	}
+}
+
+func TestGenerate_Self_PreviousInLoopingSwitchAccepted(t *testing.T) {
+	def := inferDef("", inferTask{
+		id:     "loop",
+		output: `{"n":"{{ (self.previous.n ?? 0) + 1 }}"}`,
+		sw:     `[{"case":"(self.previous.n ?? 0) < 3","goto":"$loop"},{"goto":"end"}]`,
+	})
+	if err := runGenerateErr(t, def); err != nil {
+		t.Errorf("self.previous in a looping output task's switch: expected no error, got %v", err)
+	}
+}
+
+// --- output cycles ----------------------------------------------------------
+
+// A task that references its own output but never loops back to itself has no
+// prior iteration (it is not its own predecessor), so the self-reference must be
+// rejected — through outputs.<id> here, and through self.previous below.
+func TestGenerate_SelfReferenceViaOutputsRequiresLoop(t *testing.T) {
+	def := inferDef("", inferTask{
+		id:     "loop",
+		output: `{"num":"{{ (outputs.loop.num ?? 0) + 1 }}"}`,
+		sw:     `[{"goto":"end"}]`,
+	})
+	if err := runGenerateErr(t, def); err == nil {
+		t.Errorf("expected error for non-looping self-reference %q", "{{ (outputs.loop.num ?? 0) + 1 }}")
+	}
+}
+
+func TestGenerate_SelfReferenceViaPreviousRequiresLoop(t *testing.T) {
+	def := inferDef("", inferTask{
+		id:     "loop",
+		output: `{"num":"{{ (self.previous.num ?? 0) + 1 }}"}`,
+		sw:     `[{"goto":"end"}]`,
+	})
+	if err := runGenerateErr(t, def); err == nil {
+		t.Errorf("expected error for non-looping self-reference %q", "{{ (self.previous.num ?? 0) + 1 }}")
+	}
+}
+
+func TestGenerate_ForwardCrossStepRefRequiresCycle(t *testing.T) {
+	// a reads outputs.b, but b runs strictly after a and never loops back — b is not
+	// a predecessor of a, so its output is unavailable. The cross-task analogue of
+	// the self-reference-requires-loop rule.
+	def := inferDef("",
+		inferTask{id: "a", output: `{"n":"{{ outputs.b.n }}"}`, sw: inferNext},
+		inferTask{id: "b", output: `{"n":"{{ 1 }}"}`, sw: `[{"goto":"end"}]`},
+	)
+	if err := runGenerateErr(t, def); err == nil {
+		t.Error("expected error: a cannot read outputs.b when b is not its predecessor")
+	}
+}
+
+func TestGenerate_AcyclicOutputChain(t *testing.T) {
+	// A linear chain of output-map tasks (first -> second -> third), each reading the
+	// previous one's output. No cycle, so Tarjan emits singletons in dependency order
+	// and each finalizes (non-null) before the next reads it.
+	const intN = `{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}`
+	out := runGenerate(t, inferDef("",
+		inferTask{id: "first", output: `{"n":"{{ 1 }}"}`, sw: inferNext},
+		inferTask{id: "second", output: `{"n":"{{ outputs.first.n + 1 }}"}`, sw: inferNext},
+		inferTask{id: "third", output: `{"n":"{{ outputs.second.n + 1 }}"}`, sw: `[{"goto":"end"}]`},
+	))
+	assertJSON(t, defOf(out, "first_output"), intN)
+	assertJSON(t, defOf(out, "second_output"), intN)
+	assertJSON(t, defOf(out, "third_output"), intN)
 }
 
 func TestGenerate_CrossStepMutualRecursion(t *testing.T) {
@@ -467,18 +338,31 @@ func TestGenerate_CrossStepMutualRecursion(t *testing.T) {
 	// cross-task (mutual) recursion. The joint SCC fixpoint resolves both: loop's
 	// output is a plain integer; start mirrors loop and is nullable (null before
 	// loop has run on the first pass).
-	out := runGenerate(t, `{
-		"name": "order-pipeline",
-		"input_schema": {"type":"object","properties":{"ttl":{"type":"integer"}},"required":["ttl"]},
-		"tasks": [
-			{"id":"start","output":{"num":"{{ outputs.loop.num }}"},"switch":"next"},
-			{"id":"loop","output":{"num":"{{ (outputs.start.num ?? 0) + 1 }}"},
-			 "switch":[{"case":"self.output.num < input.ttl","goto":"$start"},{"goto":"end"}]}
-		],
-		"output":{"num":"{{ outputs.start.num }}"}
-	}`)
+	out := runGenerate(t, inferDefWithOutput(
+		inferObjSchema(`"ttl":{"type":"integer"}`, "ttl"),
+		`{"num":"{{ outputs.start.num }}"}`,
+		inferTask{id: "start", output: `{"num":"{{ outputs.loop.num }}"}`, sw: inferNext},
+		inferTask{id: "loop", output: `{"num":"{{ (outputs.start.num ?? 0) + 1 }}"}`,
+			sw: `[{"case":"self.output.num < input.ttl","goto":"$start"},{"goto":"end"}]`},
+	))
 	assertJSON(t, defOf(out, "loop_output"), `{"type":"object","properties":{"num":{"type":"integer"}},"required":["num"]}`)
 	assertJSON(t, defOf(out, "start_output"), `{"type":"object","properties":{"num":{"type":["integer","null"]}},"required":["num"]}`)
+}
+
+func TestGenerate_ThreeStepMutualRecursion(t *testing.T) {
+	// A three-node output cycle (a reads c, b reads a, c reads b; closed by a goto
+	// loop a->b->c->a) — exercises the joint SCC fixpoint beyond two members. c is
+	// the base case (?? 0) so resolves to a plain integer; a and b mirror through
+	// the cycle and are nullable (null before the cycle has produced a value).
+	out := runGenerate(t, inferDef(inferObjSchema(`"ttl":{"type":"integer"}`, "ttl"),
+		inferTask{id: "a", output: `{"n":"{{ outputs.c.n }}"}`, sw: inferNext},
+		inferTask{id: "b", output: `{"n":"{{ outputs.a.n }}"}`, sw: inferNext},
+		inferTask{id: "c", output: `{"n":"{{ (outputs.b.n ?? 0) + 1 }}"}`,
+			sw: `[{"case":"self.output.n < input.ttl","goto":"$a"},{"goto":"end"}]`},
+	))
+	assertJSON(t, defOf(out, "c_output"), `{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}`)
+	assertJSON(t, defOf(out, "a_output"), `{"type":"object","properties":{"n":{"type":["integer","null"]}},"required":["n"]}`)
+	assertJSON(t, defOf(out, "b_output"), `{"type":"object","properties":{"n":{"type":["integer","null"]}},"required":["n"]}`)
 }
 
 func TestGenerate_StructuralRecursionKeptAsRecursiveType(t *testing.T) {
@@ -489,32 +373,29 @@ func TestGenerate_StructuralRecursionKeptAsRecursiveType(t *testing.T) {
 	// | <input type>} — recursion through properties, each unrolling consuming
 	// one level of the value. The timeout still guards against regressing into
 	// a non-terminating or exploding inference.
+	def := inferDefWithOutput(
+		`{"type":"object",
+		  "properties":{"ttl":{"type":"integer"},"rec":{"$ref":"#/$defs/recursive"}},
+		  "required":["ttl"],
+		  "$defs":{"recursive":{"type":"object","properties":{"num":{"type":"number"},"rec":{"$ref":"#/$defs/recursive"}}}}}`,
+		`{"num":"{{ outputs.loop }}"}`,
+		inferTask{id: "start", sw: inferNext},
+		inferTask{id: "loop", output: `{"result":"{{ self.previous ?? input }}"}`,
+			sw: `[{"case":"self.output.result != null","goto":"$start"},{"goto":"end"}]`},
+	)
+
 	type result struct {
 		out validation.SchemaFile
 		err error
 	}
 	done := make(chan result, 1)
 	go func() {
-		var def model.ProcessDefinition
-		if err := json.Unmarshal([]byte(`{
-			"name": "p",
-			"input_schema": {
-				"type": "object",
-				"properties": {"ttl": {"type": "integer"}, "rec": {"$ref": "#/$defs/recursive"}},
-				"required": ["ttl"],
-				"$defs": {"recursive": {"type": "object","properties": {"num": {"type": "number"},"rec": {"$ref": "#/$defs/recursive"}}}}
-			},
-			"tasks": [
-				{"id":"start","switch":"next"},
-				{"id":"loop","output":{"result":"{{ self.previous ?? input }}"},
-				 "switch":[{"case":"self.output.result != null","goto":"$start"},{"goto":"end"}]}
-			],
-			"output":{"num":"{{ outputs.loop }}"}
-		}`), &def); err != nil {
+		var parsed model.ProcessDefinition
+		if err := json.Unmarshal([]byte(def), &parsed); err != nil {
 			done <- result{err: err}
 			return
 		}
-		out, err := validation.Generate(&def)
+		out, err := validation.Generate(&parsed)
 		done <- result{out: out, err: err}
 	}()
 	select {
@@ -549,366 +430,64 @@ func TestGenerate_StructuralRecursionKeptAsRecursiveType(t *testing.T) {
 	}
 }
 
-func TestGenerate_SelfNamespaceScoping(t *testing.T) {
-	// self is the task's transient scope. self.result (the raw action result) and,
-	// for a looping output task, self.previous are available in both the output map
-	// and the switch. self.output (the projection) is available only in the switch,
-	// and only when the task defines an output. Crossing these boundaries — or
-	// projecting a field from an untyped raw result — is an error.
-	invalid := []struct {
-		name string
-		def  string
-	}{
-		{"self.output in a switch without a projection", `{"name":"p","tasks":[
-			{"id":"s","action":{"type":"fetch","url":"http://x","result_schema":{"type":"object","properties":{"x":{"type":"boolean"}},"required":["x"]}},
-			 "switch":[{"case":"self.output.x","goto":"end"},{"goto":"end"}]}]}`},
-		{"self.output in an output map", `{"name":"p","tasks":[
-			{"id":"s","action":{"type":"fetch","url":"http://x","result_schema":{"type":"object","properties":{"x":{"type":"boolean"}},"required":["x"]}},
-			 "output":{"y":"{{ self.output.x }}"},"switch":[{"goto":"end"}]}]}`},
-		{"self.result.field without result_schema", `{"name":"p","tasks":[
-			{"id":"s","action":{"type":"fetch","url":"http://x"},"output":{"id":"{{ self.result.job_id }}"},"switch":[{"goto":"end"}]}]}`},
-		{"self.previous in a non-looping switch", `{"name":"p","tasks":[
-			{"id":"s","action":{"type":"fetch","url":"http://x","result_schema":{"type":"object","properties":{"x":{"type":"boolean"}},"required":["x"]}},
-			 "output":{"y":"{{ self.result.x }}"},"switch":[{"case":"self.previous.y","goto":"end"},{"goto":"end"}]}]}`},
-	}
-	for _, c := range invalid {
-		if err := runGenerateErr(t, c.def); err == nil {
-			t.Errorf("%s: expected error, got nil", c.name)
-		}
-	}
+// --- switch expressions -----------------------------------------------------
 
-	valid := []struct {
-		name string
-		def  string
-	}{
-		{"self.result in a switch", `{"name":"p","tasks":[
-			{"id":"s","action":{"type":"fetch","url":"http://x","result_schema":{"type":"object","properties":{"x":{"type":"boolean"}},"required":["x"]}},
-			 "switch":[{"case":"self.result.x","goto":"end"},{"goto":"end"}]}]}`},
-		{"self.previous in a looping output task's switch", `{"name":"p","tasks":[
-			{"id":"loop","output":{"n":"{{ (self.previous.n ?? 0) + 1 }}"},
-			 "switch":[{"case":"(self.previous.n ?? 0) < 3","goto":"$loop"},{"goto":"end"}]}]}`},
-	}
-	for _, c := range valid {
-		if err := runGenerateErr(t, c.def); err != nil {
-			t.Errorf("%s: expected no error, got %v", c.name, err)
-		}
-	}
-}
-
-func TestGenerate_ThreeStepMutualRecursion(t *testing.T) {
-	// A three-node output cycle (a reads c, b reads a, c reads b; closed by a goto
-	// loop a->b->c->a) — exercises the joint SCC fixpoint beyond two members. c is
-	// the base case (?? 0) so resolves to a plain integer; a and b mirror through
-	// the cycle and are nullable (null before the cycle has produced a value).
-	out := runGenerate(t, `{
-		"name": "p",
-		"input_schema": {"type":"object","properties":{"ttl":{"type":"integer"}},"required":["ttl"]},
-		"tasks": [
-			{"id":"a","output":{"n":"{{ outputs.c.n }}"},"switch":"next"},
-			{"id":"b","output":{"n":"{{ outputs.a.n }}"},"switch":"next"},
-			{"id":"c","output":{"n":"{{ (outputs.b.n ?? 0) + 1 }}"},
-			 "switch":[{"case":"self.output.n < input.ttl","goto":"$a"},{"goto":"end"}]}
-		]
-	}`)
-	assertJSON(t, defOf(out, "c_output"), `{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}`)
-	assertJSON(t, defOf(out, "a_output"), `{"type":"object","properties":{"n":{"type":["integer","null"]}},"required":["n"]}`)
-	assertJSON(t, defOf(out, "b_output"), `{"type":"object","properties":{"n":{"type":["integer","null"]}},"required":["n"]}`)
-}
-
-func TestGenerate_ForwardCrossStepRefRequiresCycle(t *testing.T) {
-	// a reads outputs.b, but b runs strictly after a and never loops back — b is not
-	// a predecessor of a, so its output is unavailable. The cross-task analogue of
-	// the self-reference-requires-loop rule.
-	def := `{"name":"p","tasks":[
-		{"id":"a","output":{"n":"{{ outputs.b.n }}"},"switch":"next"},
-		{"id":"b","output":{"n":"{{ 1 }}"},"switch":[{"goto":"end"}]}
-	]}`
-	if err := runGenerateErr(t, def); err == nil {
-		t.Error("expected error: a cannot read outputs.b when b is not its predecessor")
-	}
-}
-
-func TestGenerate_AcyclicOutputChain(t *testing.T) {
-	// A linear chain of output-map tasks (first -> second -> third), each reading the
-	// previous one's output. No cycle, so Tarjan emits singletons in dependency order
-	// and each finalizes (non-null) before the next reads it.
-	out := runGenerate(t, `{
-		"name": "p",
-		"tasks": [
-			{"id":"first","output":{"n":"{{ 1 }}"},"switch":"next"},
-			{"id":"second","output":{"n":"{{ outputs.first.n + 1 }}"},"switch":"next"},
-			{"id":"third","output":{"n":"{{ outputs.second.n + 1 }}"},"switch":[{"goto":"end"}]}
-		]
-	}`)
-	for _, id := range []string{"first_output", "second_output", "third_output"} {
-		assertJSON(t, defOf(out, id), `{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}`)
-	}
+func TestGenerate_Switch_SelfExpressionTypeChecked(t *testing.T) {
+	out := runGenerate(t, inferDef("",
+		inferTask{
+			id:     "charge",
+			result: inferObjSchema(`"charged":{"type":"boolean"}`, "charged"),
+			sw:     `[{"case":"self.result.charged == true","goto":"$ship"},{"case":"self.result.charged == false","goto":"$refund"}]`,
+			output: inferSelfResult,
+		},
+		inferTask{id: "ship", fetch: true},
+		inferTask{id: "refund", fetch: true},
+	))
+	assertJSON(t, out.Tasks["charge"].Output, `{"$ref": "#/$defs/charge_output"}`)
 }
 
 func TestGenerate_Switch_OutputsExpressionTypeChecked(t *testing.T) {
 	// A later task's switch routes on a prior task's output (outputs.<priorTask>),
 	// type-checked against that task's declared output schema.
-	runGenerate(t, `{
-  "name": "p",
-  "tasks": [
-    {
-      "id": "charge",
-      "action": {
-        "type": "fetch",
-        "url": "http://x",
-        "result_schema": {
-          "type": "object",
-          "properties": {
-            "charged": {
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "charged"
-          ]
-        }
-      },
-      "switch": "next",
-      "output": "{{ self.result }}"
-    },
-    {
-      "id": "decide",
-      "switch": [
-        {
-          "case": "outputs.charge.charged == true",
-          "goto": "$notify"
-        },
-        {
-          "goto": "end"
-        }
-      ]
-    },
-    {
-      "id": "notify",
-      "action": {
-        "type": "fetch",
-        "url": "http://x"
-      }
-    }
-  ]
-}`)
-}
-
-func TestGenerate_RecursiveStep_OwnOutputOptionalInParams(t *testing.T) {
-	out := runGenerate(t, `{
-  "name": "p",
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "tasks": {
-        "type": "array",
-        "items": {
-          "type": "string"
-        }
-      }
-    },
-    "required": [
-      "tasks"
-    ]
-  },
-  "tasks": [
-    {
-      "id": "loop",
-      "action": {
-        "type": "fetch",
-        "url": "http://x",
-        "result_schema": {
-          "type": "object",
-          "properties": {
-            "finished_index": {
-              "type": "number"
-            },
-            "done": {
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "finished_index",
-            "done"
-          ]
-        },
-        "body": {
-          "tasks": "{{input.tasks}}",
-          "task_index": "{{outputs.loop.finished_index ? outputs.loop.finished_index : 0}}"
-        }
-      },
-      "switch": [
-        {
-          "case": "!self.result.done",
-          "goto": "$loop"
-        },
-        {
-          "goto": "end"
-        }
-      ],
-      "output": "{{ self.result }}"
-    }
-  ]
-}`)
-	assertJSON(t, out.Tasks["loop"].Input, `{"$ref": "#/$defs/loop_input"}`)
-	loopInput := defOf(out, "loop_input")
-	if loopInput.IsZero() || !loopInput.HasProperties() {
-		t.Fatal("loop input should have properties")
-	}
-	if loopInput.Properties()["task_index"].IsZero() {
-		t.Error("task_index input field should be inferred")
-	}
-	if loopInput.Properties()["tasks"].IsZero() {
-		t.Error("tasks input field should be inferred")
-	}
-}
-
-func TestGenerate_SwitchStep_NextStepNotReachableViaFallthrough(t *testing.T) {
-	out := runGenerate(t, `{
-  "name": "p",
-  "tasks": [
-    {
-      "id": "decide",
-      "action": {
-        "type": "fetch",
-        "url": "http://x",
-        "result_schema": {
-          "type": "object",
-          "properties": {
-            "ok": {
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "ok"
-          ]
-        }
-      },
-      "switch": [
-        {
-          "case": "self.result.ok",
-          "goto": "$work"
-        },
-        {
-          "goto": "end"
-        }
-      ],
-      "output": "{{ self.result }}"
-    },
-    {
-      "id": "work",
-      "action": {
-        "type": "fetch",
-        "url": "http://x",
-        "result_schema": {
-          "type": "object",
-          "properties": {
-            "done": {
-              "type": "boolean"
-            }
-          }
-        },
-        "body": {
-          "flag": "{{outputs.decide.ok}}"
-        }
-      },
-      "output": "{{ self.result }}"
-    }
-  ]
-}`)
-	assertJSON(t, out.Tasks["work"].Input, `{"$ref": "#/$defs/work_input"}`)
-	workInput := defOf(out, "work_input")
-	if workInput.IsZero() || !workInput.HasProperties() {
-		t.Fatal("work input should have properties")
-	}
-	assertJSON(t, workInput.Properties()["flag"], `{"type": "boolean"}`)
+	runGenerate(t, inferDef("",
+		inferTask{
+			id:     "charge",
+			result: inferObjSchema(`"charged":{"type":"boolean"}`, "charged"),
+			sw:     inferNext,
+			output: inferSelfResult,
+		},
+		inferTask{id: "decide", sw: `[{"case":"outputs.charge.charged == true","goto":"$notify"},{"goto":"end"}]`},
+		inferTask{id: "notify", fetch: true},
+	))
 }
 
 func TestGenerate_Switch_OneOfAllBooleanAccepted(t *testing.T) {
-	runGenerate(t, `{
-  "name": "p",
-  "tasks": [
-    {
-      "id": "check",
-      "action": {
-        "type": "fetch",
-        "url": "http://x",
-        "result_schema": {
-          "type": "object",
-          "properties": {
-            "ok": {
-              "oneOf": [
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "boolean"
-                }
-              ]
-            }
-          },
-          "required": [
-            "ok"
-          ]
-        }
-      },
-      "switch": [
-        {
-          "case": "self.result.ok",
-          "goto": "$next"
-        },
-        {
-          "goto": "end"
-        }
-      ],
-      "output": "{{ self.result }}"
-    },
-    {
-      "id": "next",
-      "action": {
-        "type": "fetch",
-        "url": "http://x"
-      }
-    }
-  ]
-}`)
+	runGenerate(t, inferDef("",
+		inferTask{
+			id:     "check",
+			result: inferObjSchema(`"ok":{"oneOf":[{"type":"boolean"},{"type":"boolean"}]}`, "ok"),
+			sw:     `[{"case":"self.result.ok","goto":"$next"},{"goto":"end"}]`,
+			output: inferSelfResult,
+		},
+		inferTask{id: "next", fetch: true},
+	))
 }
 
 func TestGenerate_Switch_OneOfBooleanOptionalFieldRejected(t *testing.T) {
-	err := runGenerateErr(t, `{
-		"name": "p",
-		"input_schema": {
-			"type": "object",
-			"properties": { "go_then": { "oneOf": [{"type": "boolean"}] } }
-		},
-		"tasks": [
-			{
-				"id": "route",
-				"switch": [{"case": "input.go_then", "goto": "$next"}, {"goto": "end"}]
-			},
-			{ "id": "next", "action": {"type": "fetch", "url": "http://x"} }
-		]
-	}`)
+	err := runGenerateErr(t, inferDef(inferObjSchema(`"go_then":{"oneOf":[{"type":"boolean"}]}`),
+		inferTask{id: "route", sw: `[{"case":"input.go_then","goto":"$next"},{"goto":"end"}]`},
+		inferTask{id: "next", fetch: true},
+	))
 	if err == nil {
 		t.Fatal("expected error for nullable oneOf boolean switch expression, got nil")
 	}
 }
 
 func TestGenerate_Switch_NullableBooleanRejected(t *testing.T) {
-	err := runGenerateErr(t, `{
-		"name": "p",
-		"input_schema": {
-			"type": "object",
-			"properties": { "go_then": { "type": "boolean" } }
-		},
-		"tasks": [
-			{
-				"id": "route",
-				"switch": [{"case": "input.go_then", "goto": "$work"}, {"goto": "end"}]
-			},
-			{ "id": "work", "action": {"type": "fetch", "url": "http://x"} }
-		]
-	}`)
+	err := runGenerateErr(t, inferDef(inferObjSchema(`"go_then":{"type":"boolean"}`),
+		inferTask{id: "route", sw: `[{"case":"input.go_then","goto":"$work"},{"goto":"end"}]`},
+		inferTask{id: "work", fetch: true},
+	))
 	if err == nil {
 		t.Fatal("expected error for nullable boolean switch expression, got nil")
 	}
@@ -918,46 +497,15 @@ func TestGenerate_Switch_NullableBooleanRejected(t *testing.T) {
 }
 
 func TestGenerate_Switch_StringExpressionRejectsNonBoolean(t *testing.T) {
-	err := runGenerateErr(t, `{
-  "name": "p",
-  "tasks": [
-    {
-      "id": "check",
-      "action": {
-        "type": "fetch",
-        "url": "http://x",
-        "result_schema": {
-          "type": "object",
-          "properties": {
-            "label": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "label"
-          ]
-        }
-      },
-      "switch": [
-        {
-          "case": "self.result.label",
-          "goto": "$next"
-        },
-        {
-          "goto": "end"
-        }
-      ],
-      "output": "{{ self.result }}"
-    },
-    {
-      "id": "next",
-      "action": {
-        "type": "fetch",
-        "url": "http://x"
-      }
-    }
-  ]
-}`)
+	err := runGenerateErr(t, inferDef("",
+		inferTask{
+			id:     "check",
+			result: inferObjSchema(`"label":{"type":"string"}`, "label"),
+			sw:     `[{"case":"self.result.label","goto":"$next"},{"goto":"end"}]`,
+			output: inferSelfResult,
+		},
+		inferTask{id: "next", fetch: true},
+	))
 	if err == nil {
 		t.Fatal("expected error for non-boolean switch expression, got nil")
 	}

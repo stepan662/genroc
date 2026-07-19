@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"genroc/internal/numeric"
 	"math"
 	"time"
 
@@ -89,7 +90,7 @@ func (db *DB) loadObjectValue(ctx context.Context, instanceID, hash string) (any
 		return nil, fmt.Errorf("load object %s: %w", hash, err)
 	}
 	var v any
-	if err := json.Unmarshal([]byte(content), &v); err != nil {
+	if err := numeric.Decode([]byte(content), &v); err != nil {
 		return nil, fmt.Errorf("decode object %s: %w", hash, err)
 	}
 	return v, nil

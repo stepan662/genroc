@@ -208,6 +208,8 @@ func valToString(v any) string {
 	switch n := v.(type) {
 	case string:
 		return n
+	case json.Number:
+		return n.String()
 	case float64: // JSON numbers; integers print without a decimal point
 		if n == float64(int64(n)) {
 			return strconv.FormatInt(int64(n), 10)

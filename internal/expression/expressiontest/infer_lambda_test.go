@@ -1,0 +1,625 @@
+package expressiontest
+
+import (
+	"testing"
+)
+
+// lambdaCtxJSON is shaped like the context the engine builds for a task —
+// input / outputs.<id> / self.result — so a map source can be drawn from each
+// root the way a real definition does. `rows` items are a `$ref` because a
+// referenced element type is the case most likely to break: `map` reads Items()
+// without expanding the ref, so everything downstream (navigation, secrets,
+// joins) has to keep resolving it against the root $defs.
+//
+// Two deliberate name collisions drive the shadowing tests: the root-level
+// `maybe` and `input.opt` are both nullable (so a `!= null` guard can be
+// established on them) while `row.opt` is an integer, so a guard that wrongly
+// survived into a lambda that shadows the root is visible as a wrong type
+// rather than as a silent pass.
+const lambdaCtxJSON = `{
+	"type": "object",
+	"properties": {
+		"input": {
+			"type": "object",
+			"properties": {
+				"rows":    { "type": "array", "items": { "$ref": "#/$defs/row" } },
+				"tags":    { "type": "array", "items": { "type": "string" } },
+				"counts":  { "type": "array", "items": { "type": "integer" } },
+				"matrix":  { "type": "array", "items": { "type": "array", "items": { "type": "number" } } },
+				"bare":    { "type": "array" },
+				"optRows": { "type": ["array", "null"], "items": { "$ref": "#/$defs/row" } },
+				"label":   { "type": "string" },
+				"flag":    { "type": "boolean" },
+				"cfg":     { "type": "object", "properties": { "n": { "type": "integer" } }, "required": ["n"] },
+				"opt":     { "type": ["string", "null"] }
+			},
+			"required": ["rows", "tags", "counts", "matrix", "bare", "optRows", "label", "flag", "cfg", "opt"]
+		},
+		"outputs": {
+			"type": "object",
+			"properties": {
+				"fetch": {
+					"type": "object",
+					"properties": { "rows": { "type": "array", "items": { "$ref": "#/$defs/row" } } },
+					"required": ["rows"]
+				}
+			},
+			"required": ["fetch"]
+		},
+		"self": {
+			"type": "object",
+			"properties": {
+				"result": {
+					"type": "object",
+					"properties": { "items": { "type": "array", "items": { "type": "string" } } },
+					"required": ["items"]
+				}
+			},
+			"required": ["result"]
+		},
+		"maybe": { "type": ["string", "null"] }
+	},
+	"required": ["input", "outputs", "self", "maybe"],
+	"$defs": {
+		"row": {
+			"type": "object",
+			"properties": {
+				"name":  { "type": "string" },
+				"score": { "type": ["number", "null"] },
+				"n":     { "type": "integer" },
+				"opt":   { "type": "integer" },
+				"token": { "type": "string", "secret": true }
+			},
+			"required": ["name", "score", "n", "opt", "token"]
+		}
+	}
+}`
+
+// ─── Element typing ─────────────────────────────────────────────────────────────
+
+func TestMapLambda_OverArrayOfArrays(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(input.matrix, row => row)`, c), `{
+		"type": "array",
+		"items": {"type": "array", "items": {"type": "number"}}
+	}`)
+}
+
+// The inner map's source is a lambda parameter, not a context path — so
+// mapElement has to infer an operand that only exists in `vars`.
+func TestMapLambda_NestedMapOverInnerArray(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(input.matrix, row => map(row, n => n * 2))`, c), `{
+		"type": "array",
+		"items": {"type": "array", "items": {"type": "number"}}
+	}`)
+}
+
+// Indexing the parameter inside the body still carries out-of-bounds
+// nullability — map's non-nullable-element rule applies to the parameter, not to
+// everything reached from it.
+func TestMapLambda_IndexIntoParameterIsNullable(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(input.matrix, row => row[0])`, c), `{
+		"type": "array",
+		"items": {"type": ["number", "null"]}
+	}`)
+}
+
+// A map result is an ordinary array: indexing it is nullable.
+func TestMapLambda_ResultIndexIsNullable(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(input.tags, t => t)[0]`, c), `{"type":["string","null"]}`)
+}
+
+// ...and a field read off that index inherits the nullability.
+func TestMapLambda_ResultIndexFieldIsNullable(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(input.rows, r => {v: r.n})[0].v`, c), `{"type":["integer","null"]}`)
+}
+
+// Member access straight on a map result must fail — arrays have no properties,
+// and silently yielding null here would hide a typo like `.length`.
+func TestMapLambda_ResultMemberAccessFails(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	inferErr(t, `map(input.tags, t => t).length`, c, "cannot access .length: schema has no properties")
+}
+
+// A map result is a legal map source: it declares items, so elementOf can read it.
+func TestMapLambda_ResultAsSource(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(map(input.rows, r => r.n), n => n + 1)`, c), `{
+		"type": "array",
+		"items": {"type": "integer"}
+	}`)
+}
+
+func TestMapLambda_SourceFromOutputs(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(outputs.fetch.rows, r => {id: r.name, next: r.n + 1})`, c), `{
+		"type": "array",
+		"items": {
+			"type": "object",
+			"properties": {
+				"id":   {"type": "string"},
+				"next": {"type": "integer"}
+			},
+			"required": ["id", "next"]
+		}
+	}`)
+}
+
+func TestMapLambda_SourceFromSelfResult(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(self.result.items, s => s + "!")`, c), `{
+		"type": "array",
+		"items": {"type": "string"}
+	}`)
+}
+
+// ─── $ref elements and $ref sources ─────────────────────────────────────────────
+
+// The element type is read through the ref, so a field of the referenced
+// definition types exactly as if the items had been declared inline.
+func TestMapLambda_RefItemsElementField(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(input.rows, r => r.name)`, c), `{
+		"type": "array",
+		"items": {"type": "string"}
+	}`)
+}
+
+// Passing the element through unchanged must keep the `$ref` symbolic rather
+// than inlining the definition — that is what keeps a recursive output type
+// finite, and `items` is the position the productivity rule counts.
+func TestMapLambda_RefElementStaysSymbolic(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(input.rows, r => r)`, c), `{
+		"type": "array",
+		"items": {"$ref": "#/$defs/row"}
+	}`)
+}
+
+// A map result must stay navigable: the `$ref` it carries under `items` is only
+// useful if the array still holds the root $defs handle. Indexing then reading a
+// field of the referenced definition is the shortest path that proves it — drop
+// the defs anywhere in Array(...).WithDefs / inferBase and this fails to resolve.
+// [0] is nullable (the index may be out of bounds) even though the mapped
+// element itself is not.
+func TestMapLambda_RefElementIndexResolvesIntegerField(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(input.rows, r => r)[0].n`, c), `{"type":["integer","null"]}`)
+}
+
+// The same through a string-typed field of the referenced definition.
+func TestMapLambda_RefElementIndexResolvesStringField(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(input.rows, r => r)[0].name`, c), `{"type":["string","null"]}`)
+}
+
+// refSourceCtxJSON puts the array types themselves behind `$ref`s, which is what
+// a hoisted result_schema looks like after MergeInto.
+const refSourceCtxJSON = `{
+	"type": "object",
+	"properties": {
+		"input": {
+			"type": "object",
+			"properties": {
+				"refRows":  { "$ref": "#/$defs/rowList" },
+				"optList":  { "$ref": "#/$defs/optList" },
+				"bareList": { "$ref": "#/$defs/bareList" }
+			},
+			"required": ["refRows", "optList", "bareList"]
+		}
+	},
+	"required": ["input"],
+	"$defs": {
+		"rowList":  { "type": "array", "items": { "type": "object", "properties": {"n": {"type": "integer"}}, "required": ["n"] } },
+		"optList":  { "type": ["array", "null"], "items": { "type": "string" } },
+		"bareList": { "type": "array" }
+	}
+}`
+
+// The source itself may be a `$ref` to an array definition — map's source
+// position is look-inside, so it must resolve the reference before reading
+// `items` rather than rejecting a schema whose type lives behind a ref.
+func TestMapLambda_SourceBehindRef(t *testing.T) {
+	c := ctx(t, refSourceCtxJSON)
+	assertSchema(t, infer(t, `map(input.refRows, r => r.n)`, c), `{
+		"type": "array",
+		"items": {"type": "integer"}
+	}`)
+}
+
+// Nullability declared inside the referenced definition is caught too — the
+// wrapper at the use site says nothing about it.
+func TestMapLambda_SourceBehindRefNullableRejected(t *testing.T) {
+	c := ctx(t, refSourceCtxJSON)
+	inferErr(t, `map(input.optList, s => s)`, c, "may be null")
+}
+
+// ...and `?? []` is the fix, exactly as for a nullable array declared inline.
+func TestMapLambda_SourceBehindRefNullableCoalesced(t *testing.T) {
+	c := ctx(t, refSourceCtxJSON)
+	assertSchema(t, infer(t, `map(input.optList ?? [], s => s)`, c), `{
+		"type": "array",
+		"items": {"type": "string"}
+	}`)
+}
+
+// ...as is an itemless array behind a ref.
+func TestMapLambda_SourceBehindRefItemlessRejected(t *testing.T) {
+	c := ctx(t, refSourceCtxJSON)
+	inferErr(t, `map(input.bareList, x => x)`, c, "no element type")
+}
+
+// ─── Nesting and capture ────────────────────────────────────────────────────────
+
+// Three levels deep with capture from two levels out: each parameter must
+// resolve to its own element type, which is exactly what expr-lang's single `#`
+// pointer could not express.
+func TestMapLambda_ThreeDeepCapture(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	expr := `map(input.rows, r => map(input.tags, t => map(input.counts, c => {c: c, name: r.name, tag: t})))`
+	assertSchema(t, infer(t, expr, c), `{
+		"type": "array",
+		"items": {
+			"type": "array",
+			"items": {
+				"type": "array",
+				"items": {
+					"type": "object",
+					"properties": {
+						"c":    {"type": "integer"},
+						"name": {"type": "string"},
+						"tag":  {"type": "string"}
+					},
+					"required": ["c", "name", "tag"]
+				}
+			}
+		}
+	}`)
+}
+
+// ─── Shadowing ──────────────────────────────────────────────────────────────────
+
+// Shadowing holds for every context root, not just `input`: the parameter wins
+// even when it is named after the roots the engine always injects.
+func TestMapLambda_ParamShadowsOutputsRoot(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(input.rows, outputs => outputs.n)`, c), `{
+		"type": "array",
+		"items": {"type": "integer"}
+	}`)
+}
+
+// The same for `self`.
+func TestMapLambda_ParamShadowsSelfRoot(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(input.rows, self => self.name)`, c), `{
+		"type": "array",
+		"items": {"type": "string"}
+	}`)
+}
+
+// Both parameters shadow, including the index parameter.
+func TestMapLambda_IndexParamShadowsRootsToo(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(input.counts, (input, outputs) => input + outputs)`, c), `{
+		"type": "array",
+		"items": {"type": "integer"}
+	}`)
+}
+
+// The inner parameter wins over an outer one of the same name. If it did not,
+// `x + 1` would be string arithmetic and error out.
+func TestMapLambda_InnerParamShadowsOuterParam(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(input.tags, x => map(input.counts, x => x + 1))`, c), `{
+		"type": "array",
+		"items": {"type": "array", "items": {"type": "integer"}}
+	}`)
+}
+
+// ...and the shadow is scoped to the inner body: the outer binding is intact
+// alongside it, since withParams copies rather than mutates.
+func TestMapLambda_OuterParamSurvivesInnerShadow(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(input.tags, x => {inner: map(input.counts, x => x + 1), outer: x})`, c), `{
+		"type": "array",
+		"items": {
+			"type": "object",
+			"properties": {
+				"inner": {"type": "array", "items": {"type": "integer"}},
+				"outer": {"type": "string"}
+			},
+			"required": ["inner", "outer"]
+		}
+	}`)
+}
+
+// ─── Guard dropping in withParams ───────────────────────────────────────────────
+
+// A narrowing guard established outside a lambda says nothing about a parameter
+// that takes over that name. Here the guard on the root `maybe` narrows it to
+// string; the lambda rebinds `maybe` to a row. If the stale guard leaked,
+// `maybe.n` would be a property read on a string and the whole expression would
+// fail — so the assertion is that both branches agree on array<integer>.
+func TestMapLambda_ShadowedRootGuardDropped(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	expr := `maybe != null ? map(input.rows, maybe => maybe.n) : map(input.rows, r => r.n)`
+	assertSchema(t, infer(t, expr, c), `{
+		"type": "array",
+		"items": {"type": "integer"}
+	}`)
+}
+
+// The same rule for a guard on a *sub-path* of a shadowed root: the guard key is
+// "input.opt" (narrowed to string), while the parameter named `input` makes
+// `input.opt` mean the row's integer field. Guards are consulted before vars, so
+// a guard that was not dropped would silently win and type the result as
+// array<string>, diverging from the else branch.
+func TestMapLambda_ShadowedRootSubPathGuardDropped(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	expr := `input.opt != null ? map(input.rows, input => input.opt) : map(input.rows, r => r.opt)`
+	assertSchema(t, infer(t, expr, c), `{
+		"type": "array",
+		"items": {"type": "integer"}
+	}`)
+}
+
+// The index parameter shadows too, and withParams drops guards rooted at its
+// name on the same grounds. A leaked guard would make `maybe` a string here and
+// the arithmetic would be rejected.
+func TestMapLambda_ShadowedGuardDroppedByIndexParam(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	expr := `maybe != null ? map(input.tags, (t, maybe) => maybe + 1) : map(input.counts, n => n)`
+	assertSchema(t, infer(t, expr, c), `{
+		"type": "array",
+		"items": {"type": "integer"}
+	}`)
+}
+
+// A guard rooted at a lambda parameter is dropped by a nested lambda that reuses
+// the name: the inner `r` is a fresh element, so its `score` is nullable again.
+// Both branches must therefore agree on array<number|null>.
+func TestMapLambda_ParamGuardDroppedByNestedShadow(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	expr := `map(input.rows, r => r.score != null ? map(input.rows, r => r.score) : map(input.rows, q => q.score))`
+	assertSchema(t, infer(t, expr, c), `{
+		"type": "array",
+		"items": {"type": "array", "items": {"type": ["number", "null"]}}
+	}`)
+}
+
+// ─── Null narrowing inside a lambda body ────────────────────────────────────────
+
+// Narrowing works on a path rooted at a lambda parameter, so the guarded branch
+// is not nullable. Without it every optional element field would need `??` even
+// after an explicit null check.
+func TestMapLambda_NullNarrowingOnParamPath(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(input.rows, r => r.score != null ? r.score : 0)`, c), `{
+		"type": "array",
+		"items": {"oneOf": [{"type": "number"}, {"type": "integer"}]}
+	}`)
+}
+
+// `??` on an element field is the other half: the result must be a plain number,
+// usable in arithmetic without a further check.
+func TestMapLambda_CoalesceOnParamPath(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(input.rows, r => r.score ?? 0)`, c), `{
+		"type": "array",
+		"items": {"type": "number"}
+	}`)
+}
+
+// And the narrowed value is genuinely non-nullable: arithmetic on it would be
+// rejected outright if any null survived.
+func TestMapLambda_CoalescedParamPathIsUsableInArithmetic(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(input.rows, r => (r.score ?? 0) + r.n)`, c), `{
+		"type": "array",
+		"items": {"type": "number"}
+	}`)
+}
+
+// ─── Union sources ──────────────────────────────────────────────────────────────
+
+// `?? [literal]` gives a union of two *non-empty* arrays, so neither variant is
+// discarded and the element type is their join. The shared field types the same
+// on both sides, so the body stays precise.
+func TestMapLambda_UnionSourceCoalesceWithNonEmptyDefault(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(input.optRows ?? [{name: "d"}], x => x.name)`, c), `{
+		"type": "array",
+		"items": {"type": "string"}
+	}`)
+}
+
+// A ternary over two arrays with different element types: the element is the
+// join of both, not the first one seen.
+func TestMapLambda_UnionSourceTernaryJoinsElements(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSchema(t, infer(t, `map(input.flag ? input.tags : input.counts, x => x)`, c), `{
+		"type": "array",
+		"items": {"type": ["integer", "string"]}
+	}`)
+}
+
+// One itemless variant poisons the whole union: it can supply an element (unlike
+// a provably-empty `[]`) and that element is unconstrained, so binding it would
+// turn a typo in the body into a runtime null.
+func TestMapLambda_UnionSourceItemlessVariantFails(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	inferErr(t, `map(input.flag ? input.tags : input.bare, x => x)`, c, "no element type")
+}
+
+// ─── Error messages ─────────────────────────────────────────────────────────────
+//
+// Each message is asserted because these are registration-time errors a
+// definition author reads; a generic "invalid expression" would not tell them
+// which side of the lambda is wrong.
+
+// A typo in the body must be caught against the element type, not deferred to a
+// runtime null.
+func TestMapLambda_ErrBodyFieldTypo(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	inferErr(t, `map(input.rows, r => r.nope)`, c, `field "nope" not found in schema`)
+}
+
+func TestMapLambda_ErrBodyOperandType(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	inferErr(t, `map(input.rows, r => r.name * 2)`, c, "operator requires numeric operands")
+}
+
+// Non-array sources name the type they got.
+func TestMapLambda_ErrNonArraySourceNamesType(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	for _, tc := range []struct{ name, expr, want string }{
+		{"string", `map(input.label, x => x)`, `map source must be an array, got "string"`},
+		{"object", `map(input.cfg, x => x)`, `map source must be an array, got "object"`},
+		{"boolean", `map(input.flag, x => x)`, `map source must be an array, got "boolean"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inferErr(t, tc.expr, c, tc.want)
+		})
+	}
+}
+
+func TestMapLambda_ErrItemlessArraySource(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	inferErr(t, `map(input.bare, x => x)`, c, "map source array has no element type")
+}
+
+// The nullable-source rule survives being nested in a literal, and the error is
+// attributed to the key that carries it.
+func TestMapLambda_ErrNullableSourceInObjectLiteralNamesKey(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	inferErr(t, `{a: map(input.optRows, x => x.name)}`, c, `key "a": map source may be null`)
+}
+
+func TestMapLambda_ErrNullableSourceInArrayLiteral(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	inferErr(t, `[map(input.optRows, x => x.name)]`, c, "map source may be null")
+}
+
+// A lambda parameter is not magically an array: an inner map over a scalar
+// parameter reports the parameter's real type.
+func TestMapLambda_ErrScalarParamAsInnerSource(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	inferErr(t, `map(input.tags, t => map(t, u => u))`, c, `map source must be an array, got "string"`)
+}
+
+// The failure of a nested map propagates out of the outer body rather than
+// collapsing to an untyped array.
+func TestMapLambda_ErrNestedMapFailurePropagates(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	inferErr(t, `map(input.rows, r => map(input.optRows, x => x.name))`, c, "map source may be null")
+}
+
+// ─── Determinism ────────────────────────────────────────────────────────────────
+
+// Inference must be a pure function of the expression and the context: a result
+// that depends on Go map iteration order would make generated schemas churn
+// between runs and break the fixpoint's equality test. Joins and object literals
+// are the constructs that build maps, so they are what this exercises.
+func TestMapLambda_Deterministic(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	for _, tc := range []struct{ name, expr string }{
+		{"coalesced_union_source", `map(input.optRows ?? [{name: "d"}], x => x)`},
+		{"ternary_union_source", `map(input.flag ? input.tags : input.counts, x => {a: x})`},
+		{"multi_key_object_body", `map(input.rows, r => {a: r.name, b: r.score ?? 0, c: r.n + 1})`},
+		{"nested_lambda_body", `map(input.rows, r => map(input.tags, t => {r: r, t: t}))`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertDeterministic(t, tc.expr, c)
+		})
+	}
+}
+
+// ─── Secret taint ───────────────────────────────────────────────────────────────
+
+// A secret living on the element type has no path from the root, so the taint
+// walk has to follow the parameter binding through *every* enclosing lambda —
+// the outer map's scope must not reset it.
+func TestMapLambda_SecretThroughNestedLambda(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSecretCase(t, c, `map(input.tags, t => map(input.rows, r => {t: t, k: r.token}))`, true)
+}
+
+// The same shape without the secret field must not taint.
+func TestMapLambda_NonSecretThroughNestedLambda(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSecretCase(t, c, `map(input.tags, t => map(input.rows, r => {t: t, k: r.name}))`, false)
+}
+
+// Inference of the source fails here, so the walk cannot know what the parameter
+// holds; it taints rather than risk a leak, since over-tainting only costs log
+// verbosity.
+func TestMapLambda_UninferableSourceTaintsConservatively(t *testing.T) {
+	c := ctx(t, lambdaCtxJSON)
+	assertSecretCase(t, c, `map(input.bare, x => x.anything)`, true)
+}
+
+// secretDefCtxJSON marks the *definition* secret rather than the reference to it.
+// nodeOrTargetSecret documents that both sides must be consulted ("a taint on a
+// $ref node marks the pointer, not the shared target"), so a secret definition is
+// a supported way to say "every element of this array is secret" — a user's
+// result_schema keeps that shape verbatim through MergeInto.
+const secretDefCtxJSON = `{
+	"type": "object",
+	"properties": {
+		"input": {
+			"type": "object",
+			"properties": {
+				"creds": { "type": "array", "items": { "$ref": "#/$defs/cred" } }
+			},
+			"required": ["creds"]
+		}
+	},
+	"required": ["input"],
+	"$defs": {
+		"cred": {
+			"type": "object",
+			"secret": true,
+			"properties": { "user": { "type": "string" }, "pass": { "type": "string" } },
+			"required": ["user", "pass"]
+		}
+	}
+}`
+
+// Reading a single field of an element whose items are a $ref to a secret
+// definition taints: secretAtSub takes the non-empty-path branch, which follows
+// the $ref.
+func TestMapLambda_SecretRefDefinitionFieldRead(t *testing.T) {
+	c := ctx(t, secretDefCtxJSON)
+	assertSecretCase(t, c, `map(input.creds, c => c.pass)`, true)
+}
+
+// Copying the WHOLE element out of that array must taint too — it exposes
+// strictly more than reading one field.
+//
+// Originally recorded as FAILING — a suspected real bug in
+// walkSecretRefs/secretAtSub, left failing on purpose. secretAtSub splits on
+// whether the path below the parameter is empty:
+//
+//	sub == "" -> s.IsSecret()   // isSecret(), does NOT follow a $ref
+//	sub != "" -> s.SecretAt(sub) // pathHitsSecret(), DOES follow a $ref
+//
+// So copying a whole element did not taint while reading any single field of
+// that same element did, and `{creds: map(input.creds, c => c)}` reached logs
+// unredacted. The assertion passes as of this restructure — the expectation is
+// unchanged, only the case names are.
+func TestMapLambda_SecretRefDefinitionWholeElement(t *testing.T) {
+	c := ctx(t, secretDefCtxJSON)
+	assertSecretCase(t, c, `map(input.creds, c => c)`, true)
+}
+
+// ...and the same whole-element copy nested in an object literal, which is the
+// shape that actually reaches the logs.
+func TestMapLambda_SecretRefDefinitionWholeElementInLiteral(t *testing.T) {
+	c := ctx(t, secretDefCtxJSON)
+	assertSecretCase(t, c, `{creds: map(input.creds, c => c)}`, true)
+}

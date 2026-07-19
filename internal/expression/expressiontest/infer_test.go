@@ -259,13 +259,14 @@ func TestInfer_NullCoalesce_DifferentTypes(t *testing.T) {
 
 // --- Unsupported constructs ---
 
+// Unsupported constructs are now rejected by the parser, so these assert on the
+// message rather than on ErrUnsupported: the rejection happens earlier and names
+// what is wrong instead of reporting an opaque node type.
 func TestInfer_FunctionCall_Unsupported(t *testing.T) {
-	err := inferErr(t, `len("hello")`, schema.Schema{}, "")
-	assertUnsupported(t, err)
+	inferErr(t, `len("hello")`, schema.Schema{}, "unknown function")
 }
 
 func TestInfer_InOperator_Unsupported(t *testing.T) {
 	c := ctx(t, richContextJSON)
-	err := inferErr(t, "1 in [1, 2, 3]", c, "")
-	assertUnsupported(t, err)
+	inferErr(t, "1 in [1, 2, 3]", c, "unexpected")
 }

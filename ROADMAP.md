@@ -16,7 +16,7 @@
 - [x] pagination
 - [x] filtering
 - [x] env variables
-- [] map function
+- [x] map function (lambdas + object/array literals; own parser)
 - [] think about error handling child -> parent
 - [] think about action extensivity/passability from parent
 - [] look at naming conventions - cancel -> pause, then resume. Retry only for errored processes.

@@ -111,15 +111,17 @@ func shapeRoots(node any) (expression.Roots, error) {
 	walk = func(n any) error {
 		switch v := n.(type) {
 		case string:
-			tr, err := tmpl.RootRefs(v)
+			t, err := tmpl.Get(v)
 			if err != nil {
 				return err
 			}
+			tr := t.RootRefs()
 			r.Input = r.Input || tr.Input
 			r.Error = r.Error || tr.Error
 			r.AllOutputs = r.AllOutputs || tr.AllOutputs
 			r.Outputs = append(r.Outputs, tr.Outputs...)
 			r.SelfPrevious = r.SelfPrevious || tr.SelfPrevious
+			r.SelfResult = r.SelfResult || tr.SelfResult
 		case map[string]any:
 			for _, vv := range v {
 				if err := walk(vv); err != nil {
@@ -147,15 +149,15 @@ func (e *Engine) evalShapeCtx(inst *model.ProcessInstance, node any, self any) (
 }
 
 func (e *Engine) evalAnyCtx(inst *model.ProcessInstance, expr string) (any, error) {
-	roots, err := tmpl.RootRefs(expr)
+	t, err := tmpl.Get(expr)
 	if err != nil {
 		return nil, fmt.Errorf("param %q: %w", expr, err)
 	}
-	env, err := e.buildEnv(inst, nil, roots)
+	env, err := e.buildEnv(inst, nil, t.RootRefs())
 	if err != nil {
 		return nil, err
 	}
-	result, err := tmpl.EvalAny(expr, env)
+	result, err := t.EvalAny(env)
 	if err != nil {
 		return nil, fmt.Errorf("param %q: %w", expr, err)
 	}
@@ -201,7 +203,11 @@ func evalEnv(contextData, config map[string]any, self any) map[string]any {
 }
 
 func evalAny(expression string, contextData, config map[string]any) (any, error) {
-	result, err := tmpl.EvalAny(expression, evalEnv(contextData, config, nil))
+	t, err := tmpl.Get(expression)
+	if err != nil {
+		return nil, fmt.Errorf("param %q: %w", expression, err)
+	}
+	result, err := t.EvalAny(evalEnv(contextData, config, nil))
 	if err != nil {
 		return nil, fmt.Errorf("param %q: %w", expression, err)
 	}
@@ -214,7 +220,11 @@ func evalAny(expression string, contextData, config map[string]any) (any, error)
 func evalShape(node any, env map[string]any) (any, error) {
 	switch n := node.(type) {
 	case string:
-		return tmpl.EvalAny(n, env)
+		t, err := tmpl.Get(n)
+		if err != nil {
+			return nil, err
+		}
+		return t.EvalAny(env)
 	case map[string]any:
 		out := make(map[string]any, len(n))
 		for k, v := range n {

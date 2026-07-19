@@ -122,11 +122,13 @@ cmd/           genroc (server), genctl (CLI), genrocspec (OpenAPI)
 internal/
   engine/      the poll/lease/advance loop and task actions
   db/          persistence (sqlc-generated + hand-written dual-engine SQL)
+  numeric/     exact base-10 numbers: decode, compare, format
   model/       process definition & instance types, wire encoding
   schema/      JSON-Schema subset: normalize, validate, type inference
   validation/  definition validation, context/dataflow analysis
-  expression/  the {{ ... }} expression language (expr-lang)
-  template/    expression scanning within strings
+  expression/  the {{ ... }} expression language
+    syntax/    its grammar: AST + parser (expr-lang's lexer, our grammar)
+  template/    splitting {{ ... }} out of strings, parsed once per template
   transport/   outgoing request transports (HTTP/TCP)
   api/         HTTP handlers, action registry, OpenAPI reflection
   logview/     log formatting (basic / detail / json)

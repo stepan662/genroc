@@ -3,7 +3,7 @@ package schema
 import (
 	"encoding/json"
 	"fmt"
-	"math"
+	"genroc/internal/numeric"
 	"strings"
 	"unicode/utf8"
 )
@@ -242,12 +242,19 @@ func valueHasType(data any, t string) bool {
 
 // checkScalar applies the scalar constraints: numeric range and string length.
 func checkScalar(nd *node, data any, path string) error {
-	if f, ok := asFloat(data); ok {
-		if nd.Minimum != nil && f < *nd.Minimum {
-			return fmt.Errorf("%svalue %v is less than minimum %v", at(path), f, *nd.Minimum)
+	// Bounds compare exactly. Routing the value through float64 first would let a
+	// number just outside a bound land exactly on it, which is the whole class of
+	// error this representation exists to remove.
+	if _, isNum := numeric.ToDecimal(data); isNum {
+		if nd.Minimum != nil {
+			if c, ok := numeric.Compare(data, *nd.Minimum); ok && c < 0 {
+				return fmt.Errorf("%svalue %v is less than minimum %v", at(path), data, *nd.Minimum)
+			}
 		}
-		if nd.Maximum != nil && f > *nd.Maximum {
-			return fmt.Errorf("%svalue %v is greater than maximum %v", at(path), f, *nd.Maximum)
+		if nd.Maximum != nil {
+			if c, ok := numeric.Compare(data, *nd.Maximum); ok && c > 0 {
+				return fmt.Errorf("%svalue %v is greater than maximum %v", at(path), data, *nd.Maximum)
+			}
 		}
 	}
 	if s, ok := data.(string); ok {
@@ -293,6 +300,13 @@ func enumContains(enum []any, data any) bool {
 		return false
 	}
 	for _, e := range enum {
+		// Numbers match by value, not by literal. The schema's enum entries decode
+		// as float64 while runtime data decodes with UseNumber, so an enum declared
+		// [1] must still accept an input that arrives as "1.0" — comparing the
+		// marshalled bytes alone would silently start rejecting it.
+		if numeric.Equal(e, data) {
+			return true
+		}
 		if eb, err := json.Marshal(e); err == nil && string(eb) == string(db) {
 			return true
 		}
@@ -322,25 +336,7 @@ func asFloat(data any) (float64, bool) {
 }
 
 // isIntegral reports whether data is a number with no fractional part.
-func isIntegral(data any) bool {
-	switch n := data.(type) {
-	case int, int64, int32:
-		return true
-	case float64:
-		return !math.IsInf(n, 0) && !math.IsNaN(n) && n == math.Trunc(n)
-	case float32:
-		f := float64(n)
-		return f == math.Trunc(f)
-	case json.Number:
-		if _, err := n.Int64(); err == nil {
-			return true
-		}
-		f, err := n.Float64()
-		return err == nil && f == math.Trunc(f)
-	default:
-		return false
-	}
-}
+func isIntegral(data any) bool { return numeric.IsIntegral(data) }
 
 // jsonTypeName names data's JSON type for error messages, reusing valueHasType so it
 // can't drift from the type check. "integer" is tried before "number" so an integral

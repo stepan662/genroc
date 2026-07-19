@@ -10,8 +10,8 @@ import (
 // rule. The runtime halves live in internal/expression (evalBinary); the two
 // must accept the same operator set.
 var inferBinaryOps = map[string]func(left, right Schema) (Schema, error){
-	"==": alwaysBoolean,
-	"!=": alwaysBoolean,
+	"==": inferEquality,
+	"!=": inferEquality,
 	"<":  inferOrderingCmp,
 	">":  inferOrderingCmp,
 	"<=": inferOrderingCmp,
@@ -35,6 +35,23 @@ var inferUnaryOps = map[string]func(operand Schema) (Schema, error){
 
 func alwaysBoolean(_, _ Schema) (Schema, error) {
 	return Type("boolean"), nil
+}
+
+// inferEquality types == and !=. Comparing two structured values is rejected:
+// the useful answer would be a deep walk, which a statically-checked language
+// should not hide behind an operator, and the runtime half refuses it too. The
+// guard fires only when BOTH sides are provably structured, so the common
+// `someArray == null` null-check keeps working — as does comparing a container
+// to a scalar, which is merely always false.
+func inferEquality(left, right Schema) (Schema, error) {
+	if isStructured(left) && isStructured(right) {
+		return Schema{}, fmt.Errorf("== and != are not supported between %s and %s values", left.TypeName(), right.TypeName())
+	}
+	return Type("boolean"), nil
+}
+
+func isStructured(s Schema) bool {
+	return s.IsType("array") || s.IsType("object")
 }
 
 // binOperands runs the guard every binary numeric/comparison op shares — reject a
@@ -186,6 +203,9 @@ func inferNullCoalesce(left, right Schema) (Schema, error) {
 	if schemasEqual(nonNullLeft, right) {
 		return nonNullLeft, nil
 	}
+	if merged, ok := absorbEmptyArray(nonNullLeft, right); ok {
+		return merged, nil
+	}
 	// Scalar merging analyzes the resolved left stripped of its estimate
 	// wrapper (a mid-solve estimate is served nullable): a numeric accumulator
 	// materializes to its scalar type so arithmetic on the result works. A
@@ -199,6 +219,25 @@ func inferNullCoalesce(left, right Schema) (Schema, error) {
 		return Type("number"), nil
 	}
 	return OneOf(nonNullLeft, right), nil
+}
+
+// absorbEmptyArray collapses a union of an array with a provably-empty array
+// (the `[]` literal) down to the informative arm.
+//
+// Keeping both is not merely verbose, it is wrong: an empty array satisfies
+// `array<T>` and `array(maxItems 0)` alike, and oneOf means *exactly* one match,
+// so the union rejects the very empty value the `xs ?? []` idiom exists to
+// produce. It also hides `items` from readers that call Items() directly — which
+// is how child_list's `over` reads its element type. The surviving arm is
+// returned untouched, so a $ref operand stays symbolic.
+func absorbEmptyArray(a, b Schema) (Schema, bool) {
+	if isProvablyEmpty(b) && resolveTolerant(a).IsType("array") {
+		return a, true
+	}
+	if isProvablyEmpty(a) && resolveTolerant(b).IsType("array") {
+		return b, true
+	}
+	return Schema{}, false
 }
 
 func isNumeric(t string) bool {

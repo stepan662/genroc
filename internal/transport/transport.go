@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"genroc/internal/numeric"
 	"io"
 	"net"
 	"net/http"
@@ -94,7 +95,7 @@ func sendHTTP(ctx context.Context, url, method string, acceptedStatus []string, 
 	}
 
 	var b any
-	if err := json.NewDecoder(resp.Body).Decode(&b); err != nil {
+	if err := numeric.DecodeReader(resp.Body, &b); err != nil {
 		return &Response{ErrorCode: "output.parse", Status: resp.StatusCode}, nil
 	}
 	return &Response{Body: b, Status: resp.StatusCode}, nil

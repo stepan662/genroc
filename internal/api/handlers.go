@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"genroc/internal/numeric"
 
 	"genroc/internal/db"
 	"genroc/internal/model"
@@ -69,7 +70,7 @@ func errReply(err error) Reply {
 // error wrapped with the "decode:" prefix.
 func decodeBody[T any](raw json.RawMessage) (T, error) {
 	var v T
-	if err := json.Unmarshal(raw, &v); err != nil {
+	if err := numeric.Decode(raw, &v); err != nil {
 		return v, fmt.Errorf("decode: %w", err)
 	}
 	return v, nil
@@ -80,7 +81,7 @@ func decodeBody[T any](raw json.RawMessage) (T, error) {
 func decodeOptionalBody[T any](raw json.RawMessage) T {
 	var v T
 	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &v)
+		_ = numeric.Decode(raw, &v)
 	}
 	return v
 }

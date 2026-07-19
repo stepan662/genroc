@@ -5,199 +5,255 @@
 //   - Single expression "{{expr}}": evaluated and returned as-is (preserves type).
 //   - Mixed "text{{expr}}text": each {{expr}} is evaluated, must be string/number/bool,
 //     results are stringified and concatenated with the surrounding literal text.
+//
+// A template is parsed once into a Template — literal chunks interleaved with
+// parsed expression ASTs — and then evaluated or type-inferred against a context
+// any number of times. Which of the three modes applies is fixed at parse time
+// rather than re-derived per call. Get memoises parsing, since templates are
+// static strings carried on process definitions.
+//
+// Where an expression ends is decided by the expression parser, not by scanning
+// for the next "}}": at each "{{" the candidate terminators are tried in order
+// and the first body that parses wins. A "}}" nested inside an object literal
+// ({{ {a: {b: 1}} }}) or inside a string literal ({{ "x}}y" }}) therefore does
+// not end the block, because a candidate that cuts through either fails to
+// parse. That keeps the lexical rules in one place instead of duplicating a
+// string-and-bracket scanner here, where it could silently drift.
 package template
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"genroc/internal/expression"
+	"genroc/internal/expression/syntax"
 	"genroc/internal/schema"
 )
 
-func EvalAny(s string, ctx map[string]any) (any, error) {
-	if expr, ok := singleExpr(s); ok {
-		val, err := expression.Eval(expr, ctx)
+// Template is a parsed {{ }} template. The zero value is not usable; obtain one
+// from Parse or Get. A Template is immutable and safe for concurrent use.
+type Template struct {
+	src    string
+	chunks []chunk
+	// single marks a template that is exactly one expression and no literal text,
+	// so evaluation returns the raw value instead of stringifying it.
+	single bool
+}
+
+// chunk is either literal text (node == nil) or a parsed expression, in which
+// case text holds its source for error messages.
+type chunk struct {
+	text string
+	node syntax.Node
+}
+
+// Parse splits s into literal and expression chunks, parsing each expression.
+func Parse(s string) (*Template, error) {
+	t := &Template{src: s}
+	rest := s
+	for {
+		start := strings.Index(rest, "{{")
+		if start == -1 {
+			if rest != "" {
+				t.chunks = append(t.chunks, chunk{text: rest})
+			}
+			break
+		}
+		if start > 0 {
+			t.chunks = append(t.chunks, chunk{text: rest[:start]})
+		}
+		expr, node, after, err := parseBlock(rest[start+2:])
 		if err != nil {
 			return nil, fmt.Errorf("template %q: %w", s, err)
 		}
-		return val, nil
+		t.chunks = append(t.chunks, chunk{text: expr, node: node})
+		rest = after
 	}
-	if !strings.Contains(s, "{{") {
-		return s, nil
-	}
-	return evalMixed(s, ctx)
+	t.single = len(t.chunks) == 1 && t.chunks[0].node != nil
+	return t, nil
 }
 
-func InferType(s string, sc schema.Schema) (schema.Schema, error) {
-	if expr, ok := singleExpr(s); ok {
-		return sc.Infer(expr)
+// parseBlock splits one {{ }} block off the front of s, which starts just past the
+// opening "{{". Each "}}" is tried as the terminator in order and the first body
+// that parses wins, so a "}}" inside a nested literal or a string does not end the
+// block: a candidate that cuts mid-string leaves the string unterminated, which is
+// itself a parse error, and the scan moves on.
+//
+// Shortest-match is sound. For a longer body to have been intended it would have to
+// parse too, which requires the intervening "}}" to sit inside brackets or a string
+// — and in both cases the shorter candidate fails to parse.
+func parseBlock(s string) (expr string, node syntax.Node, rest string, err error) {
+	var longest error
+	for at := 0; ; {
+		end := strings.Index(s[at:], "}}")
+		if end == -1 {
+			if longest == nil {
+				return "", nil, "", errors.New("unclosed {{")
+			}
+			// Every candidate failed. Report the longest one's error: a truncated
+			// candidate dies with an uninformative "unexpected EOF", while the full
+			// body dies with the syntax error the author actually needs to see.
+			return "", nil, "", longest
+		}
+		end += at
+		body := s[:end]
+		node, perr := syntax.Parse(body)
+		if perr == nil {
+			return body, node, s[end+2:], nil
+		}
+		longest = fmt.Errorf("expression %q: %w", body, perr)
+		at = end + 1
 	}
-	if strings.Contains(s, "{{") {
-		if err := checkMixedNullability(s, sc); err != nil {
-			return schema.Schema{}, err
+}
+
+// Source returns the template string this was parsed from.
+func (t *Template) Source() string { return t.src }
+
+// EvalAny evaluates the template against ctx. A single-expression template returns
+// the raw value, preserving its type; anything else stringifies each expression and
+// concatenates it with the literal text.
+func (t *Template) EvalAny(ctx map[string]any) (any, error) {
+	if t.single {
+		val, err := expression.EvalNode(t.chunks[0].node, ctx)
+		if err != nil {
+			return nil, fmt.Errorf("template %q: %w", t.src, err)
+		}
+		return val, nil
+	}
+	var out strings.Builder
+	for _, c := range t.chunks {
+		if c.node == nil {
+			out.WriteString(c.text)
+			continue
+		}
+		val, err := expression.EvalNode(c.node, ctx)
+		if err != nil {
+			return nil, fmt.Errorf("template expression %q: %w", c.text, err)
+		}
+		str, err := stringify(val)
+		if err != nil {
+			return nil, fmt.Errorf("template expression %q: %w", c.text, err)
+		}
+		out.WriteString(str)
+	}
+	return out.String(), nil
+}
+
+// InferType returns the static type of the template's result against sc.
+func (t *Template) InferType(sc schema.Schema) (schema.Schema, error) {
+	if t.single {
+		return sc.InferNode(t.chunks[0].node)
+	}
+	// A mixed template always yields a string, but a null interpolation would
+	// silently stringify to "null" — reject it so the author adds a ?? default.
+	for _, c := range t.chunks {
+		if c.node == nil {
+			continue
+		}
+		inferred, err := sc.InferNode(c.node)
+		if err != nil {
+			return schema.Schema{}, fmt.Errorf("template expression %q: %w", c.text, err)
+		}
+		if inferred.HasNull() {
+			return schema.Schema{}, fmt.Errorf("template expression %q may be null; use ?? to provide a default value", c.text)
+		}
+		// stringify accepts only string/number/bool, so an array or object here is a
+		// guaranteed runtime failure. Catch it at registration instead: IsType is
+		// "resolves uniformly to", so this fires only when the value provably cannot
+		// be interpolated, never on a type we merely cannot pin down.
+		if inferred.IsType("array") || inferred.IsType("object") {
+			return schema.Schema{}, fmt.Errorf("template expression %q is %s; only string, number and boolean values can be interpolated into surrounding text", c.text, inferred.TypeName())
 		}
 	}
 	return schema.Type("string"), nil
 }
 
-// ReferencesSecret reports whether any embedded {{ }} expression reads a secret value
+// ReferencesSecret reports whether any embedded expression reads a secret value
 // (see schema.Schema.ReferencesSecret); a plain string is never secret.
-func ReferencesSecret(s string, sc schema.Schema) (bool, error) {
-	found := false
-	err := forEachExpr(s, func(expr string) error {
-		sec, err := sc.ReferencesSecret(expr)
-		if err != nil {
-			return err
+func (t *Template) ReferencesSecret(sc schema.Schema) bool {
+	for _, c := range t.chunks {
+		if c.node != nil && sc.ReferencesSecretNode(c.node) {
+			return true
 		}
-		if sec {
-			found = true
-			return errStopScan // short-circuit on the first secret
-		}
-		return nil
-	})
-	if err == errStopScan {
-		return true, nil
 	}
-	return found, err
-}
-
-// checkMixedNullability rejects mixed templates where any expression may be null —
-// null would silently stringify to "null"; the user must add a ?? default.
-func checkMixedNullability(s string, sc schema.Schema) error {
-	return forEachExpr(s, func(expr string) error {
-		inferred, err := sc.Infer(expr)
-		if err != nil {
-			return fmt.Errorf("template expression %q: %w", expr, err)
-		}
-		if inferred.HasNull() {
-			return fmt.Errorf("template expression %q may be null; use ?? to provide a default value", expr)
-		}
-		return nil
-	})
-}
-
-// OutputRefs returns the distinct outputs.<id> task ids across all {{ }} blocks in s,
-// for the output-dependency graph.
-func OutputRefs(s string) ([]string, error) {
-	set := map[string]struct{}{}
-	err := forEachExpr(s, func(expr string) error {
-		refs, err := expression.OutputRefs(expr)
-		if err != nil {
-			return fmt.Errorf("template expression %q: %w", expr, err)
-		}
-		for _, r := range refs {
-			set[r] = struct{}{}
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(set))
-	for id := range set {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids, nil
+	return false
 }
 
 // RootRefs reports which context roots the embedded expressions read, merged across
-// every {{ }} block, so the engine lazily resolves only the value-slots a template needs.
-func RootRefs(s string) (expression.Roots, error) {
+// every block, so the engine lazily resolves only the value-slots a template needs.
+func (t *Template) RootRefs() expression.Roots {
 	var out expression.Roots
-	err := forEachExpr(s, func(expr string) error {
-		r, err := expression.RootRefs(expr)
-		if err != nil {
-			return fmt.Errorf("template expression %q: %w", expr, err)
+	for _, c := range t.chunks {
+		if c.node == nil {
+			continue
 		}
+		r := expression.RootRefsNode(c.node)
 		out.Input = out.Input || r.Input
 		out.Error = out.Error || r.Error
 		out.AllOutputs = out.AllOutputs || r.AllOutputs
 		out.Outputs = append(out.Outputs, r.Outputs...)
 		out.SelfPrevious = out.SelfPrevious || r.SelfPrevious
 		out.SelfResult = out.SelfResult || r.SelfResult
-		return nil
-	})
-	return out, err
+	}
+	return out
 }
 
-// singleExpr reports whether s is exactly "{{expr}}" with nothing outside.
-func singleExpr(s string) (string, bool) {
-	if !strings.HasPrefix(s, "{{") || !strings.HasSuffix(s, "}}") {
-		return "", false
+// OutputRefs returns the distinct outputs.<id> task ids across every block, for the
+// output-dependency graph.
+func (t *Template) OutputRefs() []string {
+	set := map[string]struct{}{}
+	for _, c := range t.chunks {
+		if c.node == nil {
+			continue
+		}
+		for _, id := range expression.OutputRefsNode(c.node) {
+			set[id] = struct{}{}
+		}
 	}
-	inner := s[2 : len(s)-2]
-	if strings.Contains(inner, "{{") || strings.Contains(inner, "}}") {
-		return "", false
+	ids := make([]string, 0, len(set))
+	for id := range set {
+		ids = append(ids, id)
 	}
-	return inner, true
+	sort.Strings(ids)
+	return ids
 }
 
-// errStopScan is a sentinel a forEachExpr callback returns to end the scan early
-// without reporting a real error (e.g. once a match is found).
-var errStopScan = errors.New("stop scan")
+// cache memoises Parse. Template strings are static content carried on process
+// definitions, so the key set is bounded by the registered definitions — the same
+// bound the DB's definition cache already accepts. Failures are cached too, so a
+// definition that somehow reaches the engine with a bad template does not re-parse
+// on every tick.
+var cache sync.Map // string -> parsed
 
-// forEachExpr calls fn with the body of each {{ }} block in s, in order. A missing
-// closing }} silently ends the scan (unlike evalMixed, which errors on it).
-func forEachExpr(s string, fn func(expr string) error) error {
-	rest := s
-	for {
-		start := strings.Index(rest, "{{")
-		if start == -1 {
-			return nil
-		}
-		rest = rest[start+2:]
-		end := strings.Index(rest, "}}")
-		if end == -1 {
-			return nil
-		}
-		expr := rest[:end]
-		rest = rest[end+2:]
-		if err := fn(expr); err != nil {
-			return err
-		}
-	}
+type parsed struct {
+	t   *Template
+	err error
 }
 
-// evalMixed evaluates a mixed template: literal text interleaved with {{expr}} blocks.
-// Each expression result must be a string, number, or bool.
-func evalMixed(s string, ctx map[string]any) (string, error) {
-	var result strings.Builder
-	rest := s
-	for {
-		start := strings.Index(rest, "{{")
-		if start == -1 {
-			result.WriteString(rest)
-			break
-		}
-		result.WriteString(rest[:start])
-		rest = rest[start+2:]
-		end := strings.Index(rest, "}}")
-		if end == -1 {
-			return "", fmt.Errorf("template %q: unclosed {{", s)
-		}
-		expr := rest[:end]
-		rest = rest[end+2:]
-		val, err := expression.Eval(expr, ctx)
-		if err != nil {
-			return "", fmt.Errorf("template expression %q: %w", expr, err)
-		}
-		str, err := stringify(val)
-		if err != nil {
-			return "", fmt.Errorf("template expression %q: %w", expr, err)
-		}
-		result.WriteString(str)
+// Get returns the parsed form of s, parsing on first use. The returned Template is
+// shared across callers and must not be mutated.
+func Get(s string) (*Template, error) {
+	if v, ok := cache.Load(s); ok {
+		p := v.(parsed)
+		return p.t, p.err
 	}
-	return result.String(), nil
+	t, err := Parse(s)
+	cache.Store(s, parsed{t: t, err: err})
+	return t, err
 }
 
 func stringify(v any) (string, error) {
 	switch val := v.(type) {
 	case string:
 		return val, nil
+	case json.Number:
+		// Already the exact literal; rendering it any other way would reintroduce
+		// the float64 rounding this representation exists to avoid.
+		return val.String(), nil
 	case int:
 		return fmt.Sprintf("%d", val), nil
 	case int64:

@@ -108,6 +108,11 @@ func toF64(v any) (float64, bool) {
 		return float64(n), true
 	case float64:
 		return n, true
+	case json.Number:
+		// Arithmetic yields exact decimals as json.Number; these comparisons are
+		// about value, not representation.
+		f, err := n.Float64()
+		return f, err == nil
 	}
 	return 0, false
 }

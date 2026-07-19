@@ -3,44 +3,29 @@ package expression
 import (
 	"sort"
 
-	"github.com/expr-lang/expr/ast"
-	"github.com/expr-lang/expr/parser"
+	"genroc/internal/expression/syntax"
 )
 
 // OutputRefs returns the distinct task ids referenced via outputs.<id> in expr — the
 // edges of the output-dependency graph used for ordering and recursion detection.
 func OutputRefs(expression string) ([]string, error) {
-	tree, err := parser.Parse(expression)
+	node, err := syntax.Parse(expression)
 	if err != nil {
 		return nil, err
 	}
+	return OutputRefsNode(node), nil
+}
+
+// OutputRefsNode is OutputRefs over an already-parsed expression.
+func OutputRefsNode(node syntax.Node) []string {
 	set := map[string]struct{}{}
-	collectOutputRefs(tree.Node, set)
+	collectOutputRefs(node, nil, set)
 	ids := make([]string, 0, len(set))
 	for id := range set {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	return ids, nil
-}
-
-func collectOutputRefs(node ast.Node, set map[string]struct{}) {
-	switch n := node.(type) {
-	case *ast.MemberNode:
-		if id := outputRefID(n); id != "" {
-			set[id] = struct{}{}
-		}
-		collectOutputRefs(n.Node, set)
-	case *ast.BinaryNode:
-		collectOutputRefs(n.Left, set)
-		collectOutputRefs(n.Right, set)
-	case *ast.UnaryNode:
-		collectOutputRefs(n.Node, set)
-	case *ast.ConditionalNode:
-		collectOutputRefs(n.Cond, set)
-		collectOutputRefs(n.Exp1, set)
-		collectOutputRefs(n.Exp2, set)
-	}
+	return ids
 }
 
 // Roots describes which top-level context roots an expression reads. Used by the
@@ -57,34 +42,95 @@ type Roots struct {
 }
 
 func RootRefs(expr string) (Roots, error) {
-	tree, err := parser.Parse(expr)
+	node, err := syntax.Parse(expr)
 	if err != nil {
 		return Roots{}, err
 	}
-	var r Roots
-	collectRoots(tree.Node, &r)
-	return r, nil
+	return RootRefsNode(node), nil
 }
 
-func collectRoots(node ast.Node, r *Roots) {
+// RootRefsNode is RootRefs over an already-parsed expression.
+func RootRefsNode(node syntax.Node) Roots {
+	var r Roots
+	collectRoots(node, nil, &r)
+	return r
+}
+
+// bind returns bound extended with a lambda's parameters. A parameter shadows a
+// context root of the same name, so map(xs, input => input.n) must not be reported
+// as reading the process input — reporting it would be merely wasteful, but
+// failing to report a genuine read makes the engine serve nil for an externalized
+// slot, so the shadowing has to be exact in both directions.
+func bindParams(bound map[string]bool, lam *syntax.LambdaNode) map[string]bool {
+	next := make(map[string]bool, len(bound)+2)
+	for k := range bound {
+		next[k] = true
+	}
+	next[lam.Param] = true
+	if lam.IndexParam != "" {
+		next[lam.IndexParam] = true
+	}
+	return next
+}
+
+func collectOutputRefs(node syntax.Node, bound map[string]bool, set map[string]struct{}) {
 	switch n := node.(type) {
-	case *ast.MemberNode:
-		if id := outputRefID(n); id != "" {
+	case *syntax.MemberNode:
+		if id := outputRefID(n, bound); id != "" {
+			set[id] = struct{}{}
+		}
+		collectOutputRefs(n.Base, bound, set)
+	case *syntax.IndexNode:
+		collectOutputRefs(n.Base, bound, set)
+	case *syntax.ArrayNode:
+		for _, item := range n.Items {
+			collectOutputRefs(item, bound, set)
+		}
+	case *syntax.ObjectNode:
+		for _, v := range n.Values {
+			collectOutputRefs(v, bound, set)
+		}
+	case *syntax.CallNode:
+		for _, a := range n.Args {
+			collectOutputRefs(a, bound, set)
+		}
+	case *syntax.LambdaNode:
+		collectOutputRefs(n.Body, bindParams(bound, n), set)
+	case *syntax.BinaryNode:
+		collectOutputRefs(n.Left, bound, set)
+		collectOutputRefs(n.Right, bound, set)
+	case *syntax.UnaryNode:
+		collectOutputRefs(n.Operand, bound, set)
+	case *syntax.CondNode:
+		collectOutputRefs(n.Cond, bound, set)
+		collectOutputRefs(n.Then, bound, set)
+		collectOutputRefs(n.Else, bound, set)
+	}
+}
+
+func collectRoots(node syntax.Node, bound map[string]bool, r *Roots) {
+	switch n := node.(type) {
+	case *syntax.MemberNode:
+		if id := outputRefID(n, bound); id != "" {
 			r.Outputs = append(r.Outputs, id)
 			return // consumed outputs.<id>; don't descend into the "outputs" identifier
 		}
-		if isSelfPrevious(n) {
+		if isSelfField(n, bound, "previous") {
 			r.SelfPrevious = true
 			return // consumed self.previous; don't descend into the "self" identifier
 		}
-		if isSelfResult(n) {
+		if isSelfField(n, bound, "result") {
 			r.SelfResult = true
 			return // consumed self.result; don't descend into the "self" identifier
 		}
-		collectRoots(n.Node, r)
-		collectRoots(n.Property, r)
-	case *ast.IdentifierNode:
-		switch n.Value {
+		collectRoots(n.Base, bound, r)
+	case *syntax.IndexNode:
+		collectRoots(n.Base, bound, r)
+	case *syntax.IdentNode:
+		if bound[n.Name] {
+			return // a lambda parameter, not a context root
+		}
+		switch n.Name {
 		case "input":
 			r.Input = true
 		case "error":
@@ -92,49 +138,45 @@ func collectRoots(node ast.Node, r *Roots) {
 		case "outputs":
 			r.AllOutputs = true // bare/dynamic outputs reference
 		}
-	case *ast.BinaryNode:
-		collectRoots(n.Left, r)
-		collectRoots(n.Right, r)
-	case *ast.UnaryNode:
-		collectRoots(n.Node, r)
-	case *ast.ConditionalNode:
-		collectRoots(n.Cond, r)
-		collectRoots(n.Exp1, r)
-		collectRoots(n.Exp2, r)
+	case *syntax.ArrayNode:
+		for _, item := range n.Items {
+			collectRoots(item, bound, r)
+		}
+	case *syntax.ObjectNode:
+		for _, v := range n.Values {
+			collectRoots(v, bound, r)
+		}
+	case *syntax.CallNode:
+		for _, a := range n.Args {
+			collectRoots(a, bound, r)
+		}
+	case *syntax.LambdaNode:
+		collectRoots(n.Body, bindParams(bound, n), r)
+	case *syntax.BinaryNode:
+		collectRoots(n.Left, bound, r)
+		collectRoots(n.Right, bound, r)
+	case *syntax.UnaryNode:
+		collectRoots(n.Operand, bound, r)
+	case *syntax.CondNode:
+		collectRoots(n.Cond, bound, r)
+		collectRoots(n.Then, bound, r)
+		collectRoots(n.Else, bound, r)
 	}
 }
 
-// isSelfPrevious reports whether n is exactly self.previous. A deeper self.previous.x
-// is a MemberNode whose .Node is this node, so collectRoots still reaches it.
-func isSelfPrevious(n *ast.MemberNode) bool {
-	base, ok := n.Node.(*ast.IdentifierNode)
-	if !ok || base.Value != "self" {
-		return false
-	}
-	prop, ok := n.Property.(*ast.StringNode)
-	return ok && prop.Value == "previous"
-}
-
-// isSelfResult reports whether n is exactly self.result. A deeper self.result.x is a
-// MemberNode whose .Node is this node, so collectRoots still reaches it.
-func isSelfResult(n *ast.MemberNode) bool {
-	base, ok := n.Node.(*ast.IdentifierNode)
-	if !ok || base.Value != "self" {
-		return false
-	}
-	prop, ok := n.Property.(*ast.StringNode)
-	return ok && prop.Value == "result"
+// isSelfField reports whether n is exactly self.<field>, with self unshadowed. A
+// deeper self.previous.x is a MemberNode whose Base is this node, so the walkers
+// still reach it.
+func isSelfField(n *syntax.MemberNode, bound map[string]bool, field string) bool {
+	base, ok := n.Base.(*syntax.IdentNode)
+	return ok && base.Name == "self" && !bound["self"] && n.Name == field
 }
 
 // outputRefID returns <id> when n is exactly outputs.<id>, else "".
-func outputRefID(n *ast.MemberNode) string {
-	base, ok := n.Node.(*ast.IdentifierNode)
-	if !ok || base.Value != "outputs" {
+func outputRefID(n *syntax.MemberNode, bound map[string]bool) string {
+	base, ok := n.Base.(*syntax.IdentNode)
+	if !ok || base.Name != "outputs" || bound["outputs"] {
 		return ""
 	}
-	prop, ok := n.Property.(*ast.StringNode)
-	if !ok {
-		return ""
-	}
-	return prop.Value
+	return n.Name
 }

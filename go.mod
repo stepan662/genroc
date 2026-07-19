@@ -3,6 +3,7 @@ module genroc
 go 1.25.0
 
 require (
+	github.com/cockroachdb/apd/v3 v3.2.3
 	github.com/expr-lang/expr v1.17.8
 	github.com/go-playground/validator/v10 v10.30.2
 	github.com/golang-migrate/migrate/v4 v4.19.1
