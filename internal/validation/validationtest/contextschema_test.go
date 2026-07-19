@@ -25,8 +25,8 @@ const chargeProcess = `{
 	"tasks": [{
 		"id":"charge",
 		"action":{
-			"type":"rest",
-			"endpoint":"http://x",
+			"type":"fetch",
+			"url":"http://x",
 			"result_schema":{
 				"type":"object",
 				"properties":{

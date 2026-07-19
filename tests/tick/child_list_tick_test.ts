@@ -84,7 +84,7 @@ beforeAll(async () => {
     tasks: [
       {
         id: "boom",
-        action: { type: "rest", endpoint: `http://localhost:${mock.port}/action` },
+        action: { type: "fetch", url: `http://localhost:${mock.port}/action` },
         timeout_ms: 5_000,
         switch: [{ goto: "end" }],
       },

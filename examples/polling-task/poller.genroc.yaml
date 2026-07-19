@@ -1,7 +1,7 @@
 # Child process: the polling worker.
 #
-#   kickstart   POST {jobs_url}/jobs     -> { job_id }          start the remote task
-#   check       POST {jobs_url}/status   -> { status, result }  ask whether it's done
+#   kickstart   POST {url}/jobs     -> { job_id }          start the remote task
+#   check       POST {url}/status   -> { status, result }  ask whether it's done
 #                 status == "done"       -> finish   (return the result)
 #                 attempts exhausted     -> give_up  (overall timeout)
 #                 otherwise              -> wait
@@ -10,10 +10,15 @@
 #                 no signal              -> backoff
 #   backoff     delay ({{ poll_interval_ms }})                  configurable back-off
 #                                        -> check
-#   cancel      POST {jobs_url}/cancel   -> { cancelled }        caller cancelled
-#   give_up     POST {jobs_url}/cancel   -> { cancelled }        ran out of attempts
+#   cancel      POST {url}/cancel   -> { cancelled }        caller cancelled
+#   give_up     POST {url}/cancel   -> { cancelled }        ran out of attempts
 #
 # The poll loop is expressed structurally with switch gotos — genroc has no while/until.
+#
+# Each request is a `fetch` action (url/method/headers/body are all expressions). The
+# caller supplies the whole `headers` map — typed as an open string map via
+# additionalProperties — and each task splats it on with `headers: "{{ input.headers }}"`,
+# so arbitrary auth/trace headers flow from the parent down without being declared here.
 #
 # Configurability (all optional, defaulted; the parent passes them down):
 #   - poll_interval_ms — the back-off between polls. It lives on the `backoff` DELAY,
@@ -31,20 +36,22 @@ name: poll-until-done
 input_schema:
   type: object
   properties:
-    jobs_url: { type: string }
-    auth_token: { type: string }
+    url: { type: string }
+    # An open string map: any header the caller wants sent on every request.
+    headers:
+      type: object
+      additionalProperties: { type: string }
     poll_interval_ms: { type: integer, default: 500 }
     max_attempts: { type: integer, default: 20 }
-  required: [jobs_url, auth_token]
+  required: [url, headers]
 tasks:
   # 1. Kick the remote task off and remember the id it hands back.
   - id: kickstart
     action:
-      type: rest
-      endpoint: "{{ input.jobs_url }}/jobs"
-      headers:
-        Authorization: "Bearer {{ input.auth_token }}"
-      input:
+      type: fetch
+      url: "{{ input.url }}/jobs"
+      headers: "{{ input.headers }}"
+      body:
         command: compute-answer
       result_schema:
         type: object
@@ -59,11 +66,10 @@ tasks:
   #    -> give_up; otherwise -> wait.
   - id: check
     action:
-      type: rest
-      endpoint: "{{ input.jobs_url }}/status"
-      headers:
-        Authorization: "Bearer {{ input.auth_token }}"
-      input:
+      type: fetch
+      url: "{{ input.url }}/status"
+      headers: "{{ input.headers }}"
+      body:
         job_id: "{{ outputs.kickstart.job_id }}"
       result_schema:
         type: object
@@ -119,11 +125,10 @@ tasks:
   # 5. Cancellation path: tell the server to stop the job, then finish.
   - id: cancel
     action:
-      type: rest
-      endpoint: "{{ input.jobs_url }}/cancel"
-      headers:
-        Authorization: "Bearer {{ input.auth_token }}"
-      input:
+      type: fetch
+      url: "{{ input.url }}/cancel"
+      headers: "{{ input.headers }}"
+      body:
         job_id: "{{ outputs.kickstart.job_id }}"
       result_schema:
         type: object
@@ -138,11 +143,10 @@ tasks:
   # 6. Timeout path: same server cleanup, but reported as a timeout rather than a cancel.
   - id: give_up
     action:
-      type: rest
-      endpoint: "{{ input.jobs_url }}/cancel"
-      headers:
-        Authorization: "Bearer {{ input.auth_token }}"
-      input:
+      type: fetch
+      url: "{{ input.url }}/cancel"
+      headers: "{{ input.headers }}"
+      body:
         job_id: "{{ outputs.kickstart.job_id }}"
       result_schema:
         type: object

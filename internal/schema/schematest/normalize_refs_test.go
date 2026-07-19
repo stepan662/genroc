@@ -74,10 +74,18 @@ func TestParse_rejectNot(t *testing.T) {
 	)
 }
 
-func TestParse_rejectAdditionalProperties(t *testing.T) {
+func TestParse_additionalPropertiesTypedFormOnly(t *testing.T) {
+	// The typed (schema) form is accepted...
+	mustParse(t, `{"type":"object","additionalProperties":{"type":"string"}}`)
+	// ...but the boolean form is rejected — genroc never accepts untyped extras (true),
+	// and "closed" is expressed by absence, not an explicit false.
 	assertParseErr(t,
-		`{"type":"object","additionalProperties":{"type":"string"}}`,
-		`unsupported schema keyword "additionalProperties"`,
+		`{"type":"object","additionalProperties":true}`,
+		`additionalProperties must be a schema object; the boolean form is not supported`,
+	)
+	assertParseErr(t,
+		`{"type":"object","additionalProperties":false}`,
+		`additionalProperties must be a schema object; the boolean form is not supported`,
 	)
 }
 

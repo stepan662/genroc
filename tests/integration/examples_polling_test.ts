@@ -96,7 +96,11 @@ async function startExample(port: number, extra: Record<string, unknown> = {}): 
   const { data, error } = await client.POST("/instances", {
     body: {
       process: parent.name,
-      input: { jobs_url: `http://localhost:${port}`, auth_token: AUTH_TOKEN, ...extra },
+      input: {
+        jobs_url: `http://localhost:${port}`,
+        headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+        ...extra,
+      },
     },
   });
   expect(error).toBeUndefined();

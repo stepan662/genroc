@@ -98,9 +98,35 @@ func TestIsSubset_object_properties(t *testing.T) {
 	}
 }
 
-func TestParse_rejectAdditionalPropertiesInSubsetContext(t *testing.T) {
+func TestParse_rejectBooleanAdditionalProperties(t *testing.T) {
 	assertParseErr(t,
 		`{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":false}`,
-		`unsupported schema keyword "additionalProperties"`,
+		`additionalProperties must be a schema object; the boolean form is not supported`,
 	)
+}
+
+func TestSubset_additionalProperties(t *testing.T) {
+	cases := []struct {
+		name       string
+		sub, super string
+		want       bool
+	}{
+		{"map is subset of a wider-valued map",
+			`{"type":"object","additionalProperties":{"type":"integer"}}`,
+			`{"type":"object","additionalProperties":{"type":"number"}}`, true},
+		{"map is not subset of a narrower-valued map",
+			`{"type":"object","additionalProperties":{"type":"number"}}`,
+			`{"type":"object","additionalProperties":{"type":"integer"}}`, false},
+		{"closed object's declared prop fits the open map",
+			`{"type":"object","properties":{"a":{"type":"string"}}}`,
+			`{"type":"object","additionalProperties":{"type":"string"}}`, true},
+		{"closed object's declared prop violates the open map",
+			`{"type":"object","properties":{"a":{"type":"integer"}}}`,
+			`{"type":"object","additionalProperties":{"type":"string"}}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertSubset(t, tc.sub, tc.super, tc.want)
+		})
+	}
 }

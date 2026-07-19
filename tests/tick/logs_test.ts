@@ -46,8 +46,8 @@ beforeAll(async () => {
     {
       id: "first",
       action: {
-        type: "rest" as const,
-        endpoint: `http://localhost:${okMockPort}/action`,
+        type: "fetch" as const,
+        url: `http://localhost:${okMockPort}/action`,
         result_schema: {
           type: "object",
           properties: { ok: { type: "boolean" } },
@@ -59,8 +59,8 @@ beforeAll(async () => {
     {
       id: "second",
       action: {
-        type: "rest" as const,
-        endpoint: `http://localhost:${okMockPort}/action`,
+        type: "fetch" as const,
+        url: `http://localhost:${okMockPort}/action`,
       },
       timeout_ms: 5_000,
       switch: [{ goto: "end" }],
@@ -72,8 +72,8 @@ beforeAll(async () => {
     {
       id: "work",
       action: {
-        type: "rest" as const,
-        endpoint: `http://localhost:${failMockPort}/action`,
+        type: "fetch" as const,
+        url: `http://localhost:${failMockPort}/action`,
       },
       on_error: [{ code: ["http.%"], retries: 1 }],
       timeout_ms: 5_000,
@@ -136,9 +136,9 @@ test("successful run records task and completion events with response snippet", 
   expect(firstSucceeded?.meta?.status).toBe(200);
 
   // action_started records the action type in message, the request body in data,
-  // and the REST endpoint url in meta (headers are intentionally not logged).
+  // and the fetch url in meta (headers are intentionally not logged).
   const firstStarted = logs.find((l) => l.event === "action_started");
-  expect(firstStarted?.message).toBe("rest");
+  expect(firstStarted?.message).toBe("fetch");
   expect(String(firstStarted?.meta?.url)).toContain("/action");
 });
 

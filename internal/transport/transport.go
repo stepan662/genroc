@@ -16,12 +16,13 @@ import (
 	"genroc/internal/model"
 )
 
-// Request is the message the engine sends to a service.
-type Request struct {
-	InstanceID string `json:"instance_id"`
-	TaskID     string `json:"task_id"`
-	Data       any    `json:"data"`
-}
+// Identity headers genroc stamps on every fetch request so the receiving service can
+// correlate a call back to the instance/task that made it — the context the request
+// body used to carry as an envelope before fetch switched to a raw body.
+const (
+	HeaderInstanceID = "X-Genroc-Instance-Id"
+	HeaderTaskID     = "X-Genroc-Task-Id"
+)
 
 // Response carries the result of a Send call.
 // ErrorCode is non-empty on failure ("http.404", "output.parse", "start.error", etc.).
@@ -35,29 +36,45 @@ type Response struct {
 	Status       int
 }
 
-// Send dispatches a request to the appropriate endpoint based on the task's call config.
-// endpoint is the pre-resolved URL (its template already evaluated) and headers
-// contains pre-resolved header values (for rest calls).
-func Send(ctx context.Context, call *model.Action, endpoint string, headers map[string]string, req Request) (*Response, error) {
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
-	}
-
+// Send dispatches a fetch HTTP request. url, method, and headers are pre-resolved (their
+// templates already evaluated); body is the raw request payload — an object is marshaled
+// to JSON, a string is sent as-is, and nil sends no body.
+func Send(ctx context.Context, call *model.Action, url, method string, headers map[string]string, body any) (*Response, error) {
 	switch call.Type {
-	case model.ActionTypeREST:
-		return sendHTTP(ctx, endpoint, call.AcceptedStatus, headers, body)
+	case model.ActionTypeFetch:
+		return sendHTTP(ctx, url, method, call.AcceptedStatus, headers, body)
 	default:
 		return nil, fmt.Errorf("unknown call type: %q", call.Type)
 	}
 }
 
-func sendHTTP(ctx context.Context, endpoint string, acceptedStatus []string, headers map[string]string, body []byte) (*Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+func sendHTTP(ctx context.Context, url, method string, acceptedStatus []string, headers map[string]string, body any) (*Response, error) {
+	if method == "" {
+		method = http.MethodPost
+	}
+	var bodyReader io.Reader
+	jsonBody := false
+	if body != nil && methodAllowsBody(method) {
+		switch b := body.(type) {
+		case string:
+			bodyReader = strings.NewReader(b)
+		default:
+			raw, err := json.Marshal(b)
+			if err != nil {
+				return nil, fmt.Errorf("marshal body: %w", err)
+			}
+			bodyReader = bytes.NewReader(raw)
+			jsonBody = true
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("build http request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	// Default JSON content type for an object body; a header may override it.
+	if jsonBody {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -82,6 +99,15 @@ func sendHTTP(ctx context.Context, endpoint string, acceptedStatus []string, hea
 		return &Response{ErrorCode: "output.parse", Status: resp.StatusCode}, nil
 	}
 	return &Response{Body: b, Status: resp.StatusCode}, nil
+}
+
+// methodAllowsBody reports whether an HTTP method conventionally carries a request body.
+func methodAllowsBody(method string) bool {
+	switch strings.ToUpper(method) {
+	case http.MethodGet, http.MethodHead:
+		return false
+	}
+	return true
 }
 
 // matchAcceptedStatus reports whether code is covered by patterns.

@@ -11,7 +11,7 @@ func TestGenerate_OutputSingleExpressionPassthrough(t *testing.T) {
 		"tasks": [
 			{
 				"id": "charge",
-				"action": {"type":"rest","endpoint":"http://x","result_schema": {
+				"action": {"type":"fetch","url":"http://x","result_schema": {
 					"type":"object",
 					"properties":{"charged":{"type":"boolean"}},
 					"required":["charged"]
@@ -36,7 +36,7 @@ func TestGenerate_OutputNestedObject(t *testing.T) {
 		"tasks": [
 			{
 				"id": "charge",
-				"action": {"type":"rest","endpoint":"http://x","result_schema": {
+				"action": {"type":"fetch","url":"http://x","result_schema": {
 					"type":"object",
 					"properties":{"charged":{"type":"boolean"}},
 					"required":["charged"]
@@ -67,8 +67,8 @@ func TestGenerate_ProcessOutputSingleExpressionScalar(t *testing.T) {
     {
       "id": "charge",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {

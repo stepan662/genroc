@@ -53,8 +53,8 @@ beforeAll(async () => {
     {
       id: "work",
       action: {
-        type: "rest" as const,
-        endpoint: `http://localhost:${failMockPort}/action`,
+        type: "fetch" as const,
+        url: `http://localhost:${failMockPort}/action`,
       },
       timeout_ms: 5_000,
       switch: [{ goto: "end" }],
@@ -65,8 +65,8 @@ beforeAll(async () => {
     {
       id: "work",
       action: {
-        type: "rest" as const,
-        endpoint: `http://localhost:${successMockPort}/action`,
+        type: "fetch" as const,
+        url: `http://localhost:${successMockPort}/action`,
       },
       timeout_ms: 5_000,
       switch: [{ goto: "end" }],
@@ -185,8 +185,8 @@ test("a fails while ancestors are cancelling — FailAncestors overrides 'cancel
       {
         id: "work",
         action: {
-          type: "rest" as const,
-          endpoint: `http://localhost:${holdMock.port}/action`,
+          type: "fetch" as const,
+          url: `http://localhost:${holdMock.port}/action`,
         },
         timeout_ms: 5_000,
         switch: [{ goto: "end" }],

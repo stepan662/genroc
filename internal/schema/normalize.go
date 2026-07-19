@@ -211,6 +211,9 @@ func walkTree(nd *node, path []string, fn func(*node, []string, string)) {
 		if n.Items != nil {
 			walk(n.Items, append(cp(p), "items"), resourceBase)
 		}
+		if n.AdditionalProperties != nil {
+			walk(n.AdditionalProperties, append(cp(p), "additionalProperties"), resourceBase)
+		}
 		for i, s := range n.OneOf {
 			if s != nil {
 				walk(s, append(cp(p), "oneOf", fmt.Sprintf("%d", i)), resourceBase)
@@ -273,6 +276,7 @@ func (ctx *normContext) resolveDef(path string, resourceBase string) *defEntry {
 func isPureRef(nd *node) bool {
 	return nd != nil && nd.Ref != "" &&
 		len(nd.Type) == 0 && nd.Properties == nil && nd.Required == nil &&
+		nd.AdditionalProperties == nil &&
 		nd.Items == nil && nd.OneOf == nil && nd.AnyOf == nil && nd.AllOf == nil &&
 		nd.Enum == nil && nd.Minimum == nil && nd.Maximum == nil &&
 		nd.MinLength == nil && nd.MaxLength == nil &&

@@ -11,8 +11,8 @@ func TestGenerate_ContextSets_LinearChain_RequiredOutputNonNullable(t *testing.T
     {
       "id": "A",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -30,9 +30,9 @@ func TestGenerate_ContextSets_LinearChain_RequiredOutputNonNullable(t *testing.T
     {
       "id": "B",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
-        "input": {
+        "type": "fetch",
+        "url": "http://x",
+        "body": {
           "flag": "{{outputs.A.ok}}"
         }
       }
@@ -77,8 +77,8 @@ func TestGenerate_ContextSets_ExclusiveBranch_SkippedStepOutputNullable(t *testi
     {
       "id": "fast",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -96,16 +96,16 @@ func TestGenerate_ContextSets_ExclusiveBranch_SkippedStepOutputNullable(t *testi
     {
       "id": "slow",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x"
+        "type": "fetch",
+        "url": "http://x"
       }
     },
     {
       "id": "merge",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
-        "input": {
+        "type": "fetch",
+        "url": "http://x",
+        "body": {
           "s": "{{outputs.fast.speed}}"
         }
       }
@@ -127,8 +127,8 @@ func TestGenerate_ContextSets_PreBranchStepRequiredAtAllMergePoints(t *testing.T
     {
       "id": "pre",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -158,23 +158,23 @@ func TestGenerate_ContextSets_PreBranchStepRequiredAtAllMergePoints(t *testing.T
     {
       "id": "path_a",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x"
+        "type": "fetch",
+        "url": "http://x"
       }
     },
     {
       "id": "path_b",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x"
+        "type": "fetch",
+        "url": "http://x"
       }
     },
     {
       "id": "post",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
-        "input": {
+        "type": "fetch",
+        "url": "http://x",
+        "body": {
           "pre_id": "{{outputs.pre.id}}"
         }
       }
@@ -196,8 +196,8 @@ func TestGenerate_ContextSets_DefaultEndSwitch_SuccessorRequiredNotOptional(t *t
     {
       "id": "decide",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -224,9 +224,9 @@ func TestGenerate_ContextSets_DefaultEndSwitch_SuccessorRequiredNotOptional(t *t
     {
       "id": "work",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
-        "input": {
+        "type": "fetch",
+        "url": "http://x",
+        "body": {
           "flag": "{{outputs.decide.ok}}"
         }
       }
@@ -248,8 +248,8 @@ func TestGenerate_OnError_MixedPath_FailingStepOutputNullable(t *testing.T) {
     {
       "id": "start",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -273,9 +273,9 @@ func TestGenerate_OnError_MixedPath_FailingStepOutputNullable(t *testing.T) {
     {
       "id": "finale",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
-        "input": {
+        "type": "fetch",
+        "url": "http://x",
+        "body": {
           "val": "{{outputs.start.ok}}",
           "errCode": "{{error.code}}"
         }
@@ -301,8 +301,8 @@ func TestGenerate_OnError_ExclusivePath_ErrorRequiredOutputAbsent(t *testing.T) 
     {
       "id": "worker",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -330,9 +330,9 @@ func TestGenerate_OnError_ExclusivePath_ErrorRequiredOutputAbsent(t *testing.T) 
     {
       "id": "handler",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
-        "input": {
+        "type": "fetch",
+        "url": "http://x",
+        "body": {
           "code": "{{error.code}}"
         }
       },
@@ -357,8 +357,8 @@ func TestGenerate_Switch_ScalarNext_CreatesSequentialEdge(t *testing.T) {
     {
       "id": "a",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -377,9 +377,9 @@ func TestGenerate_Switch_ScalarNext_CreatesSequentialEdge(t *testing.T) {
     {
       "id": "b",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
-        "input": {
+        "type": "fetch",
+        "url": "http://x",
+        "body": {
           "flag": "{{outputs.a.ok}}"
         }
       },
@@ -409,8 +409,8 @@ func TestGenerate_Switch_ScalarStepRef_CreatesJumpEdge(t *testing.T) {
     {
       "id": "fast",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -429,9 +429,9 @@ func TestGenerate_Switch_ScalarStepRef_CreatesJumpEdge(t *testing.T) {
     {
       "id": "merge",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
-        "input": {
+        "type": "fetch",
+        "url": "http://x",
+        "body": {
           "s": "{{outputs.fast.speed}}"
         }
       },
@@ -454,8 +454,8 @@ func TestGenerate_OnError_EndTerminal_RecognisedAsTerminal(t *testing.T) {
     {
       "id": "task",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {

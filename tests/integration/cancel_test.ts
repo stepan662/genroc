@@ -38,8 +38,8 @@ test("cancel between tasks — status transitions and step2 never executed", asy
           {
             id: "step1",
             action: {
-              type: "rest" as const,
-              endpoint: `http://localhost:${step1Mock.port}/action`,
+              type: "fetch" as const,
+              url: `http://localhost:${step1Mock.port}/action`,
             },
             timeout_ms: 5_000,
             switch: [{ goto: "next" }],
@@ -47,8 +47,8 @@ test("cancel between tasks — status transitions and step2 never executed", asy
           {
             id: "step2",
             action: {
-              type: "rest" as const,
-              endpoint: `http://localhost:${step2Mock.port}/action`,
+              type: "fetch" as const,
+              url: `http://localhost:${step2Mock.port}/action`,
             },
             timeout_ms: 5_000,
             switch: [{ goto: "end" }],

@@ -42,4 +42,3 @@ func TestEvalNilConfig(t *testing.T) {
 		t.Errorf("config.anything should be nil when config is nil")
 	}
 }
-

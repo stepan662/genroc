@@ -77,8 +77,8 @@ test("crash recovery — new worker re-executes an unconfirmed task after the pr
           {
             id: "work",
             action: {
-              type: "rest" as const,
-              endpoint: `http://localhost:${mock.port}/action`,
+              type: "fetch" as const,
+              url: `http://localhost:${mock.port}/action`,
             },
             // Long enough that the task never times out before the crash.
             timeout_ms: 120_000,
@@ -153,8 +153,8 @@ test("crash recovery — an only_once task is failed (not re-executed) after a l
           {
             id: "work",
             action: {
-              type: "rest" as const,
-              endpoint: `http://localhost:${mock.port}/action`,
+              type: "fetch" as const,
+              url: `http://localhost:${mock.port}/action`,
             },
             // only_once: the engine must not re-run this on a lease takeover, since
             // the call may already have happened on the crashed worker.

@@ -19,7 +19,7 @@ const sharedDefsProcess = `{
 		{
 			"id": "fetch",
 			"action": {
-				"type": "rest", "endpoint": "http://x",
+				"type": "fetch", "url": "http://x",
 				"result_schema": {"type":"object","properties":{"buyer":{"$ref":"#/$defs/User"}},"required":["buyer"]}
 			},
 			"output": {"who": "'{{ self.result.buyer.name }}'"},
@@ -28,7 +28,7 @@ const sharedDefsProcess = `{
 		{
 			"id": "audit",
 			"action": {
-				"type": "rest", "endpoint": "http://y",
+				"type": "fetch", "url": "http://y",
 				"result_schema": {"type":"object","properties":{"reviewer":{"$ref":"#/$defs/User"}},"required":["reviewer"]}
 			},
 			"output": {"flag": "{{ self.result.reviewer.vip }}"}
@@ -70,7 +70,7 @@ func TestGenerate_SharedDefUsedByInputAndResults(t *testing.T) {
 		"tasks": [{
 			"id": "s1",
 			"action": {
-				"type": "rest", "endpoint": "http://x",
+				"type": "fetch", "url": "http://x",
 				"result_schema": {"type":"object","properties":{"owner":{"$ref":"#/$defs/User"}},"required":["owner"]}
 			},
 			"output": {"n": "'{{ self.result.owner.name }}'"}
@@ -98,7 +98,7 @@ func TestGenerate_GeneratedNamesTakePrecedenceByRenaming(t *testing.T) {
 		"tasks": [{
 			"id": "s1",
 			"action": {
-				"type": "rest", "endpoint": "http://x",
+				"type": "fetch", "url": "http://x",
 				"result_schema": {"type":"object","properties":{"d":{"$ref":"#/$defs/s1_output"}},"required":["d"]}
 			},
 			"output": {"num": "{{ self.result.d.n }}"},
@@ -132,7 +132,7 @@ func TestContextSchema_SecretThroughSharedDef(t *testing.T) {
 		"name": "p",
 		"$defs": {"Cred": {"type":"object","properties":{"token":{"type":"string","secret":true},"host":{"type":"string"}},"required":["token","host"]}},
 		"input_schema": {"type":"object","properties":{"cred":{"$ref":"#/$defs/Cred"}},"required":["cred"]},
-		"tasks": [{"id":"s1","action":{"type":"rest","endpoint":"http://x"}}]
+		"tasks": [{"id":"s1","action":{"type":"fetch","url":"http://x"}}]
 	}`)
 	ctx := validation.SchemaFileContext(out)
 	if !ctx.SecretAt("input.cred.token") {

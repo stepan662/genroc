@@ -18,8 +18,8 @@ test("lifecycle — task task completes when service returns ok", async () => {
         {
           id: "call",
           action: {
-            type: "rest" as const,
-            endpoint: `http://localhost:${mock.port}/action`,
+            type: "fetch" as const,
+            url: `http://localhost:${mock.port}/action`,
             result_schema: { type: "object", properties: { done: { type: "boolean" } } },
           },
           output: "{{ self.result }}",
@@ -55,7 +55,7 @@ test("lifecycle — task task fails and marks failed", async () => {
       tasks: [
         {
           id: "call",
-          action: { type: "rest" as const, endpoint: `http://localhost:${mock.port}/action` },
+          action: { type: "fetch" as const, url: `http://localhost:${mock.port}/action` },
           timeout_ms: 500,
           switch: [{ goto: "end" }],
         },
@@ -93,14 +93,14 @@ test("lifecycle — conditional routes to correct branch", async () => {
       tasks: [
         {
           id: "start",
-          action: { type: "rest" as const, endpoint: `http://localhost:${thenMock.port}/action` },
+          action: { type: "fetch" as const, url: `http://localhost:${thenMock.port}/action` },
           switch: [{ case: "input.go_then", goto: "$then_task" }, { goto: "$else_task" }],
         },
         {
           id: "then_task",
           action: {
-            type: "rest" as const,
-            endpoint: `http://localhost:${thenMock.port}/action`,
+            type: "fetch" as const,
+            url: `http://localhost:${thenMock.port}/action`,
             result_schema: { type: "object", properties: { branch: { type: "string" } } },
           },
           output: "{{ self.result }}",
@@ -110,8 +110,8 @@ test("lifecycle — conditional routes to correct branch", async () => {
         {
           id: "else_task",
           action: {
-            type: "rest" as const,
-            endpoint: `http://localhost:${elseMock.port}/action`,
+            type: "fetch" as const,
+            url: `http://localhost:${elseMock.port}/action`,
             result_schema: { type: "object", properties: { branch: { type: "string" } } },
           },
           output: "{{ self.result }}",
@@ -168,8 +168,8 @@ test("lifecycle — task fails when output violates result_schema", async () => 
         {
           id: "charge",
           action: {
-            type: "rest" as const,
-            endpoint: `http://localhost:${mock.port}/action`,
+            type: "fetch" as const,
+            url: `http://localhost:${mock.port}/action`,
             result_schema: {
               type: "object",
               properties: { charged: { type: "boolean" } },

@@ -1,8 +1,9 @@
 // Package schema provides a normalizer, validator, and type helpers for a strict
 // subset of JSON Schema.
 //
-// Supported keywords: type, properties, required, items, oneOf, anyOf, enum,
-// minimum, maximum, minLength, maxLength, minItems, maxItems, $ref, $defs, $anchor, $id.
+// Supported keywords: type, properties, required, additionalProperties (typed/object
+// form only — a boolean is rejected), items, oneOf, anyOf, enum, minimum, maximum,
+// minLength, maxLength, minItems, maxItems, $ref, $defs, $anchor, $id.
 // Any other keyword causes an unmarshal error.
 //
 // The package exposes two value types. Parse yields a Raw — an unnormalized
@@ -68,7 +69,8 @@ func (t SchemaType) Contains(s string) bool {
 // elsewhere.
 var allowedKeywords = map[string]bool{
 	"type": true, "properties": true, "required": true, "items": true,
-	"oneOf": true, "anyOf": true, "enum": true,
+	"additionalProperties": true,
+	"oneOf":                true, "anyOf": true, "enum": true,
 	"minimum": true, "maximum": true, "minLength": true, "maxLength": true,
 	"minItems": true, "maxItems": true,
 	"$ref": true, "$defs": true, "$anchor": true, "$id": true,
@@ -84,23 +86,28 @@ type node struct {
 	Type       SchemaType       `json:"type,omitempty"`
 	Properties map[string]*node `json:"properties,omitempty"`
 	Required   []string         `json:"required,omitempty"`
-	Items      *node            `json:"items,omitempty"`
-	OneOf      []*node          `json:"oneOf,omitempty"`
-	AnyOf      []*node          `json:"anyOf,omitempty"`
-	AllOf      []*node          `json:"allOf,omitempty"`
-	Enum       []any            `json:"enum,omitempty"`
-	Minimum    *float64         `json:"minimum,omitempty"`
-	Maximum    *float64         `json:"maximum,omitempty"`
-	MinLength  *int             `json:"minLength,omitempty"`
-	MaxLength  *int             `json:"maxLength,omitempty"`
-	MinItems   *int             `json:"minItems,omitempty"`
-	MaxItems   *int             `json:"maxItems,omitempty"`
-	Ref        string           `json:"$ref,omitempty"`
-	Defs       map[string]*node `json:"$defs,omitempty"`
-	Anchor     string           `json:"$anchor,omitempty"`
-	ID         string           `json:"$id,omitempty"`
-	Default    any              `json:"default,omitempty"`
-	Secret     bool             `json:"secret,omitempty"`
+	// AdditionalProperties, when non-nil, types the object's undeclared keys as an
+	// open map (each extra value must conform to this subschema, and survives
+	// normalization). nil = closed object (undeclared keys stripped). Only the schema
+	// form is supported; a boolean additionalProperties is rejected at parse time.
+	AdditionalProperties *node            `json:"additionalProperties,omitempty"`
+	Items                *node            `json:"items,omitempty"`
+	OneOf                []*node          `json:"oneOf,omitempty"`
+	AnyOf                []*node          `json:"anyOf,omitempty"`
+	AllOf                []*node          `json:"allOf,omitempty"`
+	Enum                 []any            `json:"enum,omitempty"`
+	Minimum              *float64         `json:"minimum,omitempty"`
+	Maximum              *float64         `json:"maximum,omitempty"`
+	MinLength            *int             `json:"minLength,omitempty"`
+	MaxLength            *int             `json:"maxLength,omitempty"`
+	MinItems             *int             `json:"minItems,omitempty"`
+	MaxItems             *int             `json:"maxItems,omitempty"`
+	Ref                  string           `json:"$ref,omitempty"`
+	Defs                 map[string]*node `json:"$defs,omitempty"`
+	Anchor               string           `json:"$anchor,omitempty"`
+	ID                   string           `json:"$id,omitempty"`
+	Default              any              `json:"default,omitempty"`
+	Secret               bool             `json:"secret,omitempty"`
 }
 
 // UnmarshalJSON implements strict decoding: any JSON key not in allowedKeywords
@@ -113,6 +120,15 @@ func (n *node) UnmarshalJSON(data []byte) error {
 	for k := range raw {
 		if !allowedKeywords[k] {
 			return fmt.Errorf("unsupported schema keyword %q", k)
+		}
+	}
+	// Only the typed (schema-object) form of additionalProperties is supported; the
+	// boolean form is rejected so genroc never accepts untyped extra data (true) and
+	// so "closed" is always expressed by absence rather than an explicit false.
+	if ap, ok := raw["additionalProperties"]; ok {
+		var b bool
+		if json.Unmarshal(ap, &b) == nil {
+			return fmt.Errorf("additionalProperties must be a schema object; the boolean form is not supported")
 		}
 	}
 	type alias node
@@ -380,6 +396,18 @@ func Array(item Schema) Schema {
 	n := &node{Type: SchemaType{"array"}}
 	if item.n != nil {
 		n.Items = item.n
+	}
+	return Schema{n}
+}
+
+// Map returns an open-object Schema ({"type":"object","additionalProperties":sub})
+// whose undeclared keys must each conform to sub (and survive normalization). Like
+// Array, sub is embedded structurally; any root $defs it carries are dropped, so it
+// should reference the shared pool.
+func Map(sub Schema) Schema {
+	n := &node{Type: SchemaType{"object"}}
+	if sub.n != nil {
+		n.AdditionalProperties = sub.n
 	}
 	return Schema{n}
 }
@@ -727,6 +755,9 @@ func stripDefsDeep(n *node) *node {
 	if n.Items != nil {
 		m.Items = stripDefsDeep(n.Items)
 	}
+	if n.AdditionalProperties != nil {
+		m.AdditionalProperties = stripDefsDeep(n.AdditionalProperties)
+	}
 	m.OneOf = stripDefsList(n.OneOf)
 	m.AnyOf = stripDefsList(n.AnyOf)
 	m.AllOf = stripDefsList(n.AllOf)
@@ -817,6 +848,15 @@ func (s Schema) Default() any {
 		return nil
 	}
 	return s.n.Default
+}
+
+// AdditionalProperties returns the open-map value subschema (carrying the root
+// $defs) and true when the schema declares additionalProperties; else (zero, false).
+func (s Schema) AdditionalProperties() (Schema, bool) {
+	if s.n == nil || s.n.AdditionalProperties == nil {
+		return Schema{}, false
+	}
+	return wrap(s.n.AdditionalProperties, s.rootDefs()), true
 }
 
 // HasRef reports whether the schema is a $ref pointer.

@@ -71,14 +71,14 @@ type ProcessInstance struct {
 	// Used for O(1) ancestor lookup during error cascade.
 	CallStack []string
 
-	RetryCount    int
-	WakeAt   *time.Time
-	Status        Status
-	WaitState     WaitState
-	Error         string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	WorkerID      *string
+	RetryCount     int
+	WakeAt         *time.Time
+	Status         Status
+	WaitState      WaitState
+	Error          string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	WorkerID       *string
 	LeaseExpiresAt *time.Time
 
 	// Config is the configuration namespace resolved from the OS environment at

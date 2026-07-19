@@ -7,7 +7,7 @@ const validDef = {
   tasks: [
     {
       id: "step1",
-      action: { type: "rest" as const, endpoint: "http://localhost:19990/action" },
+      action: { type: "fetch" as const, url: "http://localhost:19990/action" },
       timeout_ms: 1000,
       switch: [{ goto: "end" }],
     },
@@ -49,7 +49,7 @@ test("PUT /definitions — rejects rest call without endpoint", async () => {
       tasks: [
         {
           id: "s1",
-          action: { type: "rest" as const } as any,
+          action: { type: "fetch" as const } as any,
           switch: [{ goto: "end" }],
         },
       ],
@@ -67,7 +67,7 @@ test("PUT /definitions — rejects unknown call type", async () => {
       tasks: [
         {
           id: "s1",
-          action: { type: "ftp", endpoint: "x" } as any,
+          action: { type: "ftp", url: "x" } as any,
           switch: [{ goto: "end" }],
         },
       ],
@@ -101,7 +101,7 @@ test("PUT /definitions — rejects schema default that violates its own schema",
       tasks: [
         {
           id: "s1",
-          action: { type: "rest" as const, endpoint: "http://localhost:19990/action" },
+          action: { type: "fetch" as const, url: "http://localhost:19990/action" },
           switch: [{ goto: "end" }],
         },
       ],
@@ -118,7 +118,7 @@ test("PUT /definitions — rejects missing process name", async () => {
       tasks: [
         {
           id: "s1",
-          action: { type: "rest" as const, endpoint: "http://localhost:19990/action" },
+          action: { type: "fetch" as const, url: "http://localhost:19990/action" },
           switch: [{ goto: "end" }],
         },
       ],

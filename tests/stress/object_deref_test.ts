@@ -95,8 +95,8 @@ test("a dereferenced, unlogged context object is deleted immediately (not left f
           {
             id: "gen",
             action: {
-              type: "rest",
-              endpoint: `http://localhost:${mockPort}/gen`,
+              type: "fetch",
+              url: `http://localhost:${mockPort}/gen`,
               result_schema: {
                 type: "object",
                 properties: { i: { type: "integer" }, done: { type: "boolean" } },

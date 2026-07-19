@@ -32,7 +32,7 @@ function switchDef(name: string) {
 function restDef(name: string, endpoint = "http://localhost/x") {
   return {
     name,
-    tasks: [{ id: "s1", action: { type: "rest" as const, endpoint }, switch: [{ goto: "end" }] }],
+    tasks: [{ id: "s1", action: { type: "fetch" as const, url: endpoint }, switch: [{ goto: "end" }] }],
   };
 }
 

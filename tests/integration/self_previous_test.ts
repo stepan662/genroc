@@ -33,8 +33,8 @@ function makeDef(name: string, actionPort?: number) {
   };
   if (actionPort !== undefined) {
     append.action = {
-      type: "rest",
-      endpoint: `http://localhost:${actionPort}/step`,
+      type: "fetch",
+      url: `http://localhost:${actionPort}/step`,
       result_schema: { type: "object", properties: { ok: { type: "boolean" } } },
     };
   }

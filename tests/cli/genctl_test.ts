@@ -25,7 +25,7 @@ function switchDef(name: string) {
 }
 
 function restDef(name: string, endpoint = "http://localhost/x") {
-  return { name, tasks: [{ id: "s1", action: { type: "rest", endpoint }, switch: [{ goto: "end" }] }] };
+  return { name, tasks: [{ id: "s1", action: { type: "fetch", url: endpoint }, switch: [{ goto: "end" }] }] };
 }
 
 function childDef(name: string, childName: string) {

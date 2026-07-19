@@ -114,8 +114,10 @@ func conformGuard(nd *node, defs map[string]*node, data any, path string, visiti
 	}
 }
 
-// conformObject keeps only declared properties, fills defaults for absent
-// optionals, errors on absent required, and recurses into present values.
+// conformObject keeps declared properties (filling defaults for absent optionals,
+// erroring on absent required) and recurses into present values. Keys not declared
+// in Properties are stripped for a closed object (AdditionalProperties == nil), or
+// conformed against the AdditionalProperties subschema and kept for an open map.
 func conformObject(nd *node, defs map[string]*node, v map[string]any, path string) (any, error) {
 	required := make(map[string]bool, len(nd.Required))
 	for _, r := range nd.Required {
@@ -145,6 +147,20 @@ func conformObject(nd *node, defs map[string]*node, v map[string]any, path strin
 			return nil, err
 		}
 		out[name] = norm
+	}
+	// Undeclared keys: dropped for a closed object; validated against the
+	// additionalProperties subschema and kept for an open map.
+	if nd.AdditionalProperties != nil {
+		for name, val := range v {
+			if _, declared := nd.Properties[name]; declared {
+				continue
+			}
+			norm, err := conform(nd.AdditionalProperties, defs, val, join(path, name))
+			if err != nil {
+				return nil, err
+			}
+			out[name] = norm
+		}
 	}
 	return out, nil
 }
@@ -283,7 +299,7 @@ func propDefault(prop *node, defs map[string]*node) any {
 // isObjectSchema reports whether node describes an object (so a map value should
 // be pruned to declared properties rather than passed through).
 func isObjectSchema(nd *node) bool {
-	return nd.Type.Contains("object") || nd.Properties != nil || nd.Required != nil
+	return nd.Type.Contains("object") || nd.Properties != nil || nd.Required != nil || nd.AdditionalProperties != nil
 }
 
 // enumContains reports whether data equals any enum member, comparing by

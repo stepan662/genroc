@@ -96,8 +96,8 @@ var registry = func() []actionDef {
 					{
 						ID: "charge",
 						Action: &model.Action{
-							Type:     model.ActionTypeREST,
-							Endpoint: "http://localhost:9001/charge",
+							Type: model.ActionTypeFetch,
+							URL:  "http://localhost:9001/charge",
 							ResultSchema: schemaPtr(schema.Object().
 								WithProperty("charged", schema.Type("boolean"), false)),
 						},
@@ -109,13 +109,13 @@ var registry = func() []actionDef {
 					},
 					{
 						ID:        "ship",
-						Action:    &model.Action{Type: model.ActionTypeREST, Endpoint: "http://localhost:9002/ship"},
+						Action:    &model.Action{Type: model.ActionTypeFetch, URL: "http://localhost:9002/ship"},
 						Switch:    model.SwitchMap{{Goto: model.GotoEnd}},
 						TimeoutMs: 3000, OnError: []model.ErrorCase{{Retries: 2}},
 					},
 					{
 						ID:        "refund",
-						Action:    &model.Action{Type: model.ActionTypeREST, Endpoint: "http://localhost:9003/refund"},
+						Action:    &model.Action{Type: model.ActionTypeFetch, URL: "http://localhost:9003/refund"},
 						Switch:    model.SwitchMap{{Goto: model.GotoEnd}},
 						TimeoutMs: 3000, OnError: []model.ErrorCase{{Retries: 1}},
 					},
@@ -194,7 +194,7 @@ var registry = func() []actionDef {
 				Definitions: []model.ProcessDefinition{
 					{
 						Name:  "child_process",
-						Tasks: []*model.Task{{ID: "run", Action: &model.Action{Type: model.ActionTypeREST, Endpoint: "http://localhost:9001/run"}}},
+						Tasks: []*model.Task{{ID: "run", Action: &model.Action{Type: model.ActionTypeFetch, URL: "http://localhost:9001/run"}}},
 					},
 				},
 			},
@@ -282,7 +282,7 @@ var registry = func() []actionDef {
 			Req: []model.ProcessDefinition{
 				{
 					Name:  "order_pipeline",
-					Tasks: []*model.Task{{ID: "charge", Action: &model.Action{Type: model.ActionTypeREST, Endpoint: "http://localhost:9001/charge"}}},
+					Tasks: []*model.Task{{ID: "charge", Action: &model.Action{Type: model.ActionTypeFetch, URL: "http://localhost:9001/charge"}}},
 				},
 			},
 			Resp: []map[string]any{{"process": "order_pipeline", "version": 1}},

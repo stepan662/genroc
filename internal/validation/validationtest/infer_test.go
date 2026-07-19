@@ -17,8 +17,8 @@ func TestGenerate_Input_FirstTaskNoInput(t *testing.T) {
     {
       "id": "charge",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -50,8 +50,8 @@ func TestGenerate_Input_WithProcessInput(t *testing.T) {
     {
       "id": "charge",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -75,8 +75,8 @@ func TestGenerate_Input_PrecedingTaskOutput(t *testing.T) {
     {
       "id": "charge",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -92,8 +92,8 @@ func TestGenerate_Input_PrecedingTaskOutput(t *testing.T) {
     {
       "id": "notify",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -119,16 +119,16 @@ func TestGenerate_Input_TaskWithNoOutputSkippedInContext(t *testing.T) {
     {
       "id": "log",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x"
+        "type": "fetch",
+        "url": "http://x"
       },
       "switch": "next"
     },
     {
       "id": "notify",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -153,8 +153,8 @@ func TestGenerate_Input_SwitchOnlyStepSkippedInContext(t *testing.T) {
     {
       "id": "charge",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -182,8 +182,8 @@ func TestGenerate_Input_SwitchOnlyStepSkippedInContext(t *testing.T) {
     {
       "id": "ship",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -227,8 +227,8 @@ func TestGenerate_Input_Params(t *testing.T) {
     {
       "id": "charge",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -237,7 +237,7 @@ func TestGenerate_Input_Params(t *testing.T) {
             }
           }
         },
-        "input": {
+        "body": {
           "id": "{{input.order_id}}",
           "sum": "{{input.amount}}"
         }
@@ -264,7 +264,7 @@ func TestGenerate_Input_InputOnlyTask(t *testing.T) {
 		"input_schema": { "type": "object", "properties": { "user_id": { "type": "string" } }, "required": ["user_id"] },
 		"tasks": [{
 			"id": "log",
-			"action": {"type": "rest", "endpoint": "http://x", "input": { "uid": "{{input.user_id}}" }}
+			"action": {"type": "fetch", "url": "http://x", "body": { "uid": "{{input.user_id}}" }}
 		}]
 	}`)
 	if _, ok := out.Tasks["log"]; !ok {
@@ -285,8 +285,8 @@ func TestGenerate_Input_OneOfOutputPropertyAccess(t *testing.T) {
     {
       "id": "save_order",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "oneOf": [
             {
@@ -309,9 +309,9 @@ func TestGenerate_Input_OneOfOutputPropertyAccess(t *testing.T) {
     {
       "id": "check_fraud",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
-        "input": {
+        "type": "fetch",
+        "url": "http://x",
+        "body": {
           "result": "{{outputs.save_order.valid}}"
         }
       },
@@ -335,13 +335,13 @@ func TestGenerate_MixedTemplate_NullableExpressionRejected(t *testing.T) {
 		"tasks": [
 			{
 				"id": "start",
-				"action": {"type": "rest", "endpoint": "http://x"},
+				"action": {"type": "fetch", "url": "http://x"},
 				"on_error": [{"goto": "$finale"}],
 				"switch": "next"
 			},
 			{
 				"id": "finale",
-				"action": {"type": "rest", "endpoint": "http://x", "input": {"msg": "{{error.code}}_{{error.message}}"}},
+				"action": {"type": "fetch", "url": "http://x", "body": {"msg": "{{error.code}}_{{error.message}}"}},
 				"switch": "end"
 			}
 		]
@@ -361,13 +361,13 @@ func TestGenerate_MixedTemplate_NonNullableExpressionAccepted(t *testing.T) {
 		"tasks": [
 			{
 				"id": "worker",
-				"action": {"type": "rest", "endpoint": "http://x"},
+				"action": {"type": "fetch", "url": "http://x"},
 				"switch": "end",
 				"on_error": [{"goto": "$handler"}]
 			},
 			{
 				"id": "handler",
-				"action": {"type": "rest", "endpoint": "http://x", "input": {"msg": "{{error.code}}_{{error.message}}"}},
+				"action": {"type": "fetch", "url": "http://x", "body": {"msg": "{{error.code}}_{{error.message}}"}},
 				"switch": "end"
 			}
 		]
@@ -377,7 +377,7 @@ func TestGenerate_MixedTemplate_NonNullableExpressionAccepted(t *testing.T) {
 func TestGenerate_InvalidRef(t *testing.T) {
 	err := runGenerateErr(t, `{
 		"name": "p",
-		"tasks": [{"id":"s1","action":{"type":"rest","endpoint":"http://x"}}],
+		"tasks": [{"id":"s1","action":{"type":"fetch","url":"http://x"}}],
 		"input_schema": {
 			"properties": { "x": { "$ref": "#/$defs/Missing" } }
 		}
@@ -397,8 +397,8 @@ func TestGenerate_Switch_SelfExpressionTypeChecked(t *testing.T) {
     {
       "id": "charge",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -426,15 +426,15 @@ func TestGenerate_Switch_SelfExpressionTypeChecked(t *testing.T) {
     {
       "id": "ship",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x"
+        "type": "fetch",
+        "url": "http://x"
       }
     },
     {
       "id": "refund",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x"
+        "type": "fetch",
+        "url": "http://x"
       }
     }
   ]
@@ -560,15 +560,15 @@ func TestGenerate_SelfNamespaceScoping(t *testing.T) {
 		def  string
 	}{
 		{"self.output in a switch without a projection", `{"name":"p","tasks":[
-			{"id":"s","action":{"type":"rest","endpoint":"http://x","result_schema":{"type":"object","properties":{"x":{"type":"boolean"}},"required":["x"]}},
+			{"id":"s","action":{"type":"fetch","url":"http://x","result_schema":{"type":"object","properties":{"x":{"type":"boolean"}},"required":["x"]}},
 			 "switch":[{"case":"self.output.x","goto":"end"},{"goto":"end"}]}]}`},
 		{"self.output in an output map", `{"name":"p","tasks":[
-			{"id":"s","action":{"type":"rest","endpoint":"http://x","result_schema":{"type":"object","properties":{"x":{"type":"boolean"}},"required":["x"]}},
+			{"id":"s","action":{"type":"fetch","url":"http://x","result_schema":{"type":"object","properties":{"x":{"type":"boolean"}},"required":["x"]}},
 			 "output":{"y":"{{ self.output.x }}"},"switch":[{"goto":"end"}]}]}`},
 		{"self.result.field without result_schema", `{"name":"p","tasks":[
-			{"id":"s","action":{"type":"rest","endpoint":"http://x"},"output":{"id":"{{ self.result.job_id }}"},"switch":[{"goto":"end"}]}]}`},
+			{"id":"s","action":{"type":"fetch","url":"http://x"},"output":{"id":"{{ self.result.job_id }}"},"switch":[{"goto":"end"}]}]}`},
 		{"self.previous in a non-looping switch", `{"name":"p","tasks":[
-			{"id":"s","action":{"type":"rest","endpoint":"http://x","result_schema":{"type":"object","properties":{"x":{"type":"boolean"}},"required":["x"]}},
+			{"id":"s","action":{"type":"fetch","url":"http://x","result_schema":{"type":"object","properties":{"x":{"type":"boolean"}},"required":["x"]}},
 			 "output":{"y":"{{ self.result.x }}"},"switch":[{"case":"self.previous.y","goto":"end"},{"goto":"end"}]}]}`},
 	}
 	for _, c := range invalid {
@@ -582,7 +582,7 @@ func TestGenerate_SelfNamespaceScoping(t *testing.T) {
 		def  string
 	}{
 		{"self.result in a switch", `{"name":"p","tasks":[
-			{"id":"s","action":{"type":"rest","endpoint":"http://x","result_schema":{"type":"object","properties":{"x":{"type":"boolean"}},"required":["x"]}},
+			{"id":"s","action":{"type":"fetch","url":"http://x","result_schema":{"type":"object","properties":{"x":{"type":"boolean"}},"required":["x"]}},
 			 "switch":[{"case":"self.result.x","goto":"end"},{"goto":"end"}]}]}`},
 		{"self.previous in a looping output task's switch", `{"name":"p","tasks":[
 			{"id":"loop","output":{"n":"{{ (self.previous.n ?? 0) + 1 }}"},
@@ -654,8 +654,8 @@ func TestGenerate_Switch_OutputsExpressionTypeChecked(t *testing.T) {
     {
       "id": "charge",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -686,8 +686,8 @@ func TestGenerate_Switch_OutputsExpressionTypeChecked(t *testing.T) {
     {
       "id": "notify",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x"
+        "type": "fetch",
+        "url": "http://x"
       }
     }
   ]
@@ -715,8 +715,8 @@ func TestGenerate_RecursiveStep_OwnOutputOptionalInParams(t *testing.T) {
     {
       "id": "loop",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -732,7 +732,7 @@ func TestGenerate_RecursiveStep_OwnOutputOptionalInParams(t *testing.T) {
             "done"
           ]
         },
-        "input": {
+        "body": {
           "tasks": "{{input.tasks}}",
           "task_index": "{{outputs.loop.finished_index ? outputs.loop.finished_index : 0}}"
         }
@@ -770,8 +770,8 @@ func TestGenerate_SwitchStep_NextStepNotReachableViaFallthrough(t *testing.T) {
     {
       "id": "decide",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -798,8 +798,8 @@ func TestGenerate_SwitchStep_NextStepNotReachableViaFallthrough(t *testing.T) {
     {
       "id": "work",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -808,7 +808,7 @@ func TestGenerate_SwitchStep_NextStepNotReachableViaFallthrough(t *testing.T) {
             }
           }
         },
-        "input": {
+        "body": {
           "flag": "{{outputs.decide.ok}}"
         }
       },
@@ -831,8 +831,8 @@ func TestGenerate_Switch_OneOfAllBooleanAccepted(t *testing.T) {
     {
       "id": "check",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -866,8 +866,8 @@ func TestGenerate_Switch_OneOfAllBooleanAccepted(t *testing.T) {
     {
       "id": "next",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x"
+        "type": "fetch",
+        "url": "http://x"
       }
     }
   ]
@@ -886,7 +886,7 @@ func TestGenerate_Switch_OneOfBooleanOptionalFieldRejected(t *testing.T) {
 				"id": "route",
 				"switch": [{"case": "input.go_then", "goto": "$next"}, {"goto": "end"}]
 			},
-			{ "id": "next", "action": {"type": "rest", "endpoint": "http://x"} }
+			{ "id": "next", "action": {"type": "fetch", "url": "http://x"} }
 		]
 	}`)
 	if err == nil {
@@ -906,7 +906,7 @@ func TestGenerate_Switch_NullableBooleanRejected(t *testing.T) {
 				"id": "route",
 				"switch": [{"case": "input.go_then", "goto": "$work"}, {"goto": "end"}]
 			},
-			{ "id": "work", "action": {"type": "rest", "endpoint": "http://x"} }
+			{ "id": "work", "action": {"type": "fetch", "url": "http://x"} }
 		]
 	}`)
 	if err == nil {
@@ -924,8 +924,8 @@ func TestGenerate_Switch_StringExpressionRejectsNonBoolean(t *testing.T) {
     {
       "id": "check",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x",
+        "type": "fetch",
+        "url": "http://x",
         "result_schema": {
           "type": "object",
           "properties": {
@@ -952,8 +952,8 @@ func TestGenerate_Switch_StringExpressionRejectsNonBoolean(t *testing.T) {
     {
       "id": "next",
       "action": {
-        "type": "rest",
-        "endpoint": "http://x"
+        "type": "fetch",
+        "url": "http://x"
       }
     }
   ]

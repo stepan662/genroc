@@ -163,6 +163,44 @@ func TestOptionalWithDefaultIsNonNullable(t *testing.T) {
 	}
 }
 
+// additionalProperties types an object's undeclared keys as an open map: extras
+// survive validation (a closed object would strip them), a wrong-typed extra is
+// rejected, and navigating an arbitrary key yields the map value type, nullable.
+func TestAdditionalPropertiesMap(t *testing.T) {
+	sc := mustParse(t, `{
+		"type":"object",
+		"properties":{"headers":{"type":"object","additionalProperties":{"type":"string"}}},
+		"required":["headers"]
+	}`)
+
+	// Arbitrary string-valued keys survive validation (not stripped).
+	got, err := sc.ValidateAt("headers", mustData(t, `{"Authorization":"Bearer x","X-Trace":"1"}`))
+	if err != nil {
+		t.Fatalf("ValidateAt: %v", err)
+	}
+	if !reflect.DeepEqual(got, mustData(t, `{"Authorization":"Bearer x","X-Trace":"1"}`)) {
+		t.Errorf("open map dropped/altered keys: %v", got)
+	}
+
+	// A non-string extra value is rejected.
+	if _, err := sc.ValidateAt("headers", mustData(t, `{"X-Count":5}`)); err == nil {
+		t.Error("expected rejection of a non-string map value")
+	}
+
+	// Navigating an undeclared key yields the map value type (string), nullable since
+	// the key may be absent — so a bare comparison fails but `?? default` types fine.
+	at, err := sc.At("headers.Anything")
+	if err != nil {
+		t.Fatalf("At(headers.Anything): %v", err)
+	}
+	if !at.HasNull() {
+		t.Errorf("open-map value access should be nullable, got type %v", at.Type())
+	}
+	if _, err := sc.Infer("headers.Anything ?? 'x'"); err != nil {
+		t.Errorf("Infer(open-map access with ??) unexpected error: %v", err)
+	}
+}
+
 func TestInferChainsThroughDefs(t *testing.T) {
 	sc := mustParse(t, nestedSchema)
 	// Infer to a subpath, then validate against the returned sub-schema directly —

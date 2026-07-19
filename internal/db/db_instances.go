@@ -577,7 +577,7 @@ func toInstance(r dbgen.ProcessInstance) (*model.ProcessInstance, error) {
 		Error:          r.Error,
 		CreatedAt:      toTime(r.CreatedAt),
 		UpdatedAt:      toTime(r.UpdatedAt),
-		WakeAt:    toTimePtr(r.WakeAt),
+		WakeAt:         toTimePtr(r.WakeAt),
 		WorkerID:       nullStringPtr(r.WorkerID),
 		LeaseExpiresAt: toTimePtr(r.LeaseExpiresAt),
 	}

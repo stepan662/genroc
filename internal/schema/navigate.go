@@ -156,11 +156,17 @@ func lookupPropertyGuard(s *node, name string, defs map[string]*node, visiting m
 		return result, nil
 	}
 
-	if resolved.Properties == nil {
-		return nil, fmt.Errorf("cannot access .%s: schema has no properties", name)
-	}
 	prop, ok := resolved.Properties[name]
 	if !ok {
+		// Undeclared key. On an open map (additionalProperties set) it takes the
+		// additionalProperties type, wrapped nullable since the key may be absent;
+		// on a closed object it's an access error.
+		if resolved.AdditionalProperties != nil {
+			return withNull(resolved.AdditionalProperties), nil
+		}
+		if resolved.Properties == nil {
+			return nil, fmt.Errorf("cannot access .%s: schema has no properties", name)
+		}
 		return nil, fmt.Errorf("field %q not found in schema", name)
 	}
 	// The property value is returned as declared — a $ref stays a $ref (see the
@@ -692,6 +698,7 @@ func stripNull(s *node) *node {
 // navigation do) still accepts any value.
 func isEmptyNode(s *node) bool {
 	return s == nil || (len(s.Type) == 0 && s.Properties == nil && s.Required == nil &&
+		s.AdditionalProperties == nil &&
 		s.Items == nil && s.OneOf == nil && s.AnyOf == nil && s.AllOf == nil &&
 		s.Enum == nil && s.Ref == "" && s.Minimum == nil &&
 		s.Maximum == nil && s.MinLength == nil && s.MaxLength == nil &&

@@ -53,7 +53,7 @@ func joinNodes(a, b *node) *node {
 }
 
 func isObjectType(s *node) bool {
-	return s != nil && (s.Type.Contains("object") || s.Properties != nil)
+	return s != nil && (s.Type.Contains("object") || s.Properties != nil || s.AdditionalProperties != nil)
 }
 
 // joinObjects merges two object schemas property-wise. A key present on both is
@@ -92,6 +92,16 @@ func joinObjects(a, b *node) *node {
 	out := &node{Type: SchemaType{"object"}, Properties: props}
 	if len(required) > 0 {
 		out.Required = required
+	}
+	// Open-map keys: join both sides' additionalProperties, or carry the one side
+	// that has it (the join permits those extras, so it widens rather than closes).
+	switch {
+	case a.AdditionalProperties != nil && b.AdditionalProperties != nil:
+		out.AdditionalProperties = joinNodes(a.AdditionalProperties, b.AdditionalProperties)
+	case a.AdditionalProperties != nil:
+		out.AdditionalProperties = canonicalizeNode(a.AdditionalProperties)
+	case b.AdditionalProperties != nil:
+		out.AdditionalProperties = canonicalizeNode(b.AdditionalProperties)
 	}
 	return out
 }

@@ -23,7 +23,7 @@ func mustResultSchema(src string) *schema.Schema {
 func TestSnippetResultRedactsSecret(t *testing.T) {
 	e := &Engine{logCfg: LogConfig{Payloads: true}}
 	task := &model.Task{Action: &model.Action{
-		Type: model.ActionTypeREST,
+		Type: model.ActionTypeFetch,
 		ResultSchema: mustResultSchema(`{
 			"type": "object",
 			"properties": {
@@ -49,7 +49,7 @@ func TestSnippetResultRedactsSecret(t *testing.T) {
 // With payload logging off, nothing is rendered at all (no leak, no work).
 func TestSnippetResultEmptyWhenPayloadsOff(t *testing.T) {
 	e := &Engine{logCfg: LogConfig{Payloads: false}}
-	task := &model.Task{Action: &model.Action{Type: model.ActionTypeREST}}
+	task := &model.Task{Action: &model.Action{Type: model.ActionTypeFetch}}
 	if got := e.snippetResult(task, map[string]any{"x": 1}); got != "" {
 		t.Errorf("want empty snippet when payloads off, got %q", got)
 	}

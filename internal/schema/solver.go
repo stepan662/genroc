@@ -309,7 +309,7 @@ func dropBareSCCRefs(n *node, scc map[string]bool) *node {
 	hadVariants := len(n.OneOf)+len(n.AnyOf)+len(n.AllOf) > 0
 	hasVariants := len(m.OneOf)+len(m.AnyOf)+len(m.AllOf) > 0
 	if hadVariants && !hasVariants && len(m.Type) == 0 && m.Properties == nil &&
-		m.Items == nil && m.Ref == "" && m.Enum == nil {
+		m.AdditionalProperties == nil && m.Items == nil && m.Ref == "" && m.Enum == nil {
 		return nil // the node was purely its (now dropped) union
 	}
 	return &m

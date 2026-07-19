@@ -33,8 +33,9 @@ result whichever way the poll ends.
 
 genroc has no `while`/`until` keyword. A poll loop is expressed structurally: the `check`
 task's `switch` routes to a `wait`/`backoff` pair, which routes back to `$check`, until the
-status becomes `done`. Each iteration is a real REST call that persists and reclaims, so the
-loop is crash-safe and holds no worker while it's parked.
+status becomes `done`. Each request is a `fetch` action (an HTTP call like `fetch(url,
+{method, headers, body})`, where every field is an expression) that persists and reclaims, so
+the loop is crash-safe and holds no worker while it's parked.
 
 ## Configuring the poll interval and timeout (parent → child)
 
@@ -55,7 +56,8 @@ no `?? ` guard.) The parent declares the same defaults and threads the values do
 
 ```sh
 genctl run polling-example \
-  --input '{ "jobs_url": "http://localhost:9000", "auth_token": "s3cr3t",
+  --input '{ "jobs_url": "http://localhost:9000",
+             "headers": { "Authorization": "Bearer s3cr3t" },
              "poll_interval_ms": 2000, "max_attempts": 30 }'
 ```
 
@@ -80,22 +82,32 @@ both a cancellable `external` *and* a templated-duration `delay`). The signal ta
 
 ## Configuring headers (parent → child)
 
-A `rest` action takes a `headers` map whose **values are expressions**, so the child sets
-`Authorization: "Bearer {{ input.auth_token }}"` on its requests. The parent owns that
-token and passes it down through the child's `input` when it spawns it — that's how a
-parent configures the headers its child sends: thread the value through child input, then
-reference it in the child's `headers` map. (The header *keys* are declared in the child;
-only the *values* flow in.)
+The whole request is caller-driven, so the **caller supplies the entire headers map** and
+the child splats it onto every `fetch` with `headers: "{{ input.headers }}"`. The headers
+input is typed as an **open string map** — `{ type: object, additionalProperties: { type:
+string } }` — so arbitrary keys (auth, trace ids, …) flow from the parent down without the
+child declaring each one. This is `additionalProperties` in action: without it, undeclared
+header keys would be stripped by normalization; with it they survive as typed string values.
+A `fetch` action's `headers` is a shape, so it accepts either this whole-map expression or a
+literal map of templated values.
+
+genroc also **auto-stamps** `X-Genroc-Instance-Id` and `X-Genroc-Task-Id` on every request
+(set authoritatively, so a caller header can't spoof them), so the receiving service can
+correlate a call back to the instance/task that made it — the run context the raw body no
+longer carries.
 
 ## Running it
 
-The service base URL and auth token are passed as input, so point it at any server exposing
+The service base URL and a headers map are passed as input, so point it at any server exposing
 `POST /jobs` (returns `{ "job_id": ... }`), `POST /status` (returns
 `{ "status": "pending" | "done", "result": ... }`), and `POST /cancel`:
 
 ```sh
 genctl apply -f poller.genroc.yaml -f parent.genroc.yaml
-genctl run polling-example --input '{ "jobs_url": "http://localhost:9000", "auth_token": "s3cr3t" }'
+genctl run polling-example --input '{
+  "jobs_url": "http://localhost:9000",
+  "headers": { "Authorization": "Bearer s3cr3t" }
+}'
 ```
 
 ## Automated test

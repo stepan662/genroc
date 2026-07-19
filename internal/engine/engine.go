@@ -683,40 +683,41 @@ func (e *Engine) executeAction(ctx context.Context, inst *model.ProcessInstance,
 	taskCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	data, err := e.buildTaskData(inst, task)
+	// Resolve the request. The URL template can pull a base URL from config or input;
+	// secret values it carries are scrubbed from the logged URL/errors in audit().
+	url, err := e.resolveURL(inst, task.Action)
 	if err != nil {
-		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q input: %v", task.ID, err)))
+		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q url: %v", task.ID, err)))
 	}
-
-	req := transport.Request{
-		InstanceID: inst.ID,
-		TaskID:     task.ID,
-		Data:       data,
-	}
-
-	// Resolve the endpoint template (e.g. a base URL from config or input). Secret
-	// values it carries are scrubbed from the logged URL/errors in audit().
-	endpoint, err := e.resolveEndpoint(inst, task.Action)
+	method, err := e.resolveMethod(inst, task.Action)
 	if err != nil {
-		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q endpoint: %v", task.ID, err)))
+		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q method: %v", task.ID, err)))
 	}
-
-	// action_started (debug): message = the action type; data = the request body; and
-	// for a REST call meta = {url} so the trail shows which endpoint was hit. Headers
-	// are intentionally omitted — they routinely carry secrets and the audit log is
-	// persisted.
-	var startMeta map[string]any
-	if task.Action.Type == model.ActionTypeREST {
-		startMeta = map[string]any{"url": endpoint}
-	}
-	e.audit(inst, logEvent{Level: model.LogDebug, Event: model.EventActionStarted, Task: task.ID, Msg: string(task.Action.Type), Data: e.snippet(data), Meta: startMeta})
-
 	resolvedHeaders, err := e.resolveHeaders(inst, task.Action)
 	if err != nil {
 		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q headers: %v", task.ID, err)))
 	}
+	// Stamp the caller's identity on every request (set last so it is authoritative and
+	// a user-supplied header of the same name cannot spoof it).
+	if resolvedHeaders == nil {
+		resolvedHeaders = make(map[string]string, 2)
+	}
+	resolvedHeaders[transport.HeaderInstanceID] = inst.ID
+	resolvedHeaders[transport.HeaderTaskID] = task.ID
+	var body any
+	if task.Action.Body.Present() {
+		body, err = e.evalShapeCtx(inst, task.Action.Body.Raw, nil)
+		if err != nil {
+			return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q body: %v", task.ID, err)))
+		}
+	}
 
-	resp, err := transport.Send(taskCtx, task.Action, endpoint, resolvedHeaders, req)
+	// action_started (debug): message = the action type; data = the request body; meta =
+	// {url} so the trail shows which URL was hit. Headers are intentionally omitted — they
+	// routinely carry secrets and the audit log is persisted.
+	e.audit(inst, logEvent{Level: model.LogDebug, Event: model.EventActionStarted, Task: task.ID, Msg: string(task.Action.Type), Data: e.snippet(body), Meta: map[string]any{"url": url}})
+
+	resp, err := transport.Send(taskCtx, task.Action, url, method, resolvedHeaders, body)
 	if err != nil {
 		code := transport.ClassifyGoError(err)
 		// action_failed (debug) records the call failure — error detail in data,
@@ -1713,34 +1714,57 @@ func (e *Engine) computeOutput(inst *model.ProcessInstance) error {
 	return nil
 }
 
-// resolveEndpoint evaluates the REST endpoint as a template so a base URL can come
-// from config or input (e.g. "{{ config.server_url }}/path"), returning the
-// resolved URL. Returns "" for actions without an endpoint. Secret values it
-// carries are scrubbed from logged URLs/errors by audit().
-func (e *Engine) resolveEndpoint(inst *model.ProcessInstance, call *model.Action) (string, error) {
-	if call.Endpoint == "" {
+// resolveURL evaluates the fetch URL as a template so a base URL can come from config
+// or input (e.g. "{{ config.server_url }}/path"), returning the resolved URL. Returns
+// "" for actions without a URL. Secret values it carries are scrubbed from logged
+// URLs/errors by audit().
+func (e *Engine) resolveURL(inst *model.ProcessInstance, call *model.Action) (string, error) {
+	if call.URL == "" {
 		return "", nil
 	}
-	val, err := e.evalAnyCtx(inst, call.Endpoint)
+	val, err := e.evalAnyCtx(inst, call.URL)
 	if err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("%v", val), nil
 }
 
-// resolveHeaders evaluates each header value expression against the instance
-// context and coerces the result to a string. Returns nil for calls without headers.
+// resolveMethod evaluates the fetch method expression and upper-cases it, defaulting
+// to POST when unset.
+func (e *Engine) resolveMethod(inst *model.ProcessInstance, call *model.Action) (string, error) {
+	if call.Method == "" {
+		return "POST", nil
+	}
+	val, err := e.evalAnyCtx(inst, call.Method)
+	if err != nil {
+		return "", err
+	}
+	m := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", val)))
+	if m == "" {
+		return "POST", nil
+	}
+	return m, nil
+}
+
+// resolveHeaders evaluates the fetch Headers shape to a string map. The shape may be a
+// literal map of templated values or a single expression yielding a map; either way the
+// resolved value must be an object, whose values are coerced to strings. Returns nil for
+// calls without headers.
 func (e *Engine) resolveHeaders(inst *model.ProcessInstance, call *model.Action) (map[string]string, error) {
-	if len(call.Headers) == 0 {
+	if !call.Headers.Present() {
 		return nil, nil
 	}
-	resolved := make(map[string]string, len(call.Headers))
-	for k, expr := range call.Headers {
-		val, err := e.evalAnyCtx(inst, expr)
-		if err != nil {
-			return nil, fmt.Errorf("header %q: %w", k, err)
-		}
-		resolved[k] = fmt.Sprintf("%v", val)
+	val, err := e.evalShapeCtx(inst, call.Headers.Raw, nil)
+	if err != nil {
+		return nil, err
+	}
+	m, ok := val.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("headers must evaluate to an object, got %T", val)
+	}
+	resolved := make(map[string]string, len(m))
+	for k, v := range m {
+		resolved[k] = fmt.Sprintf("%v", v)
 	}
 	return resolved, nil
 }

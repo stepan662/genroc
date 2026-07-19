@@ -22,8 +22,8 @@ test("a secret config value in the endpoint URL is redacted in stored logs", asy
             {
               id: "call",
               action: {
-                type: "rest",
-                endpoint: "{{ config.server_url }}/action",
+                type: "fetch",
+                url: "{{ config.server_url }}/action",
                 result_schema: {
                   type: "object",
                   properties: { slept: { type: "number" } },
@@ -78,8 +78,8 @@ test("a secret INPUT value in the endpoint URL is redacted in stored logs", asyn
             {
               id: "call",
               action: {
-                type: "rest",
-                endpoint: "{{ input.base }}/action",
+                type: "fetch",
+                url: "{{ input.base }}/action",
                 result_schema: {
                   type: "object",
                   properties: { slept: { type: "number" } },
@@ -128,7 +128,7 @@ test("a secret in a failed request's transport error is obscured in logs", async
             properties: { host: { type: "string", secret: true } },
           },
           // No scheme → "unsupported protocol scheme" error built from the real URL.
-          tasks: [{ id: "t", action: { type: "rest", endpoint: "{{ input.host }}/x" }, switch: "end" }],
+          tasks: [{ id: "t", action: { type: "fetch", url: "{{ input.host }}/x" }, switch: "end" }],
         },
       ],
       channel: "latest",
@@ -206,9 +206,9 @@ test("a secret in a large (externalized) request body is redacted in stored logs
             {
               id: "call",
               action: {
-                type: "rest",
-                endpoint: `http://localhost:${mock.port}/x`,
-                input: { auth: "{{ input.token }}" },
+                type: "fetch",
+                url: `http://localhost:${mock.port}/x`,
+                body: { auth: "{{ input.token }}" },
                 result_schema: {
                   type: "object",
                   properties: { ok: { type: "number" } },

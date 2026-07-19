@@ -187,8 +187,8 @@ test(
           {
             id: "gen",
             action: {
-              type: "rest" as const,
-              endpoint: `http://localhost:${mockPort}/gen`,
+              type: "fetch" as const,
+              url: `http://localhost:${mockPort}/gen`,
               result_schema: {
                 type: "object",
                 properties: {

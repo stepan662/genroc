@@ -41,8 +41,8 @@ beforeAll(async () => {
     {
       id: "work",
       action: {
-        type: "rest" as const,
-        endpoint: `http://localhost:${failMockPort}/action`,
+        type: "fetch" as const,
+        url: `http://localhost:${failMockPort}/action`,
       },
       on_error: [{ code: ["http.%"], retries: 2 }],
       timeout_ms: 5_000,
@@ -55,8 +55,8 @@ beforeAll(async () => {
     {
       id: "work",
       action: {
-        type: "rest" as const,
-        endpoint: `http://localhost:${failMockPort}/action`,
+        type: "fetch" as const,
+        url: `http://localhost:${failMockPort}/action`,
       },
       on_error: [{ code: ["http.%"], retries: 1 }],
       timeout_ms: 5_000,

@@ -35,6 +35,9 @@ func canonicalizeNode(s *node) *node {
 	if s.Items != nil {
 		n.Items = canonicalizeNode(s.Items)
 	}
+	if s.AdditionalProperties != nil {
+		n.AdditionalProperties = canonicalizeNode(s.AdditionalProperties)
+	}
 	n.Type = SchemaType(sortDedupStrings([]string(s.Type)))
 	n.Required = sortDedupStrings(s.Required)
 	n.OneOf = canonVariants(s.OneOf, kindOneOf)
@@ -125,8 +128,8 @@ func pureComposition(s *node, kind compositionKind) ([]*node, bool) {
 	if s == nil {
 		return nil, false
 	}
-	if len(s.Type) > 0 || s.Properties != nil || s.Items != nil || len(s.Required) > 0 ||
-		len(s.Enum) > 0 || s.Ref != "" {
+	if len(s.Type) > 0 || s.Properties != nil || s.AdditionalProperties != nil || s.Items != nil ||
+		len(s.Required) > 0 || len(s.Enum) > 0 || s.Ref != "" {
 		return nil, false
 	}
 	one, any, all := len(s.OneOf) > 0, len(s.AnyOf) > 0, len(s.AllOf) > 0
@@ -168,7 +171,7 @@ func isSimpleType(s *node) bool {
 	if s == nil || len(s.Type) == 0 {
 		return false
 	}
-	return s.Properties == nil && s.Items == nil && len(s.Required) == 0 &&
+	return s.Properties == nil && s.AdditionalProperties == nil && s.Items == nil && len(s.Required) == 0 &&
 		len(s.OneOf) == 0 && len(s.AnyOf) == 0 && len(s.AllOf) == 0 &&
 		len(s.Enum) == 0 && s.Ref == ""
 }

@@ -44,7 +44,7 @@ func TestGracefulShutdown_ReleasesLeases(t *testing.T) {
 	processName := fmt.Sprintf("graceful-%d", time.Now().UnixNano())
 	tasks := []*model.Task{{
 		ID:     "work",
-		Action: &model.Action{Type: model.ActionTypeREST, Endpoint: srv.URL},
+		Action: &model.Action{Type: model.ActionTypeFetch, URL: srv.URL},
 		Switch: model.SwitchMap{{Goto: model.GotoEnd}},
 	}}
 	if err := database.SaveDefinition(&model.ProcessDefinition{Name: processName, Tasks: tasks}, 1, nil, "graceful-hash", ""); err != nil {
@@ -127,7 +127,7 @@ func TestOverwhelm_GracefulExit(t *testing.T) {
 	name := fmt.Sprintf("overwhelm-%d", time.Now().UnixNano())
 	tasks := []*model.Task{{
 		ID:     "slow",
-		Action: &model.Action{Type: model.ActionTypeREST, Endpoint: srv.URL},
+		Action: &model.Action{Type: model.ActionTypeFetch, URL: srv.URL},
 		Switch: model.SwitchMap{{Goto: model.GotoEnd}},
 	}}
 	if err := database.SaveDefinition(&model.ProcessDefinition{Name: name, Tasks: tasks}, 1, nil, "overwhelm-hash", ""); err != nil {

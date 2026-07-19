@@ -119,7 +119,7 @@ func (ctx *subsetCtx) check(sub, super *node) bool {
 	}
 
 	// Structural checks.
-	if super.Properties != nil || super.Required != nil {
+	if super.Properties != nil || super.Required != nil || super.AdditionalProperties != nil {
 		if !ctx.checkObject(sub, super) {
 			return false
 		}
@@ -185,6 +185,23 @@ func (ctx *subsetCtx) checkObject(sub, super *node) bool {
 			if !ctx.check(subProp, superProp) {
 				return false
 			}
+		}
+	}
+
+	// Open-map super: every key sub can carry that super does not declare must fit
+	// super's additionalProperties — both sub's own undeclared properties and sub's
+	// own open-map values. (A closed super strips extras, so it imposes nothing here.)
+	if super.AdditionalProperties != nil {
+		for name, subProp := range sub.Properties {
+			if _, declared := super.Properties[name]; declared {
+				continue
+			}
+			if subProp == nil || !ctx.check(subProp, super.AdditionalProperties) {
+				return false
+			}
+		}
+		if sub.AdditionalProperties != nil && !ctx.check(sub.AdditionalProperties, super.AdditionalProperties) {
+			return false
 		}
 	}
 

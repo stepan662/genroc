@@ -16,7 +16,7 @@ func TestSecretFlowsToOutput(t *testing.T) {
 			"properties": { "api_key": { "type": "string", "secret": true } }
 		},
 		"tasks": [
-			{ "id": "t", "action": { "type": "rest", "endpoint": "http://x" }, "switch": "end" }
+			{ "id": "t", "action": { "type": "fetch", "url": "http://x" }, "switch": "end" }
 		],
 		"output": { "token": "{{ config.api_key }}", "name": "static" }
 	}`)
@@ -44,7 +44,7 @@ func TestConfigNullableEndpointRejected(t *testing.T) {
 		"tasks": [
 			{
 				"id": "call",
-				"action": { "type": "rest", "endpoint": "{{ config.server_url }}/second" },
+				"action": { "type": "fetch", "url": "{{ config.server_url }}/second" },
 				"switch": "end"
 			}
 		]
@@ -67,7 +67,7 @@ func TestConfigRequiredEndpointOK(t *testing.T) {
 		"tasks": [
 			{
 				"id": "call",
-				"action": { "type": "rest", "endpoint": "{{ config.server_url }}/second" },
+				"action": { "type": "fetch", "url": "{{ config.server_url }}/second" },
 				"switch": "end"
 			}
 		]
@@ -86,8 +86,8 @@ func TestConfigNullableHeaderRejected(t *testing.T) {
 			{
 				"id": "call",
 				"action": {
-					"type": "rest",
-					"endpoint": "http://x",
+					"type": "fetch",
+					"url": "http://x",
 					"headers": { "Authorization": "Bearer {{ config.api_key }}" }
 				},
 				"switch": "end"
@@ -112,8 +112,8 @@ func TestConfigRequiredHeaderOK(t *testing.T) {
 			{
 				"id": "call",
 				"action": {
-					"type": "rest",
-					"endpoint": "http://x",
+					"type": "fetch",
+					"url": "http://x",
 					"headers": { "Authorization": "Bearer {{ config.api_key }}" }
 				},
 				"switch": "end"
@@ -133,7 +133,7 @@ func TestConfigDefaultedEndpointOK(t *testing.T) {
 		"tasks": [
 			{
 				"id": "call",
-				"action": { "type": "rest", "endpoint": "{{ config.server_url }}/second" },
+				"action": { "type": "fetch", "url": "{{ config.server_url }}/second" },
 				"switch": "end"
 			}
 		]
@@ -152,7 +152,7 @@ func TestConfigNullableEndpointWithCoalesceOK(t *testing.T) {
 		"tasks": [
 			{
 				"id": "call",
-				"action": { "type": "rest", "endpoint": "{{ config.server_url ?? \"http://localhost\" }}/second" },
+				"action": { "type": "fetch", "url": "{{ config.server_url ?? \"http://localhost\" }}/second" },
 				"switch": "end"
 			}
 		]

@@ -26,11 +26,14 @@ func buildInputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proces
 	for _, s := range tasks {
 		if s.Action != nil {
 			ts, inMap := taskSchemas[s.ID]
-			isREST := s.Action.Type == model.ActionTypeREST
-			hasEndpoint := isREST && s.Action.Endpoint != ""
-			hasHeaders := isREST && len(s.Action.Headers) > 0
+			isFetch := s.Action.Type == model.ActionTypeFetch
+			hasURL := isFetch && s.Action.URL != ""
+			hasMethod := isFetch && s.Action.Method != ""
+			hasHeaders := isFetch && s.Action.Headers.Present()
+			hasBody := s.Action.Body.Present()
+			hasInput := s.Action.Input.Present()
 			hasOver := s.Action.Type == model.ActionTypeChildList && s.Action.Over != ""
-			if inMap || s.Action.Input.Present() || hasEndpoint || hasHeaders || hasOver {
+			if inMap || hasBody || hasInput || hasURL || hasMethod || hasHeaders || hasOver {
 				ctx := contextSchema(required[s.ID], optional[s.ID], taskSchemas, processInput, configSchema, mustErr[s.ID], mayErr[s.ID]).WithDefs(defs)
 				// The child_list `over` expression must be a non-null array; each
 				// element becomes one child's input. Type-check it here so a malformed or
@@ -40,28 +43,27 @@ func buildInputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proces
 						return err
 					}
 				}
-				// The rest endpoint and header values are templates evaluated against the
-				// context; type-check them and reject a possibly-null result (a null URL or
-				// header value would silently stringify to "null").
-				if hasEndpoint {
-					if err := checkNonNullTemplate(s.Action.Endpoint, ctx, fmt.Sprintf("task %q endpoint", s.ID)); err != nil {
+				// The fetch url and method are templates evaluated against the context;
+				// type-check them and reject a possibly-null result (a null URL or method
+				// would silently stringify to "null").
+				if hasURL {
+					if err := checkNonNullTemplate(s.Action.URL, ctx, fmt.Sprintf("task %q url", s.ID)); err != nil {
 						return err
 					}
 				}
-				if hasHeaders {
-					names := make([]string, 0, len(s.Action.Headers))
-					for h := range s.Action.Headers {
-						names = append(names, h)
-					}
-					slices.Sort(names)
-					for _, h := range names {
-						if err := checkNonNullTemplate(s.Action.Headers[h], ctx, fmt.Sprintf("task %q header %q", s.ID, h)); err != nil {
-							return err
-						}
+				if hasMethod {
+					if err := checkNonNullTemplate(s.Action.Method, ctx, fmt.Sprintf("task %q method", s.ID)); err != nil {
+						return err
 					}
 				}
-				if inMap || s.Action.Input.Present() {
-					input, err := inferInput(s, ctx)
+				// Headers is a shape that must evaluate to a non-null object.
+				if hasHeaders {
+					if err := checkHeadersShape(s.Action.Headers.Raw, ctx, s.ID); err != nil {
+						return err
+					}
+				}
+				if inMap || hasBody || hasInput {
+					input, err := inferActionPayload(s, ctx)
 					if err != nil {
 						return err
 					}
@@ -133,11 +135,32 @@ func checkArrayTemplate(expr string, ctx schema.Schema, taskID string) (schema.S
 	return inferred, nil
 }
 
-func inferInput(s *model.Task, ctx schema.Schema) (schema.Schema, error) {
-	if !s.Action.Input.Present() {
+// inferActionPayload infers the schema of an action's payload shape — the fetch request
+// body (Body) or the external snapshot (Input).
+func inferActionPayload(s *model.Task, ctx schema.Schema) (schema.Schema, error) {
+	shape := s.Action.Input
+	label := "input"
+	if s.Action.Type == model.ActionTypeFetch {
+		shape = s.Action.Body
+		label = "body"
+	}
+	if !shape.Present() {
 		return schema.Object(), nil
 	}
-	return inferShape(s.Action.Input.Raw, ctx, fmt.Sprintf("task %q input", s.ID))
+	return inferShape(shape.Raw, ctx, fmt.Sprintf("task %q %s", s.ID, label))
+}
+
+// checkHeadersShape verifies the fetch Headers shape infers to a non-null object (a
+// literal map of templated values, or an expression yielding a map).
+func checkHeadersShape(raw any, ctx schema.Schema, taskID string) error {
+	hdr, err := inferShape(raw, ctx, fmt.Sprintf("task %q headers", taskID))
+	if err != nil {
+		return err
+	}
+	if hdr.HasNull() || !hdr.IsType("object") {
+		return fmt.Errorf("task %q headers must evaluate to a non-null object", taskID)
+	}
+	return nil
 }
 
 // inferShape infers the JSON Schema of a model.Shape value: a string leaf yields

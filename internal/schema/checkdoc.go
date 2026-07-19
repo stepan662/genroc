@@ -152,6 +152,9 @@ func checkDoc(nd *node, defs map[string]*node, seen map[*node]bool) error {
 	if err := checkDoc(nd.Items, defs, seen); err != nil {
 		return fmt.Errorf("items: %w", err)
 	}
+	if err := checkDoc(nd.AdditionalProperties, defs, seen); err != nil {
+		return fmt.Errorf("additionalProperties: %w", err)
+	}
 	for i, v := range nd.OneOf {
 		if v == nil {
 			return fmt.Errorf("oneOf[%d] is null", i)

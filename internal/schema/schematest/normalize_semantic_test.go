@@ -132,10 +132,20 @@ func TestNormalizeSemantic_items(t *testing.T) {
 	)
 }
 
-func TestParse_rejectAdditionalPropertiesInSemantic(t *testing.T) {
-	assertParseErr(t,
-		`{"type":"object","additionalProperties":{"type":"string"}}`,
-		`unsupported schema keyword "additionalProperties"`,
+func TestNormalizeSemantic_additionalPropertiesMap(t *testing.T) {
+	// A typed open map: undeclared keys must be strings. Decision parity with the
+	// gojsonschema oracle (both accept string extras, both reject a non-string extra).
+	assertSemanticEquivalence(t,
+		`{"type":"object","properties":{"id":{"type":"integer"}},"additionalProperties":{"type":"string"}}`,
+		[]any{
+			map[string]any{"id": 1, "x": "hello", "y": "world"}, // extras are strings
+			map[string]any{"id": 1},                             // no extras
+			map[string]any{"a": "b"},                            // only extras (id optional)
+		},
+		[]any{
+			map[string]any{"id": 1, "x": 5}, // extra not a string
+			map[string]any{"x": true},       // extra not a string
+		},
 	)
 }
 

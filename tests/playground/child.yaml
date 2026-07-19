@@ -5,10 +5,10 @@ input_schema:
 tasks:
   - id: fourth
     action:
-      type: rest
-      input:
+      type: fetch
+      body:
         sleep: "{{ input }}"
-      endpoint: "http://localhost:3001/fourth"
+      url: "http://localhost:3001/fourth"
       result_schema:
         type: object
         properties:

@@ -19,7 +19,7 @@ func mustSchemaPtr(src string) *schema.Schema {
 
 func TestProcessDefinition_Normalize(t *testing.T) {
 	validTask := func(id string) *Task {
-		return &Task{ID: id, Action: &Action{Type: ActionTypeREST, Endpoint: "http://localhost/x"}}
+		return &Task{ID: id, Action: &Action{Type: ActionTypeFetch, URL: "http://localhost/x"}}
 	}
 
 	t.Run("no schemas is a no-op", func(t *testing.T) {
@@ -174,7 +174,7 @@ func TestProcessDefinition_Normalize(t *testing.T) {
 
 func TestProcessDefinition_Validate(t *testing.T) {
 	restTaskEnd := func(id, endpoint string) *Task {
-		return &Task{ID: id, Action: &Action{Type: ActionTypeREST, Endpoint: endpoint}, Switch: SwitchMap{{Goto: GotoEnd}}}
+		return &Task{ID: id, Action: &Action{Type: ActionTypeFetch, URL: endpoint}, Switch: SwitchMap{{Goto: GotoEnd}}}
 	}
 
 	tests := []struct {
@@ -202,7 +202,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "valid task with both call and switch",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
-					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeFetch, URL: "http://x"},
 					Switch: SwitchMap{
 						{Case: "self.ok == true", Goto: "$ship"},
 						{Goto: GotoEnd},
@@ -225,7 +225,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		{
 			name: "task without switch is rejected",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
-				{ID: "s", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"}},
+				{ID: "s", Action: &Action{Type: ActionTypeFetch, URL: "http://x"}},
 			}},
 			wantErr: "switch is required",
 		},
@@ -239,9 +239,9 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		{
 			name: "rest call missing endpoint",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
-				{ID: "s1", Action: &Action{Type: ActionTypeREST}, Switch: SwitchMap{{Goto: GotoEnd}}},
+				{ID: "s1", Action: &Action{Type: ActionTypeFetch}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
-			wantErr: "action.endpoint is required",
+			wantErr: "action.url is required",
 		},
 		{
 			name: "valid child_list call",
@@ -297,15 +297,15 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		{
 			name: "unknown call type",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
-				{ID: "s1", Action: &Action{Type: "ftp", Endpoint: "ftp://x"}, Switch: SwitchMap{{Goto: GotoEnd}}},
+				{ID: "s1", Action: &Action{Type: "ftp", URL: "ftp://x"}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
-			wantErr: "action.type must be one of: rest, child_map, child_list",
+			wantErr: "action.type must be one of: fetch, child_map, child_list",
 		},
 		{
 			name: "switch missing catch-all is rejected",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
-					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeFetch, URL: "http://x"},
 					Switch: SwitchMap{
 						{Case: "self.ok == true", Goto: "$ship"},
 					},
@@ -318,7 +318,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "switch catch-all not last is rejected",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
-					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeFetch, URL: "http://x"},
 					Switch: SwitchMap{
 						{Goto: GotoEnd},
 						{Case: "self.ok == true", Goto: "$ship"},
@@ -332,7 +332,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "switch end in non-catch-all case is valid",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
-					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeFetch, URL: "http://x"},
 					Switch: SwitchMap{
 						{Case: "self.error == true", Goto: GotoEnd},
 						{Goto: "$ship"},
@@ -346,7 +346,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "switch goto references unknown task",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
-					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeFetch, URL: "http://x"},
 					Switch: SwitchMap{
 						{Case: "self.ok == true", Goto: "$nonexistent"},
 						{Goto: GotoEnd},
@@ -358,14 +358,14 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		{
 			name: "switch: next on last task is rejected",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
-				{ID: "only", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"}, Switch: SwitchMap{{Goto: GotoNext}}},
+				{ID: "only", Action: &Action{Type: ActionTypeFetch, URL: "http://x"}, Switch: SwitchMap{{Goto: GotoNext}}},
 			}},
 			wantErr: "'next' is not allowed on the last task",
 		},
 		{
 			name: "switch: next on non-last task is valid",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
-				{ID: "first", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"}, Switch: SwitchMap{{Goto: GotoNext}}},
+				{ID: "first", Action: &Action{Type: ActionTypeFetch, URL: "http://x"}, Switch: SwitchMap{{Goto: GotoNext}}},
 				restTaskEnd("second", "http://x"),
 			}},
 			wantErr: "",
@@ -373,7 +373,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		{
 			name: "switch: scalar next on non-last task is valid",
 			def: func() ProcessDefinition {
-				s := &Task{ID: "first", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"}}
+				s := &Task{ID: "first", Action: &Action{Type: ActionTypeFetch, URL: "http://x"}}
 				if err := s.Switch.UnmarshalJSON([]byte(`"next"`)); err != nil {
 					panic(err)
 				}
@@ -384,14 +384,14 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		{
 			name: "task ID 'end' is reserved",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
-				{ID: "end", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"}, Switch: SwitchMap{{Goto: GotoEnd}}},
+				{ID: "end", Action: &Action{Type: ActionTypeFetch, URL: "http://x"}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
 			wantErr: `task ID "end" is reserved`,
 		},
 		{
 			name: "task ID 'next' is reserved",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
-				{ID: "next", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"}, Switch: SwitchMap{{Goto: GotoEnd}}},
+				{ID: "next", Action: &Action{Type: ActionTypeFetch, URL: "http://x"}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
 			wantErr: `task ID "next" is reserved`,
 		},
@@ -402,7 +402,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — retries on pre.% is valid",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
-					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeFetch, URL: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Code: []string{"pre.%"}, Retries: 3}},
@@ -414,7 +414,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — retries on exact pre.* codes is valid",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
-					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeFetch, URL: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Code: []string{"pre.error", "pre.timeout"}, Retries: 3}},
@@ -426,7 +426,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — retries:0 with http.% next is valid",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
-					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeFetch, URL: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Code: []string{"http.%"}, Goto: "handler"}},
@@ -439,7 +439,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — not_reached:true overrides http.422 retry",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
-					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeFetch, URL: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Code: []string{"http.422"}, NotReached: boolPtr(true), Retries: 2}},
@@ -451,7 +451,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — not_reached:true on catch-all retry is valid",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
-					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeFetch, URL: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{NotReached: boolPtr(true), Retries: 2}},
@@ -463,7 +463,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — retries on http.% is rejected",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
-					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeFetch, URL: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Code: []string{"http.%"}, Retries: 3}},
@@ -475,7 +475,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — retries on exact http.500 is rejected",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
-					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeFetch, URL: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Code: []string{"http.500"}, Retries: 1}},
@@ -487,7 +487,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — retries on http.% is rejected",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
-					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeFetch, URL: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Code: []string{"http.%"}, Retries: 1}},
@@ -499,7 +499,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — catch-all with retries is rejected",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
-					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeFetch, URL: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Retries: 2}},
@@ -511,7 +511,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — wildcard crossing namespaces is rejected",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
-					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeFetch, URL: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Code: []string{"s%"}, Retries: 3}},
@@ -523,7 +523,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:true — mixed pre and non-pre patterns in one rule is rejected",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
-					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeFetch, URL: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(true),
 					OnError:  []ErrorCase{{Code: []string{"pre.%", "http.%"}, Retries: 1}},
@@ -535,7 +535,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			name: "only_once:false (explicit) — retries on http.% is valid",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
-					ID: "charge", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"},
+					ID: "charge", Action: &Action{Type: ActionTypeFetch, URL: "http://x"},
 					Switch:   SwitchMap{{Goto: GotoEnd}},
 					OnlyOnce: boolPtr(false),
 					OnError:  []ErrorCase{{Code: []string{"http.%"}, Retries: 3}},
@@ -548,7 +548,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{
 					ID:      "charge",
-					Action:  &Action{Type: ActionTypeREST, Endpoint: "http://x"},
+					Action:  &Action{Type: ActionTypeFetch, URL: "http://x"},
 					Switch:  SwitchMap{{Goto: GotoEnd}},
 					OnError: []ErrorCase{{Code: []string{"http.%"}, Retries: 3}},
 				},
@@ -588,7 +588,7 @@ func TestProcessDefinition_ValidateInput_Nullable(t *testing.T) {
 				"comment": {"type": ["string", "null"]}
 			}
 		}`),
-		Tasks: []*Task{{ID: "s", Action: &Action{Type: ActionTypeREST, Endpoint: "http://x"}}},
+		Tasks: []*Task{{ID: "s", Action: &Action{Type: ActionTypeFetch, URL: "http://x"}}},
 	}
 
 	tests := []struct {
@@ -642,8 +642,8 @@ func TestStep_ValidateOutput_Nullable(t *testing.T) {
 	task := &Task{
 		ID: "charge",
 		Action: &Action{
-			Type:     ActionTypeREST,
-			Endpoint: "http://x",
+			Type: ActionTypeFetch,
+			URL:  "http://x",
 			ResultSchema: mustSchemaPtr(`{
 				"type": "object",
 				"required": ["charged"],

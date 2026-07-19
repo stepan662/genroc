@@ -15,8 +15,8 @@ test("on_error — HTTP failure routes to recovery task", async () => {
         {
           id: "call",
           action: {
-            type: "rest" as const,
-            endpoint: `http://localhost:${failMock.port}/action`,
+            type: "fetch" as const,
+            url: `http://localhost:${failMock.port}/action`,
           },
           on_error: [{ code: ["http.%"], goto: "$recovery" }],
           timeout_ms: 2000,
@@ -25,8 +25,8 @@ test("on_error — HTTP failure routes to recovery task", async () => {
         {
           id: "recovery",
           action: {
-            type: "rest" as const,
-            endpoint: `http://localhost:${recoveryMock.port}/action`,
+            type: "fetch" as const,
+            url: `http://localhost:${recoveryMock.port}/action`,
             result_schema: {
               type: "object",
               properties: { recovered: { type: "boolean" } },
@@ -71,8 +71,8 @@ test("on_error — error context available in recovery task input", async () => 
         {
           id: "call",
           action: {
-            type: "rest" as const,
-            endpoint: `http://localhost:${failMock.port}/action`,
+            type: "fetch" as const,
+            url: `http://localhost:${failMock.port}/action`,
           },
           on_error: [{ code: ["http.%"], goto: "$recovery" }],
           timeout_ms: 2000,
@@ -81,9 +81,9 @@ test("on_error — error context available in recovery task input", async () => 
         {
           id: "recovery",
           action: {
-            type: "rest" as const,
-            endpoint: `http://localhost:${recoveryMock.port}/action`,
-            input: { error_code: "{{error.code}}" },
+            type: "fetch" as const,
+            url: `http://localhost:${recoveryMock.port}/action`,
+            body: { error_code: "{{error.code}}" },
             result_schema: {
               type: "object",
               properties: { done: { type: "boolean" } },
@@ -126,8 +126,8 @@ test("on_error — unmatched code fails instance", async () => {
         {
           id: "call",
           action: {
-            type: "rest" as const,
-            endpoint: `http://localhost:${failMock.port}/action`,
+            type: "fetch" as const,
+            url: `http://localhost:${failMock.port}/action`,
           },
           on_error: [{ code: ["network.%"], goto: "$unreachable" }],
           timeout_ms: 2000,
@@ -136,8 +136,8 @@ test("on_error — unmatched code fails instance", async () => {
         {
           id: "unreachable",
           action: {
-            type: "rest" as const,
-            endpoint: `http://localhost:${failMock.port}/action`,
+            type: "fetch" as const,
+            url: `http://localhost:${failMock.port}/action`,
           },
           timeout_ms: 500,
           switch: [{ goto: "end" }],

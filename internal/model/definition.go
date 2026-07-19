@@ -27,7 +27,7 @@ const GotoNext = "next"
 type ActionType string
 
 const (
-	ActionTypeREST      ActionType = "rest"
+	ActionTypeFetch     ActionType = "fetch"
 	ActionTypeChildMap  ActionType = "child_map"
 	ActionTypeChildList ActionType = "child_list"
 	ActionTypeDelay     ActionType = "delay"
@@ -43,7 +43,10 @@ type ChildEntry struct {
 }
 
 // Action describes how to invoke a task's action. It is a discriminated union on Type.
-//   - "rest":       Endpoint (required), Headers (optional), AcceptedStatus (optional), Input (optional), ResultSchema (optional)
+//   - "fetch":      URL (required), Method (optional, default POST), Headers (optional),
+//     AcceptedStatus (optional), Body (optional), ResultSchema (optional) — an HTTP call
+//     like fetch(url, {method, headers, body}); every field is an expression/shape, so the
+//     whole request can come from the context. The body is sent raw (an object as JSON).
 //   - "child_map":  Children (required, keyed map) — concurrent named child processes; the result is
 //     an object keyed by child name. A single child is expressed as a one-entry map.
 //   - "child_list": Name (required), Over (required), Version (optional), ResultSchema (optional) —
@@ -54,24 +57,26 @@ type ChildEntry struct {
 //     outside caller submits a result via the external-tasks API; no worker is held while waiting.
 //     An optional Task.TimeoutMs (0 = wait forever) raises a catchable "external.timeout" error.
 //
-// Input (rest/external): templated value evaluated against the current context to build
-// the action's input — the request body (rest), or the snapshot exposed to the resolver
-// via the external-tasks queue (external).
+// Body (fetch) / Input (external): templated value evaluated against the current context —
+// the raw HTTP request body (fetch), or the snapshot exposed to the resolver via the
+// external-tasks queue (external).
 //
-// ResultSchema (rest/external): when set, the result is validated before the instance
+// ResultSchema (fetch/external): when set, the result is validated before the instance
 // resumes (the submitted result, for external). Without it the result is available only as "self" in
 // this task's switch.
 //
-// AcceptedStatus (rest only): HTTP status patterns treated as non-errors. Defaults to any 2xx.
+// AcceptedStatus (fetch only): HTTP status patterns treated as non-errors. Defaults to any 2xx.
 type Action struct {
 	Type           ActionType            `json:"type"`
-	Endpoint       string                `json:"endpoint,omitempty"`        // rest
-	Headers        map[string]string     `json:"headers,omitempty"`         // rest, values are expressions
-	AcceptedStatus []string              `json:"accepted_status,omitempty"` // rest: HTTP status patterns accepted as non-errors
-	ResultSchema   *schema.Schema        `json:"result_schema,omitempty"`   // rest/child_list: validate & persist output
+	URL            string                `json:"url,omitempty"`             // fetch: request URL (an expression)
+	Method         string                `json:"method,omitempty"`          // fetch: HTTP method (an expression); defaults to POST
+	Headers        *Shape                `json:"headers,omitempty"`         // fetch: request headers (a shape evaluating to a string map)
+	AcceptedStatus []string              `json:"accepted_status,omitempty"` // fetch: HTTP status patterns accepted as non-errors
+	ResultSchema   *schema.Schema        `json:"result_schema,omitempty"`   // fetch/child_list: validate & persist output
 	Name           string                `json:"name,omitempty"`            // child_list
 	Version        int                   `json:"version,omitempty"`         // child_list
-	Input          *Shape                `json:"input,omitempty"`           // rest: templated input payload
+	Body           *Shape                `json:"body,omitempty"`            // fetch: templated request body
+	Input          *Shape                `json:"input,omitempty"`           // external: templated snapshot payload
 	Children       map[string]ChildEntry `json:"children,omitempty"`        // child_map
 	Over           string                `json:"over,omitempty"`            // child_list: expression evaluating to the input array (one child per element)
 	Ms             string                `json:"ms,omitempty"`              // delay: milliseconds to pause, as an expression
@@ -84,16 +89,17 @@ func (Action) JSONSchemaBytes() ([]byte, error) {
 		"oneOf": [
 			{
 				"type": "object",
-				"description": "HTTP call — sends a request to an external endpoint.",
+				"description": "HTTP call — sends a request to a URL, like a fetch(). URL, method, headers, and body are all expressions/shapes, so the whole request can be driven from the context.",
 				"properties": {
-					"type":            {"type": "string", "const": "rest"},
-					"endpoint":        {"type": "string", "description": "URL of the HTTP endpoint to call. May contain {{ }} expressions evaluated against the current context (e.g. {{ config.server_url }}/path)."},
-					"headers":         {"type": "object", "additionalProperties": {"type": "string"}, "description": "HTTP headers to include. Values are expressions evaluated against the current context."},
+					"type":            {"type": "string", "const": "fetch"},
+					"url":             {"type": "string", "description": "Request URL. May contain {{ }} expressions evaluated against the current context (e.g. {{ config.server_url }}/path)."},
+					"method":          {"type": "string", "description": "HTTP method, as an expression (e.g. GET, POST, {{ input.method }}). Defaults to POST."},
+					"headers":         {"$ref": "#/$defs/ModelShape", "description": "Request headers: a shape evaluating to an object of string values (a literal map of templated values, or a single expression yielding a map)."},
 					"accepted_status": {"type": "array", "items": {"type": "string"}, "description": "HTTP status patterns accepted as non-errors, e.g. \"2xx\" or \"404\". Defaults to any 2xx."},
-					"input":           {"$ref": "#/$defs/ModelShape", "description": "Templated value (string expression or nested object) evaluated against the current context to build the request body."},
+					"body":            {"$ref": "#/$defs/ModelShape", "description": "Templated value (string expression or nested object) evaluated against the current context to build the request body. An object is sent as JSON."},
 					"result_schema":   {"type": "object", "additionalProperties": true, "description": "JSON Schema to validate and persist the response body. Without it the response is available only as 'self' in this task's switch."}
 				},
-				"required": ["type", "endpoint"],
+				"required": ["type", "url"],
 				"additionalProperties": false
 			},
 			{
@@ -535,9 +541,9 @@ func validateTask(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int, po
 
 	if s.Action != nil {
 		switch s.Action.Type {
-		case ActionTypeREST:
-			if s.Action.Endpoint == "" {
-				return fmt.Errorf("task %q: action.endpoint is required for type %q", s.ID, s.Action.Type)
+		case ActionTypeFetch:
+			if s.Action.URL == "" {
+				return fmt.Errorf("task %q: action.url is required for type %q", s.ID, s.Action.Type)
 			}
 		case ActionTypeChildMap:
 			if len(s.Action.Children) == 0 {
@@ -563,7 +569,7 @@ func validateTask(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int, po
 			// No required action fields: input and result_schema are both optional
 			// (mirroring rest). The wait timeout is the task's timeout_ms (0 = forever).
 		default:
-			return fmt.Errorf("task %q: action.type must be one of: rest, child_map, child_list, delay, external", s.ID)
+			return fmt.Errorf("task %q: action.type must be one of: fetch, child_map, child_list, delay, external", s.ID)
 		}
 	}
 
@@ -630,7 +636,7 @@ func validateTask(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int, po
 			}
 		}
 	}
-	if s.Action != nil && s.Action.Type == ActionTypeREST {
+	if s.Action != nil && s.Action.Type == ActionTypeFetch {
 		for _, pat := range s.Action.AcceptedStatus {
 			if !validAcceptedStatusPattern(pat) {
 				return fmt.Errorf("task %q: accepted_status %q must be \"2xx\"/\"3xx\"/\"4xx\"/\"5xx\" or a 3-digit code", s.ID, pat)

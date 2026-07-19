@@ -134,7 +134,7 @@ func TestValidateChildProcessRefs_noChildProcessSteps(t *testing.T) {
 	def := &model.ProcessDefinition{
 		Name: "parent",
 		Tasks: []*model.Task{
-			{ID: "fetch", Action: &model.Action{Type: model.ActionTypeREST, Endpoint: "http://example.com"}},
+			{ID: "fetch", Action: &model.Action{Type: model.ActionTypeFetch, URL: "http://example.com"}},
 		},
 	}
 	assertValidateOK(t, def, stubGetter{})
@@ -235,17 +235,18 @@ func TestValidateChildProcessRefs_wrongFieldType(t *testing.T) {
 	assertValidateErr(t, def, getter, "not compatible")
 }
 
-func TestValidateChildProcessRefs_additionalPropertiesRejectedAtParse(t *testing.T) {
-	// additionalProperties is not a supported keyword; schemas using it fail to parse.
+func TestValidateChildProcessRefs_booleanAdditionalPropertiesRejectedAtParse(t *testing.T) {
+	// Only the typed (schema-object) form of additionalProperties is supported; the
+	// boolean form fails to parse.
 	_, err := schema.Parse([]byte(`{
 		"type": "object",
 		"properties": {"amount": {"type": "integer"}},
 		"additionalProperties": false
 	}`))
 	if err == nil {
-		t.Fatal("expected parse error for additionalProperties, got nil")
+		t.Fatal("expected parse error for boolean additionalProperties, got nil")
 	}
-	if err.Error() != `unsupported schema keyword "additionalProperties"` {
+	if err.Error() != `additionalProperties must be a schema object; the boolean form is not supported` {
 		t.Errorf("unexpected error: %v", err)
 	}
 }

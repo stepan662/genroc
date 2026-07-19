@@ -17,8 +17,8 @@ test("output map remaps an action result — only the projection is exported", a
         {
           id: "create",
           action: {
-            type: "rest" as const,
-            endpoint: `http://localhost:${mock.port}/action`,
+            type: "fetch" as const,
+            url: `http://localhost:${mock.port}/action`,
             result_schema: {
               type: "object",
               properties: {
@@ -71,8 +71,8 @@ test("single-expression output passes the action result through", async () => {
         {
           id: "create",
           action: {
-            type: "rest" as const,
-            endpoint: `http://localhost:${mock.port}/action`,
+            type: "fetch" as const,
+            url: `http://localhost:${mock.port}/action`,
             result_schema: {
               type: "object",
               properties: { job_id: { type: "string" }, queue: { type: "string" } },
@@ -117,8 +117,8 @@ test("nested output shapes data with nested objects", async () => {
         {
           id: "create",
           action: {
-            type: "rest" as const,
-            endpoint: `http://localhost:${mock.port}/action`,
+            type: "fetch" as const,
+            url: `http://localhost:${mock.port}/action`,
             result_schema: {
               type: "object",
               properties: { job_id: { type: "string" }, queue: { type: "string" } },

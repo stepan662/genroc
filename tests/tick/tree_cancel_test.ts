@@ -46,8 +46,8 @@ beforeAll(async () => {
     {
       id: "work",
       action: {
-        type: "rest" as const,
-        endpoint: `http://localhost:${mockPort}/action`,
+        type: "fetch" as const,
+        url: `http://localhost:${mockPort}/action`,
       },
       timeout_ms: 5_000,
       switch: [{ goto: "end" }],

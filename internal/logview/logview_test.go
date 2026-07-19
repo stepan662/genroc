@@ -8,9 +8,9 @@ import (
 func TestLabel(t *testing.T) {
 	cases := map[string]string{
 		"inst_created":     "input",
-		"action_started":      "request",
-		"action_succeeded":    "result",
-		"action_failed":       "error",
+		"action_started":   "request",
+		"action_succeeded": "result",
+		"action_failed":    "error",
 		"inst_completed":   "output",
 		"child_spawned":    "data", // events without a payload label fall back to "data"
 	}
@@ -110,9 +110,9 @@ func TestRenderJSON(t *testing.T) {
 
 func TestFormatVal(t *testing.T) {
 	cases := map[any]string{
-		`{"a":1}`:   `{"a":1}`,   // JSON body raw (not quoted despite quotes)
-		"→ next":    `"→ next"`,  // free text with a space → quoted
-		"http.500":  "http.500",  // plain token raw
+		`{"a":1}`:    `{"a":1}`,  // JSON body raw (not quoted despite quotes)
+		"→ next":     `"→ next"`, // free text with a space → quoted
+		"http.500":   "http.500", // plain token raw
 		float64(200): "200",      // integer, no decimal
 	}
 	for in, want := range cases {

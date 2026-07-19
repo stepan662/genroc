@@ -33,13 +33,13 @@ test("retry failed instance — resumes from the failed task", async () => {
         tasks: [
           {
             id: "step1",
-            action: { type: "rest" as const, endpoint: `http://localhost:${step1Mock.port}/action` },
+            action: { type: "fetch" as const, url: `http://localhost:${step1Mock.port}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "next" }],
           },
           {
             id: "step2",
-            action: { type: "rest" as const, endpoint: `http://localhost:${step2Port}/action` },
+            action: { type: "fetch" as const, url: `http://localhost:${step2Port}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "end" }],
           },
@@ -87,13 +87,13 @@ test("retry cancelled instance — resumes where the cancel interrupted", async 
         tasks: [
           {
             id: "step1",
-            action: { type: "rest" as const, endpoint: `http://localhost:${step1Mock.port}/action` },
+            action: { type: "fetch" as const, url: `http://localhost:${step1Mock.port}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "next" }],
           },
           {
             id: "step2",
-            action: { type: "rest" as const, endpoint: `http://localhost:${step2Mock.port}/action` },
+            action: { type: "fetch" as const, url: `http://localhost:${step2Mock.port}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "end" }],
           },
@@ -149,13 +149,13 @@ test("retry during cancelling — rejected until the tree settles", async () => 
         tasks: [
           {
             id: "step1",
-            action: { type: "rest" as const, endpoint: `http://localhost:${step1Mock.port}/action` },
+            action: { type: "fetch" as const, url: `http://localhost:${step1Mock.port}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "next" }],
           },
           {
             id: "step2",
-            action: { type: "rest" as const, endpoint: `http://localhost:${step2Mock.port}/action` },
+            action: { type: "fetch" as const, url: `http://localhost:${step2Mock.port}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "end" }],
           },
@@ -213,7 +213,7 @@ test("retry only_once task — rejected without force, allowed with force", asyn
           {
             id: "charge",
             only_once: true,
-            action: { type: "rest" as const, endpoint: `http://localhost:${chargePort}/action` },
+            action: { type: "fetch" as const, url: `http://localhost:${chargePort}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "end" }],
           },
@@ -260,7 +260,7 @@ test("retry and cancel on non-root instance — rejected naming the root", async
         tasks: [
           {
             id: "work",
-            action: { type: "rest" as const, endpoint: `http://localhost:${failMock.port}/action` },
+            action: { type: "fetch" as const, url: `http://localhost:${failMock.port}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "end" }],
           },
@@ -326,7 +326,7 @@ test("retry with parallel children — only the failed child re-runs", async () 
         tasks: [
           {
             id: "work",
-            action: { type: "rest" as const, endpoint: `http://localhost:${goodMock.port}/action` },
+            action: { type: "fetch" as const, url: `http://localhost:${goodMock.port}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "end" }],
           },
@@ -339,7 +339,7 @@ test("retry with parallel children — only the failed child re-runs", async () 
         tasks: [
           {
             id: "work",
-            action: { type: "rest" as const, endpoint: `http://localhost:${badPort}/action` },
+            action: { type: "fetch" as const, url: `http://localhost:${badPort}/action` },
             timeout_ms: 2000,
             switch: [{ goto: "end" }],
           },

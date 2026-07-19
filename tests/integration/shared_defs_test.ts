@@ -32,8 +32,8 @@ test("process-level $defs are shared by input_schema and result_schemas", async 
         {
           id: "fetch",
           action: {
-            type: "rest" as const,
-            endpoint: `http://localhost:${mock.port}/action`,
+            type: "fetch" as const,
+            url: `http://localhost:${mock.port}/action`,
             result_schema: {
               type: "object",
               properties: { buyer: { $ref: "#/$defs/User" } },
@@ -125,8 +125,8 @@ test("$defs colliding with generated schema names are safely renamed", async () 
         {
           id: "fetch",
           action: {
-            type: "rest" as const,
-            endpoint: `http://localhost:${mock.port}/action`,
+            type: "fetch" as const,
+            url: `http://localhost:${mock.port}/action`,
             result_schema: {
               type: "object",
               properties: { d: { $ref: "#/$defs/fetch_output" } },
