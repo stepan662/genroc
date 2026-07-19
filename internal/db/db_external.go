@@ -28,13 +28,9 @@ var externalPaginator = paginator{
 	maxLimit: 100,
 }
 
-// ListExternalTasks returns a page of instances parked on an external task,
-// filtered by process name/version (empty/0 = any) and the current task id
-// (empty = any), sorted and paged per pg. It returns the page and the cursor for
-// the next page ("" on the final page).
-//
-// task is the instance's current-task column, which for a parked external instance
-// is exactly the resolvable task id (CurrentTask resolves task == inst.Task), so it
+// ListExternalTasks returns a page of instances parked on an external task, filtered
+// by process name/version (empty/0 = any) and current task id (empty = any). task is
+// the current-task column (the resolvable task id for a parked instance), so it
 // filters in SQL — pages stay full and the before/after counts stay accurate.
 func (db *DB) ListExternalTasks(processName string, processVersion int, task string, req PageReq) ([]*model.ProcessInstance, PageInfo, error) {
 	b, err := externalPaginator.query(req).
@@ -48,22 +44,12 @@ func (db *DB) ListExternalTasks(processName string, processVersion int, task str
 	return db.queryInstancePage(b)
 }
 
-// ResolveExternalTask atomically delivers a submitted result to an instance parked on
-// an external task and un-parks it so the engine resumes. It is the single place the
-// resolve API writes instance state, and it must stay mutually exclusive with the
-// engine (a timeout claim), a concurrent cancel, and a double/stale submit:
-//
-//   - The row is locked (FOR UPDATE on Postgres; SQLite serialises via its single
-//     writer) so the read-then-write is atomic.
-//   - status='running' AND wait_state='external' rejects already-resolved, timed-out,
-//     cancelled, or not-yet-parked instances.
-//   - The live-lease guard (worker_id set with an unexpired lease) rejects a submit that
-//     races a timeout claim already in flight on a worker — the timeout wins.
-//   - context._external.token == token rejects a stale token from a prior arming (e.g. a
-//     looping task that re-armed) — the exact-occurrence guarantee.
-//
-// The result is stored under _external_result; the engine consumes it on the next claim
-// (runExternal phase 2). Returns a descriptive error when the task is no longer waiting.
+// ResolveExternalTask atomically delivers a result to an instance parked on an external
+// task and un-parks it. Under the row lock (FOR UPDATE on Postgres; SQLite single-writer)
+// it rejects anything but a live external wait: an expired/absent wait, a live lease (a
+// timeout claim in flight — the timeout wins), or a token mismatch (a stale token from a
+// prior arming — the exact-occurrence guarantee). The engine consumes the stored result
+// on the next claim.
 func (db *DB) ResolveExternalTask(ctx context.Context, instanceID, token string, result any) error {
 	return db.withTx(ctx, func(qtx *dbgen.Queries, raw dbgen.DBTX) error {
 

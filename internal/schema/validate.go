@@ -8,33 +8,20 @@ import (
 	"unicode/utf8"
 )
 
-// Validate checks data against the schema and returns a normalized copy.
-//
-// Normalization, relative to the input:
-//   - object properties not declared in the schema are dropped;
-//   - a declared property that is absent is filled from its `default` if it has
-//     one, and otherwise omitted (a missing required property is an error); a
-//     filled default is itself conformed against the property schema, so an
-//     invalid default is an error rather than a schema-violating output;
-//   - every retained value is type- and constraint-checked (enum, minimum/maximum,
-//     minLength/maxLength, minItems/maxItems).
-//
-// Types are checked strictly, with the one concession that JSON decodes all
-// numbers to float64: an "integer" schema accepts any number with no fractional
-// part. No other coercion is performed. The returned value is freshly built and
-// shares no maps or slices with the input.
-//
-// A nil schema (or an empty {} schema) accepts and returns data unchanged.
-// $refs resolve against the schema's own $defs, so the schema should be
-// normalized (defs flattened to the root) before calling.
+// Validate checks data against the schema and returns a normalized copy: undeclared
+// object properties are dropped; an absent declared property is filled from its
+// (conformed) default or omitted, and a missing required property is an error; retained
+// values are type- and constraint-checked. Types are strict, except an "integer" schema
+// accepts any number with no fractional part (JSON decodes all numbers to float64). The
+// result shares no maps or slices with the input. A nil or empty {} schema passes data
+// through; $refs resolve against the schema's own $defs, so it should be normalized first.
 func (s Schema) Validate(data any) (any, error) {
 	return conform(s.n, s.rootDefs(), data, "")
 }
 
-// ValidateAt validates data against the subschema at path (e.g. "outputs.taskA")
-// and returns the normalized value. It is At(path) followed by Validate, so
-// the value is checked against the declared shape at that path with root $defs
-// resolved. Optional path segments are treated as nullable, matching At.
+// ValidateAt is At(path) followed by Validate: it checks data against the subschema at
+// path (e.g. "outputs.taskA") and returns the normalized value. Optional path segments
+// are treated as nullable, matching At.
 func (s Schema) ValidateAt(path string, data any) (any, error) {
 	sub, err := s.At(path)
 	if err != nil {
@@ -43,20 +30,18 @@ func (s Schema) ValidateAt(path string, data any) (any, error) {
 	return sub.Validate(data)
 }
 
-// conform is the recursive validator/normalizer. path is the dotted location of
-// data within the root value (empty at the root), used only for error messages.
+// conform is the recursive validator/normalizer. path is data's dotted location within
+// the root value (empty at the root), used only for error messages.
 func conform(nd *node, defs map[string]*node, data any, path string) (any, error) {
 	return conformGuard(nd, defs, data, path, nil)
 }
 
-// conformGuard is conform with a same-position cycle guard: visiting holds the
-// resolved nodes already expanded at the current value position (no object or
-// array descent since). Following a $ref back to one of them is a schema cycle
-// with no structural progress — the branch fails instead of recursing forever.
-// CheckDoc rejects such documents, but stored schemas decode without CheckDoc,
-// so the validator guards itself. Descending into a property or element starts
-// a fresh set (conformObject/conformArray call conform): value depth was
-// consumed, so revisiting a node there is legitimate, productive recursion.
+// conformGuard is conform with a same-position cycle guard: visiting holds the resolved
+// nodes already expanded at the current value position (no object/array descent since),
+// so a $ref back to one is a schema cycle with no structural progress and the branch
+// fails instead of recursing forever. Stored schemas decode without CheckDoc, so the
+// validator guards itself. Descending into a property or element starts a fresh set —
+// value depth was consumed, so revisiting a node there is productive recursion.
 func conformGuard(nd *node, defs map[string]*node, data any, path string, visiting map[*node]bool) (any, error) {
 	resolved, err := deref(nd, defs)
 	if err != nil {
@@ -115,9 +100,8 @@ func conformGuard(nd *node, defs map[string]*node, data any, path string, visiti
 }
 
 // conformObject keeps declared properties (filling defaults for absent optionals,
-// erroring on absent required) and recurses into present values. Keys not declared
-// in Properties are stripped for a closed object (AdditionalProperties == nil), or
-// conformed against the AdditionalProperties subschema and kept for an open map.
+// erroring on absent required) and recurses into present values. Undeclared keys are
+// stripped for a closed object, or conformed against AdditionalProperties for an open map.
 func conformObject(nd *node, defs map[string]*node, v map[string]any, path string) (any, error) {
 	required := make(map[string]bool, len(nd.Required))
 	for _, r := range nd.Required {
@@ -184,10 +168,9 @@ func conformArray(nd *node, defs map[string]*node, arr []any, path string) (any,
 	return out, nil
 }
 
-// conformUnion normalizes data against a oneOf/anyOf. anyOf returns the first
-// branch that validates; oneOf requires exactly one branch to validate (matching
-// zero or several is an error). Branches keep the value at the same position, so
-// the caller's visiting set carries through.
+// conformUnion normalizes data against a oneOf/anyOf: anyOf returns the first branch
+// that validates; oneOf requires exactly one (zero or several is an error). Branches
+// keep the value at the same position, so the caller's visiting set carries through.
 func conformUnion(branches []*node, defs map[string]*node, data any, path string, exactlyOne bool, visiting map[*node]bool) (any, error) {
 	var (
 		firstErr error
@@ -217,8 +200,8 @@ func conformUnion(branches []*node, defs map[string]*node, data any, path string
 	return match, nil
 }
 
-// checkType verifies data's JSON type is permitted by node.Type. An empty Type is
-// unconstrained. "integer" accepts an integral number; "number" accepts any number.
+// checkType verifies data's JSON type is permitted by nd.Type (empty = unconstrained).
+// "integer" accepts an integral number; "number" accepts any number.
 func checkType(nd *node, data any, path string) error {
 	if len(nd.Type) == 0 {
 		return nil
@@ -279,8 +262,8 @@ func checkScalar(nd *node, data any, path string) error {
 	return nil
 }
 
-// propDefault returns the default for a property, following a lone $ref to its
-// target if the property node itself carries none.
+// propDefault returns the default for a property, following a lone $ref to its target
+// when the property node itself carries none.
 func propDefault(prop *node, defs map[string]*node) any {
 	if prop == nil {
 		return nil
@@ -302,8 +285,8 @@ func isObjectSchema(nd *node) bool {
 	return nd.Type.Contains("object") || nd.Properties != nil || nd.Required != nil || nd.AdditionalProperties != nil
 }
 
-// enumContains reports whether data equals any enum member, comparing by
-// canonical JSON encoding so 1 and 1.0 (and nested values) compare equal.
+// enumContains reports whether data equals any enum member, compared by JSON encoding so
+// 1 and 1.0 (and nested values) compare equal.
 func enumContains(enum []any, data any) bool {
 	db, err := json.Marshal(data)
 	if err != nil {
@@ -359,9 +342,9 @@ func isIntegral(data any) bool {
 	}
 }
 
-// jsonTypeName names data's JSON type for error messages, reusing valueHasType so
-// the naming can't drift from the type check. "integer" is tried before "number"
-// so an integral value reads as the more specific kind.
+// jsonTypeName names data's JSON type for error messages, reusing valueHasType so it
+// can't drift from the type check. "integer" is tried before "number" so an integral
+// value reads as the more specific kind.
 func jsonTypeName(data any) string {
 	for _, t := range []string{"null", "boolean", "integer", "number", "string", "array", "object"} {
 		if valueHasType(data, t) {

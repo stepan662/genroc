@@ -23,10 +23,8 @@ func NewServer(handlers *Handlers, log *slog.Logger) *Server {
 	return &Server{handlers: handlers, log: log}
 }
 
-// ListenHTTP starts an HTTP server on addr and shuts it down gracefully when ctx is cancelled.
-//
-// Routes and Swagger docs are generated entirely from the action registry in actions.go.
-// To add a new endpoint, add an entry there — no changes needed here or in openapi.go.
+// ListenHTTP serves HTTP on addr until ctx is cancelled. Routes and Swagger docs are
+// generated from the action registry (actions.go) — add endpoints there, not here.
 func (s *Server) ListenHTTP(ctx context.Context, addr string) error {
 	mux := http.NewServeMux()
 	h := s.handlers
@@ -97,8 +95,8 @@ func (s *Server) ListenHTTP(ctx context.Context, addr string) error {
 	return nil
 }
 
-// ListenTCP starts a JSON stream server on a TCP address (e.g. "127.0.0.1:9090").
-// Protocol: newline-delimited JSON envelopes {"action":"...","payload":{...},"id":"..."}.
+// ListenTCP serves a JSON stream over TCP: newline-delimited envelopes
+// {"action":"...","payload":{...},"id":"..."}.
 func (s *Server) ListenTCP(ctx context.Context, addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -108,7 +106,6 @@ func (s *Server) ListenTCP(ctx context.Context, addr string) error {
 	return s.acceptLoop(ctx, ln)
 }
 
-// ListenUDS starts a JSON stream server on a Unix Domain Socket path.
 func (s *Server) ListenUDS(ctx context.Context, path string) error {
 	os.Remove(path)
 	ln, err := net.Listen("unix", path)

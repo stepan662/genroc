@@ -17,20 +17,18 @@ type Defs struct {
 	m map[string]*node
 }
 
-// NewDefs returns an empty, mutable definitions handle.
 func NewDefs() Defs {
 	return Defs{m: make(map[string]*node)}
 }
 
-// Set inserts or replaces the named definition, in place: every Schema sharing
-// this handle observes the update.
+// Set inserts or replaces the named definition in place: every Schema sharing this
+// handle observes the update.
 func (d Defs) Set(name string, s Schema) {
 	d.m[name] = s.n
 }
 
-// Get returns the named definition as it is stored — bare, without the handle
-// attached. A definition's own $refs point back into this same set; attach the
-// handle explicitly (WithDefs) when the result needs to resolve them.
+// Get returns the named definition bare, without the handle attached — its own $refs
+// point back into this set, so attach the handle (WithDefs) before resolving them.
 func (d Defs) Get(name string) (Schema, bool) {
 	n, ok := d.m[name]
 	if !ok {
@@ -39,13 +37,11 @@ func (d Defs) Get(name string) (Schema, bool) {
 	return Schema{n}, true
 }
 
-// Has reports whether the named definition exists.
 func (d Defs) Has(name string) bool {
 	_, ok := d.m[name]
 	return ok
 }
 
-// Len returns the number of definitions.
 func (d Defs) Len() int {
 	return len(d.m)
 }
@@ -60,20 +56,18 @@ func (d Defs) Names() []string {
 	return out
 }
 
-// IsZero reports whether the handle holds no definitions. It deliberately treats
-// an empty-but-live map the same as no map: encoding/json's `omitzero` calls this,
-// and a definition-less process must omit "$defs" from its emitted schema file
-// rather than write `"$defs": {}` (which a plain reflect-zero check would).
+// IsZero reports whether the handle holds no definitions, treating an empty-but-live
+// map the same as no map: encoding/json's `omitzero` calls this, so a definition-less
+// process omits "$defs" rather than emitting `"$defs": {}`.
 func (d Defs) IsZero() bool {
 	return len(d.m) == 0
 }
 
-// MarshalJSON emits the definitions as a plain name→schema object.
 func (d Defs) MarshalJSON() ([]byte, error) {
 	return json.Marshal(d.m)
 }
 
-// UnmarshalJSON parses a name→schema object with the strict keyword allowlist.
+// UnmarshalJSON parses a name→schema object (strict keyword allowlist).
 func (d *Defs) UnmarshalJSON(data []byte) error {
 	var m map[string]*node
 	if err := json.Unmarshal(data, &m); err != nil {
@@ -83,11 +77,10 @@ func (d *Defs) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// WithDefs returns a copy of s whose resolution context is the given handle's
-// underlying map (shared, not copied — see Defs). An empty-but-live handle is
-// attached too: the recursive fixpoint seeds definitions into it afterwards and
-// the schema must observe them. Only a nil handle (zero Defs) is a no-op.
-// The receiver is not modified.
+// WithDefs returns a copy of s whose resolution context is the handle's underlying map
+// (shared, not copied). An empty-but-live handle is attached too, so the schema
+// observes definitions the fixpoint seeds later; only a nil handle (zero Defs) is a
+// no-op.
 func (s Schema) WithDefs(d Defs) Schema {
 	if d.m == nil {
 		return s
@@ -95,10 +88,9 @@ func (s Schema) WithDefs(d Defs) Schema {
 	return wrap(s.n, d.m)
 }
 
-// WithMergedDefs returns a copy of s whose root $defs are the union of its own
-// and the handle's — the schema's own definitions win on a name clash. Unlike
-// WithDefs the maps are merged into a fresh map, so neither the receiver nor the
-// handle observes later changes. A zero/empty handle is a no-op.
+// WithMergedDefs returns a copy of s whose root $defs are the union of its own and the
+// handle's — s's own definitions win a name clash. Unlike WithDefs the maps merge into
+// a fresh map, so neither receiver nor handle observes later changes. Empty handle: no-op.
 func (s Schema) WithMergedDefs(d Defs) Schema {
 	if len(d.m) == 0 {
 		return s
@@ -114,15 +106,12 @@ func (s Schema) WithMergedDefs(d Defs) Schema {
 	return wrap(s.n, merged)
 }
 
-// MergeInto hoists the schema's root $defs into the handle and returns a copy of
-// the schema with its refs pointing at the merged locations, leaving the copy
-// itself defs-free. Collisions are resolved safely: a definition that is
-// content-equal to one already in the handle (under any name) is reused, and a
-// genuinely different one is renamed with a unique suffix — with every $ref in
-// the returned schema and in the moved definition bodies rewritten to match.
-// Existing entries in the handle always keep their names, so definitions seeded
-// first (e.g. the generated schema names during process generation) take
-// precedence. The receiver is not modified; the handle is mutated in place.
+// MergeInto hoists the schema's root $defs into the handle (mutated in place) and
+// returns a defs-free copy of the schema with its refs pointing at the merged
+// locations. Collisions are safe: a content-equal existing definition (under any name)
+// is reused, a genuinely different one is renamed with a unique suffix, and every $ref
+// in the returned schema and moved bodies is rewritten to match. Existing handle
+// entries keep their names, so definitions seeded first take precedence.
 func (s Schema) MergeInto(d Defs) (Schema, error) {
 	if s.n == nil || len(s.n.Defs) == 0 {
 		return s, nil
@@ -165,13 +154,11 @@ func (s Schema) MergeInto(d Defs) (Schema, error) {
 	return Schema{cloned}, nil
 }
 
-// findEqualDef returns the name of an existing definition content-equal to def,
-// which is about to be inserted under name. Equality is judged modulo that
-// insertion rename: a self-referencing definition must also match an earlier
-// copy whose self-refs already spell the renamed name — plain textual equality
-// would re-merge a recursive definition as a fresh input_1, input_2, … every
-// time. (Mutually recursive definitions renamed as a group are still compared
-// textually and may duplicate; only self-references are rename-normalized.)
+// findEqualDef returns the name of an existing definition content-equal to def (about
+// to be inserted under name), judged modulo the insertion rename: a self-referencing
+// definition must also match an earlier copy whose self-refs already spell the renamed
+// name, or plain textual equality would re-merge a recursive definition as a fresh
+// input_1, input_2, … each time. (Mutual recursion is only compared textually.)
 func findEqualDef(existing map[string]*node, name string, def *node) (string, bool) {
 	names := make([]string, 0, len(existing))
 	for n := range existing {
@@ -202,7 +189,6 @@ func findEqualDef(existing map[string]*node, name string, def *node) (string, bo
 	return "", false
 }
 
-// referencesDef reports whether any $ref in the tree points at #/$defs/<name>.
 func referencesDef(root *node, name string) bool {
 	found := false
 	walkTree(root, nil, func(nd *node, _ []string, _ string) {
@@ -213,8 +199,7 @@ func referencesDef(root *node, name string) bool {
 	return found
 }
 
-// applyRename rewrites every "#/$defs/<old>" ref in the tree to its renamed
-// location. Renames to the same name are no-ops.
+// applyRename rewrites every "#/$defs/<old>" ref in the tree per the rename map.
 func applyRename(root *node, rename map[string]string) {
 	walkTree(root, nil, func(nd *node, _ []string, _ string) {
 		const prefix = "#/$defs/"
@@ -227,10 +212,9 @@ func applyRename(root *node, rename map[string]string) {
 	})
 }
 
-// Flatten resolves the handle's definitions against each other — nested $defs
-// hoisted, cross-refs rewritten, every named entry kept — and returns a fresh,
-// flat handle. It is how a user-supplied definition pool (whose entries may
-// reference one another) is brought into normal form.
+// Flatten resolves the handle's definitions against each other (nested $defs hoisted,
+// cross-refs rewritten, every named entry kept) into a fresh flat handle — how a
+// user-supplied pool whose entries reference one another is brought into normal form.
 func (d Defs) Flatten() (Defs, error) {
 	named := make(map[string]Schema, len(d.m))
 	for k, v := range d.m {
@@ -244,29 +228,24 @@ func (Defs) JSONSchemaBytes() ([]byte, error) {
 	return []byte(`{"type":"object","additionalProperties":true}`), nil
 }
 
-// DefsHandle returns a handle over the schema's own root $defs. The handle shares
-// the schema's map: a Set through it is visible to the schema (and to every
-// sub-schema carrying the same defs).
+// DefsHandle returns a handle over the schema's own root $defs, sharing its map: a Set
+// through it is visible to the schema and every sub-schema carrying the same defs.
 func (s Schema) DefsHandle() Defs {
 	return Defs{m: s.rootDefs()}
 }
 
-// WithoutDefs returns a copy of s with every $defs attachment dropped — at the
-// root and on any nested node. Use it when embedding a sub-schema into a
-// container that owns the resolution context (its own root $defs): the embedded
-// tree is re-rooted and must not carry defs copies of its own. Navigation and
-// inference attach the shared root defs to the sub-schemas they hand out; if such
-// a node were stored back into that same defs set, the attachment would form a
-// marshal cycle — stripping deeply makes the stored form clean and finite.
-// The receiver is not modified.
+// WithoutDefs returns a copy of s with every $defs attachment dropped, at the root and
+// on any nested node. Use it when embedding a sub-schema into a container that owns the
+// resolution context: navigation attaches the shared root defs to sub-schemas, and
+// storing such a node back into that same defs set would form a marshal cycle —
+// stripping deeply keeps the stored form clean and finite.
 func (s Schema) WithoutDefs() Schema {
 	return Schema{stripDefsDeep(s.n)}
 }
 
-// stripDefsDeep returns a structural copy of n with all Defs fields cleared. It
-// deliberately walks the tree instead of JSON round-tripping: an attached defs
-// map can reach back into this very tree, which would cycle the marshaler, while
-// the walk skips Defs and therefore always terminates.
+// stripDefsDeep returns a structural copy of n with all Defs fields cleared. It walks
+// the tree rather than JSON round-tripping because an attached defs map can reach back
+// into this tree (cycling the marshaler), while the walk skips Defs and terminates.
 func stripDefsDeep(n *node) *node {
 	if n == nil {
 		return &node{}
@@ -308,11 +287,10 @@ func stripDefsList(vs []*node) []*node {
 	return out
 }
 
-// FlattenNamed bundles a set of named schemas — each of which may carry its own
-// nested $defs — into one flat definitions set: every input becomes a root
-// definition under its name (collisions suffixed), nested defs are hoisted, and
-// all $refs are rewritten to the flat locations. It is the def-preparation step
-// process generation runs before inference.
+// FlattenNamed bundles named schemas (each of which may carry nested $defs) into one
+// flat definitions set: every input becomes a root definition under its name
+// (collisions suffixed), nested defs hoisted, all $refs rewritten to the flat
+// locations. It is the def-preparation step process generation runs before inference.
 func FlattenNamed(named map[string]Schema) (Defs, error) {
 	defs := make(map[string]*node, len(named))
 	refs := make([]*node, 0, len(named))

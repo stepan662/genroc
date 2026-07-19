@@ -134,8 +134,8 @@ func (s Shape) MarshalJSON() ([]byte, error) {
 	return json.Marshal(s.Raw)
 }
 
-// Present reports whether the shape carries a value. Nil-safe so callers can
-// write task.Output.Present() without a separate nil check.
+// Present reports whether the shape carries a value; nil-safe so callers can skip a
+// separate nil check.
 func (s *Shape) Present() bool {
 	return s != nil && s.Raw != nil
 }
@@ -162,11 +162,9 @@ func (s *Shape) Strings() []string {
 	return out
 }
 
-// JSONSchemaBytes exposes the recursive Shape schema (string | object of Shape)
-// so OpenAPI reflection produces the correct wire format. The self-reference uses
-// the JSON-Pointer to swaggest's generated def name (model.Shape -> "ModelShape").
-// This is correct for the process schema (defs under #/$defs/); the OpenAPI spec
-// builder rewrites #/$defs/ModelShape -> #/components/schemas/ModelShape.
+// JSONSchemaBytes exposes the recursive Shape schema (string | object of Shape) for
+// OpenAPI reflection. The self-reference uses swaggest's generated def name
+// (#/$defs/ModelShape), which the spec builder rewrites to #/components/schemas/ModelShape.
 func (Shape) JSONSchemaBytes() ([]byte, error) {
 	return []byte(`{
 		"oneOf": [
@@ -180,8 +178,8 @@ func (Shape) JSONSchemaBytes() ([]byte, error) {
 	}`), nil
 }
 
-// checkShape enforces the string | Record<string, Shape> grammar recursively,
-// rejecting arrays and non-string scalar literals with a clear error.
+// checkShape recursively enforces the string | Record<string, Shape> grammar, rejecting
+// arrays and non-string scalar literals.
 func checkShape(n any) error {
 	switch v := n.(type) {
 	case string:

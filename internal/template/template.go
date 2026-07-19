@@ -17,7 +17,6 @@ import (
 	"genroc/internal/schema"
 )
 
-// EvalAny evaluates s as a template string against ctx.
 func EvalAny(s string, ctx map[string]any) (any, error) {
 	if expr, ok := singleExpr(s); ok {
 		val, err := expression.Eval(expr, ctx)
@@ -32,7 +31,6 @@ func EvalAny(s string, ctx map[string]any) (any, error) {
 	return evalMixed(s, ctx)
 }
 
-// InferType infers the JSON Schema type of template s against sc.
 func InferType(s string, sc schema.Schema) (schema.Schema, error) {
 	if expr, ok := singleExpr(s); ok {
 		return sc.Infer(expr)
@@ -45,9 +43,8 @@ func InferType(s string, sc schema.Schema) (schema.Schema, error) {
 	return schema.Type("string"), nil
 }
 
-// ReferencesSecret reports whether any expression embedded in the template reads
-// a secret value (see schema.Schema.ReferencesSecret). A plain string with no
-// {{ }} is never secret.
+// ReferencesSecret reports whether any embedded {{ }} expression reads a secret value
+// (see schema.Schema.ReferencesSecret); a plain string is never secret.
 func ReferencesSecret(s string, sc schema.Schema) (bool, error) {
 	found := false
 	err := forEachExpr(s, func(expr string) error {
@@ -67,9 +64,8 @@ func ReferencesSecret(s string, sc schema.Schema) (bool, error) {
 	return found, err
 }
 
-// checkMixedNullability rejects mixed templates where any expression may be null.
-// Null values would silently become the string "null" at runtime, which is almost
-// never intentional. The user must add a ?? default to make the intent explicit.
+// checkMixedNullability rejects mixed templates where any expression may be null —
+// null would silently stringify to "null"; the user must add a ?? default.
 func checkMixedNullability(s string, sc schema.Schema) error {
 	return forEachExpr(s, func(expr string) error {
 		inferred, err := sc.Infer(expr)
@@ -83,8 +79,8 @@ func checkMixedNullability(s string, sc schema.Schema) error {
 	})
 }
 
-// OutputRefs returns the distinct task ids referenced via outputs.<id> across all
-// {{ }} expressions in template s (used to build the output-dependency graph).
+// OutputRefs returns the distinct outputs.<id> task ids across all {{ }} blocks in s,
+// for the output-dependency graph.
 func OutputRefs(s string) ([]string, error) {
 	set := map[string]struct{}{}
 	err := forEachExpr(s, func(expr string) error {
@@ -108,10 +104,8 @@ func OutputRefs(s string) ([]string, error) {
 	return ids, nil
 }
 
-// RootRefs reports which context roots (input / error / specific or all outputs) the
-// expressions embedded in template s read, merged across every {{ }} block. A plain
-// string with no {{ }} reads nothing. Used by the engine to lazily resolve only the
-// externalized value-slots a template needs.
+// RootRefs reports which context roots the embedded expressions read, merged across
+// every {{ }} block, so the engine lazily resolves only the value-slots a template needs.
 func RootRefs(s string) (expression.Roots, error) {
 	var out expression.Roots
 	err := forEachExpr(s, func(expr string) error {
@@ -147,8 +141,7 @@ func singleExpr(s string) (string, bool) {
 var errStopScan = errors.New("stop scan")
 
 // forEachExpr calls fn with the body of each {{ }} block in s, in order. A missing
-// closing }} silently ends the scan — the inspection helpers ignore trailing
-// unterminated text, whereas evalMixed treats it as an error and scans separately.
+// closing }} silently ends the scan (unlike evalMixed, which errors on it).
 func forEachExpr(s string, fn func(expr string) error) error {
 	rest := s
 	for {

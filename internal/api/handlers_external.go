@@ -31,8 +31,6 @@ func (h *Handlers) listExternalTasks(raw json.RawMessage) Reply {
 	return okReply(PageResp[ExternalTaskResp]{Items: resp, Page: info})
 }
 
-// externalTaskToResp projects a parked external instance and its current task to a
-// queue entry.
 func externalTaskToResp(inst *model.ProcessInstance, task *model.Task) ExternalTaskResp {
 	ext, _ := inst.ContextData[model.CtxExternal].(map[string]any)
 	token, _ := ext["token"].(string)

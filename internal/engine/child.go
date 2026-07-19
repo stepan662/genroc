@@ -12,12 +12,12 @@ import (
 
 // runChildProcesses handles the two-phase child lifecycle:
 //
-//  1. WaitStateNone → spawn children, suspend parent (wait_state='waiting').
-//  2. WaitStateCollecting → all children are terminal; merge their outputs into
-//     parent context and return so advance() continues past this task.
+//  1. WaitStateNone → spawn children, suspend the parent (wait_state='waiting').
+//  2. WaitStateCollecting → all children terminal; merge their outputs into the parent
+//     context and return so advance() continues past this task.
 //
-// A cancelling parent spawns cancelling children: they self-cancel and call
-// FinishChild, which transitions the parent to WaitStateCollecting normally.
+// A cancelling parent spawns cancelling children: they self-cancel and call FinishChild,
+// which moves the parent to WaitStateCollecting normally.
 func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInstance, task *model.Task) (any, *advanceOutcome) {
 	// Phase 2: parent woke up with children done — collect their outputs into the
 	// action result (self.result). It is exported only if the task projects it.
@@ -101,11 +101,11 @@ func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInsta
 	return nil, stop(advanceOutcome{kind: outcomeNoop})
 }
 
-// resolveChildVersion picks the version to spawn a child at. A non-zero declared
-// version is used as-is. Otherwise a self-reference (same process name) inherits the
-// parent's version; a cross-process reference resolves the version pinned for this task
-// at registration (GetDependencyVersion), falling back to the child's latest published
-// version. depKey is the child_map key ("" for child_list).
+// resolveChildVersion picks the version to spawn a child at: a non-zero declared version
+// wins; else a self-reference (same process name) inherits the parent's version, and a
+// cross-process reference uses the version pinned for this task at registration
+// (GetDependencyVersion), falling back to the child's latest published version. depKey is
+// the child_map key ("" for child_list).
 func (e *Engine) resolveChildVersion(inst *model.ProcessInstance, taskID, name string, declared int, depKey string) (int, error) {
 	if declared != 0 {
 		return declared, nil
@@ -120,11 +120,10 @@ func (e *Engine) resolveChildVersion(inst *model.ProcessInstance, taskID, name s
 }
 
 // newChildInstance builds a running child ProcessInstance rooted at parent. id is the
-// caller-assigned sibling id (base+i of the batch's ChildBase, so siblings form a
-// contiguous run that sorts after the parent and among itself in spawn order). spawnCtx
-// carries the per-type discriminant keys (_spawn_action_type plus _spawn_child_key /
-// _spawn_index, and _spawn_result_schema when declared), merged over the common child
-// context.
+// caller-assigned sibling id (base+i, so siblings sort after the parent and among
+// themselves in spawn order). spawnCtx carries the per-type discriminant keys
+// (_spawn_action_type plus _spawn_child_key / _spawn_index, and _spawn_result_schema when
+// declared), merged over the common child context.
 func newChildInstance(parent *model.ProcessInstance, task *model.Task, def *model.ProcessDefinition, version int, input any, callStack []string, id string, spawnCtx map[string]any) *model.ProcessInstance {
 	childCtx := map[string]any{
 		"input":        input,
@@ -149,8 +148,8 @@ func newChildInstance(parent *model.ProcessInstance, task *model.Task, def *mode
 }
 
 // buildMapChildren resolves definitions, evaluates inputs, and constructs
-// ProcessInstances for all keyed (child_map) children. Does not persist anything; a
-// non-nil outcome means the parent failed and the caller should stop and persist it.
+// ProcessInstances for all keyed (child_map) children. Persists nothing; a non-nil
+// outcome means the parent failed and the caller must stop and persist it.
 func (e *Engine) buildMapChildren(ctx context.Context, inst *model.ProcessInstance, task *model.Task, callStack []string) ([]*model.ProcessInstance, *advanceOutcome) {
 	keys := make([]string, 0, len(task.Action.Children))
 	for key := range task.Action.Children {
@@ -196,12 +195,11 @@ func (e *Engine) buildMapChildren(ctx context.Context, inst *model.ProcessInstan
 	return children, nil
 }
 
-// buildListChildren evaluates the child_list `over` expression to an array and
-// constructs one child ProcessInstance per element, in order — each element is that
-// child's input. It returns an empty slice (no error) when `over` yields an empty
-// array or null; the caller handles that as the empty-fan-out case. Does not persist
-// anything; a non-nil outcome means the parent failed and the caller should stop and
-// persist it.
+// buildListChildren evaluates the child_list `over` expression to an array and builds one
+// child per element, in order (each element is that child's input). Returns an empty slice
+// (no error) when `over` yields an empty array or null — the caller handles the empty
+// fan-out. Persists nothing; a non-nil outcome means the parent failed and the caller must
+// stop and persist it.
 func (e *Engine) buildListChildren(ctx context.Context, inst *model.ProcessInstance, task *model.Task, callStack []string) ([]*model.ProcessInstance, *advanceOutcome) {
 	version, err := e.resolveChildVersion(inst, task.ID, task.Action.Name, task.Action.Version, "")
 	if err != nil {

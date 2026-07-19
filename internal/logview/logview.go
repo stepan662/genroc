@@ -29,7 +29,6 @@ const (
 	ModeJSON   Mode = "json"
 )
 
-// ParseMode validates a mode string.
 func ParseMode(s string) (Mode, error) {
 	switch Mode(s) {
 	case ModeBasic, ModeDetail, ModeJSON:
@@ -39,8 +38,6 @@ func ParseMode(s string) (Mode, error) {
 	}
 }
 
-// IncludesData reports whether the mode carries the data body: detail appends it to
-// the columns and json emits every field including it; basic omits it.
 func (m Mode) IncludesData() bool { return m == ModeDetail || m == ModeJSON }
 
 // AuditKey is the slog attr that marks a record as a structured, DB-persisted audit
@@ -59,8 +56,8 @@ const (
 	colTask  = 14 // user-defined task id; the last column before the detail fields
 )
 
-// Label is the display name for an event's data body — what the body is, framed by
-// the event that produced it. Events without a payload fall back to "data".
+// Label is the display name for an event's data body (e.g. "result", "input"); events
+// without a payload fall back to "data".
 func Label(event string) string {
 	switch event {
 	case "inst_created":
@@ -95,10 +92,8 @@ type Record struct {
 	Meta  map[string]any
 }
 
-// Detail returns the trailing key=value fields for an event — everything that isn't
-// a fixed column: msg, code, meta (keys sorted), and the data body under its Label
-// when the mode includes it. Both surfaces use this, so they show the same fields in
-// the same order.
+// Detail returns the trailing key=value fields (not the fixed columns): msg, code, sorted
+// meta, and the data body under its Label when the mode includes it. Shared by both surfaces.
 func (r Record) Detail(mode Mode) []Field {
 	fs := make([]Field, 0, 3+len(r.Meta))
 	if r.Msg != "" {
@@ -116,9 +111,8 @@ func (r Record) Detail(mode Mode) []Field {
 	return fs
 }
 
-// RenderEvent renders an audit event as a fixed-width column line. The id column is
-// shown only when withID (always on the server, where instances interleave; on the
-// CLI only in --recursive):
+// RenderEvent renders an audit event as a fixed-width column line; the id column shows
+// only when withID (always on the server, on the CLI only in --recursive):
 //
 //	15:04:05  INFO   2559a9  action_started    first         msg=fetch url=… request={…}
 func RenderEvent(t time.Time, level, id, event, task string, detail []Field, withID bool) string {
@@ -129,10 +123,8 @@ func RenderEvent(t time.Time, level, id, event, task string, detail []Field, wit
 	return strings.TrimRight(line, " ")
 }
 
-// RenderFree renders an operational record (no event) free-form — time, level, then
-// the message as a leading msg= field and the rest as key=value, so its human text
-// reads the same way (msg="…") as a columnar audit row's. It deliberately doesn't fit
-// the columns; these happen at startup or on something unexpected.
+// RenderFree renders an operational record (no event) free-form: time, level, the message
+// as a leading msg= field, then key=value — deliberately not column-fitted.
 //
 //	15:04:05  INFO   msg="engine started" max_concurrent=200 worker=…
 func RenderFree(t time.Time, level, message string, fields []Field) string {
@@ -146,10 +138,8 @@ func RenderFree(t time.Time, level, message string, fields []Field) string {
 	return strings.TrimRight(line, " ")
 }
 
-// RenderJSON renders a record as one compact JSON object (JSONL): every field,
-// untruncated and jq-friendly. It's the json mode on either surface. The columns
-// (id/event/task) and the trailing detail fields all become object keys — an audit
-// record carries event (+task), an operational one carries msg.
+// RenderJSON renders a record as one compact JSON object (JSONL), untruncated: columns
+// and detail fields become keys — audit records carry event (+task), operational ones msg.
 func RenderJSON(t time.Time, level, message string, isAudit bool, id, task string, fields []Field) string {
 	obj := make(map[string]any, 5+len(fields))
 	obj["time"] = t.Format(time.RFC3339Nano)
@@ -236,9 +226,8 @@ func valToString(v any) string {
 	}
 }
 
-// ShortID is the compact, distinguishing id tag shown in the ID column — the id's
-// random tail, not its timestamp-prefixed head, so a parent and a same-millisecond
-// child differ. The full id is available via the API / genctl logs --mode json.
+// ShortID is the compact id tag for the ID column — the id's random tail, not its
+// timestamp-prefixed head, so a parent and same-millisecond child differ.
 func ShortID(id string) string {
 	if len(id) > colID {
 		return id[len(id)-colID:]
@@ -258,10 +247,8 @@ func sortedKeys(m map[string]any) []string {
 	return keys
 }
 
-// NewHandler builds the server console slog handler. In basic/detail modes, records
-// carrying AuditKey render as aligned columns (event = the slog message, plus id/task
-// and the detail fields) and everything else (operational logs, plain slog calls)
-// renders free-form; in json mode every record is one JSON object per line.
+// NewHandler builds the server console slog handler: in basic/detail modes AuditKey
+// records render as aligned columns and the rest free-form; json mode is one object per line.
 func NewHandler(w io.Writer, level slog.Level, mode Mode) slog.Handler {
 	return &consoleHandler{w: w, level: level, mode: mode, mu: &sync.Mutex{}}
 }

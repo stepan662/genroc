@@ -30,12 +30,12 @@ const (
 	outcomeNoop                        // advance already persisted (child spawn parked the parent)
 )
 
-// stop wraps an outcome as a non-nil pointer, the signal call helpers use to tell
-// advance to stop the task loop and return this outcome (nil means "continue").
+// stop wraps an outcome as a non-nil pointer: call helpers return it to halt the task
+// loop with this outcome; a nil *advanceOutcome means "continue".
 func stop(o advanceOutcome) *advanceOutcome { return &o }
 
-// persist applies an advance outcome to the DB. It is the single place an in-flight
-// advance releases its lease; runAdvance calls it after dropping the marker.
+// persist applies an advance outcome to the DB — the single place an in-flight advance
+// releases its lease (runAdvance calls it after dropping the marker).
 func (e *Engine) persist(inst *model.ProcessInstance, o advanceOutcome) error {
 	switch o.kind {
 	case outcomeTerminal:
@@ -51,10 +51,9 @@ func (e *Engine) persist(inst *model.ProcessInstance, o advanceOutcome) error {
 	}
 }
 
-// runAdvance advances one instance, then drops its in-flight marker before
-// persisting the resulting state. Doing the delete before the store closes the
-// window where the instance is free in the DB but still marked in memory. (For Tick,
-// which keeps no marker, the delete is a harmless no-op.)
+// runAdvance advances one instance, then drops its in-flight marker before persisting,
+// closing the window where the instance is free in the DB but still marked in memory.
+// (For Tick, which keeps no marker, the delete is a harmless no-op.)
 func (e *Engine) runAdvance(ctx context.Context, inst *model.ProcessInstance) error {
 	outcome := e.advance(ctx, inst)
 	e.inflight.Delete(inst.ID)
@@ -70,11 +69,10 @@ func (e *Engine) runAdvance(ctx context.Context, inst *model.ProcessInstance) er
 	return nil
 }
 
-// prepareAdvance runs the once-per-tick setup before the task loop: it loads the
-// definition, resolves config from the environment, locates the instance's current
-// task, handles a lease-takeover reclaim (failing an interrupted only_once task), and
-// emits work_started. It returns the loaded definition and the resolved task index, or
-// a non-nil outcome the caller must return immediately (a failure).
+// prepareAdvance runs the once-per-tick setup before the task loop: load the definition,
+// resolve config from the environment, locate the current task, handle a lease-takeover
+// reclaim (failing an interrupted only_once task), and emit work_started. Returns the
+// definition and task index, or a non-nil outcome the caller must return immediately.
 func (e *Engine) prepareAdvance(inst *model.ProcessInstance) (*model.ProcessDefinition, int, *advanceOutcome) {
 	// Load the definition once for the whole tick: it drives config resolution and
 	// is the source of truth for the task list (the instance stores only its current
@@ -133,11 +131,10 @@ func (e *Engine) prepareAdvance(inst *model.ProcessInstance) (*model.ProcessDefi
 	return def, idx, nil
 }
 
-// advance executes the next task in the instance's queue, returning the outcome to
-// persist (it performs no lease-releasing write itself — runAdvance does).
-// Each task may have a call, a switch, or both. The call runs first; then the switch
-// is evaluated with the call's output available as "self". A matching switch case
-// jumps to the named task; no match advances to the next task in the queue.
+// advance executes the next task in the instance's queue and returns the outcome to
+// persist (it does no lease-releasing write — runAdvance does). Each task may have a call
+// and/or a switch: the call runs first, then the switch evaluates with the call's output
+// as "self"; a matching case jumps to the named task, else the next task in the queue runs.
 func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advanceOutcome {
 	if inst.Status == model.StatusFailing {
 		return e.settleFailing(inst)
@@ -297,9 +294,9 @@ func (e *Engine) evalTaskOutput(inst *model.ProcessInstance, task *model.Task, r
 	return e.evalShapeCtx(inst, task.Output.Raw, self)
 }
 
-// setTaskOutput stores value as the task's exported output (outputs.taskID),
-// recording the task in output_order the first time it produces output (a loop
-// re-execution overwrites the value without re-appending).
+// setTaskOutput stores value as the task's exported output (outputs.taskID), appending to
+// output_order only the first time the task produces output (a loop re-execution
+// overwrites the value without re-appending).
 func (e *Engine) setTaskOutput(inst *model.ProcessInstance, taskID string, value any) {
 	if inst.ContextData["outputs"] == nil {
 		inst.ContextData["outputs"] = map[string]any{}
@@ -330,10 +327,9 @@ func appendOutputOrder(inst *model.ProcessInstance, id string) {
 	inst.ContextData["output_order"] = append(order, id)
 }
 
-// evalSwitch walks the task's switch cases in order and returns the Goto target
-// of the first case whose Case expression evaluates to true. An empty Case is a
-// catch-all that always matches and must be the last entry when present. Returns ""
-// when the switch list is empty (should not happen on validated definitions).
+// evalSwitch returns the Goto of the first switch case whose Case expression is true. An
+// empty Case is a catch-all (must be last when present). Returns "" when no case matches
+// (should not happen on validated definitions).
 func (e *Engine) evalSwitch(inst *model.ProcessInstance, task *model.Task, selfOutput any) (string, error) {
 	for _, c := range task.Switch {
 		if c.Case == "" {
@@ -373,9 +369,9 @@ func taskIDAt(tasks []*model.Task, idx int) string {
 	return tasks[idx].ID
 }
 
-// resolveGoto validates that the instance's definition contains taskID, so the engine
-// can point the instance at it. No queue is built — the remaining tasks are implied by
-// definition order. Used by the on-error route, which has no definition in scope.
+// resolveGoto validates that the instance's definition contains taskID so the engine can
+// point the instance at it (no queue is built — successors are implied by definition
+// order). Used by the on-error route, which has no definition in scope.
 func (e *Engine) resolveGoto(inst *model.ProcessInstance, taskID string) error {
 	def, err := e.db.GetDefinition(inst.ProcessName, inst.ProcessVersion)
 	if err != nil {
@@ -387,10 +383,9 @@ func (e *Engine) resolveGoto(inst *model.ProcessInstance, taskID string) error {
 	return nil
 }
 
-// saveAndNotify is the single exit point for all terminal instance states.
-// For root instances and failed instances it saves directly; for non-failed child
-// instances it uses FinishChild, which atomically saves the child and transitions
-// the parent to WaitStateCollecting when all siblings are done.
+// saveAndNotify is the single exit point for all terminal instance states. Root and
+// failed instances save directly; a non-failed child uses FinishChild, which atomically
+// saves it and moves the parent to WaitStateCollecting once all siblings are done.
 func (e *Engine) saveAndNotify(inst *model.ProcessInstance) error {
 	if inst.ParentID == "" {
 		return e.db.UpdateInstance(inst)
@@ -401,9 +396,8 @@ func (e *Engine) saveAndNotify(inst *model.ProcessInstance) error {
 	return e.db.FinishChild(inst)
 }
 
-// computeOutput evaluates the process definition's Output expression map against
-// the final context and stores the result in context_data["output"]. No-op if
-// the definition has no Output map.
+// computeOutput evaluates the definition's Output map against the final context and
+// stores it in context_data["output"]. No-op when the definition has no Output map.
 func (e *Engine) computeOutput(inst *model.ProcessInstance) error {
 	def, err := e.db.GetDefinition(inst.ProcessName, inst.ProcessVersion)
 	if err != nil {

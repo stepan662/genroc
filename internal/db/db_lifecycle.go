@@ -10,18 +10,12 @@ import (
 	"genroc/internal/model"
 )
 
-// FinishChild atomically saves the child as terminal and, if all siblings are
-// now done, wakes the waiting parent. A healthy (running) parent wakes to
-// 'collecting' — it will actually merge child outputs; a draining
-// (failing/cancelling) parent wakes to ” and just settles. 'collecting'
-// therefore strictly means "all children completed, outputs will be merged".
-//
-// The parent row is locked first (FOR UPDATE on PostgreSQL) to prevent race conditions
-// between concurrent sibling completions. SQLite serialises naturally via single-writer.
-//
-// For root instances (no parent), only the child save is performed.
-// For failed children, use FailAncestors instead; FinishChild is only for
-// completed/cancelled terminal states.
+// FinishChild atomically saves the child as terminal and, if all siblings are now done,
+// wakes the waiting parent — to 'collecting' if healthy (outputs will be merged), to ”
+// if draining (failing/cancelling; just settles). The parent row is locked first (FOR
+// UPDATE on PostgreSQL; SQLite single-writer) to serialize concurrent sibling
+// completions — the same lock order as CancelProcess/FailInstanceAndAncestors. Root
+// instances (no parent) only save the child; failed children use FailAncestors instead.
 func (db *DB) FinishChild(child *model.ProcessInstance) error {
 	if child.ParentID == "" {
 		return db.UpdateInstance(child)
@@ -82,12 +76,10 @@ func (db *DB) FinishChild(child *model.ProcessInstance) error {
 	})
 }
 
-// FailInstanceAndAncestors atomically marks a child instance as failed,
-// propagates 'failing' to all ancestors in its call stack, and — when the
-// failed child was the last active member of its spawn batch — wakes the
-// parent (to ”, the parent is failing by then) so the engine can settle it
-// on the next tick. All in a single transaction; the safe replacement for
-// calling UpdateInstance + FailAncestors separately.
+// FailInstanceAndAncestors atomically marks a child failed, propagates 'failing' to all
+// ancestors in its call stack, and — when the child was the last active member of its
+// spawn batch — wakes the parent (to ”, it is failing by then) so the engine settles it
+// next tick. One transaction; the safe replacement for UpdateInstance + FailAncestors.
 func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 	ctx := context.Background()
 	return db.withTx(ctx, func(qtx *dbgen.Queries, raw dbgen.DBTX) error {
@@ -191,17 +183,12 @@ func (db *DB) forUpdate() string {
 	return ""
 }
 
-// CancelProcess atomically marks an entire process tree as cancelling.
-// It only accepts root instances — cancellation is a decision about the whole
-// tree, so cancelling a descendant directly is rejected with the root's ID.
-// All running instances of the tree (the root and every descendant) transition
-// to 'cancelling'.
-//
-// The tree is enumerated with a recursive walk over parent_id (subtreeCTE). The
-// locking CTE then takes every row lock in id order before the UPDATE
-// — the same order as FinishChild and FailInstanceAndAncestors, eliminating
-// deadlocks on PostgreSQL (SQLite serialises via its single writer; its lock
-// clause is empty).
+// CancelProcess atomically transitions an entire process tree (root + every running
+// descendant) to 'cancelling'. Root-only: cancellation is a decision about the whole
+// tree, so a descendant id is rejected with the root's. The tree is enumerated by a
+// recursive parent_id walk (subtreeCTE), then the locking CTE takes every row lock in
+// id order — the same order as FinishChild/FailInstanceAndAncestors — to avoid
+// PostgreSQL deadlocks (SQLite single-writer, empty lock clause).
 func (db *DB) CancelProcess(ctx context.Context, id string) error {
 	row, err := db.q.GetInstance(ctx, id)
 	if err != nil {
@@ -245,17 +232,12 @@ func requireRoot(row dbgen.ProcessInstance, op string) error {
 	return fmt.Errorf("instance %q is not a root instance; %s root instance %q instead", row.ID, op, stack[0])
 }
 
-// RetryProcess resumes a failed or cancelled root process from where its tree
-// was interrupted. Failed/cancelled instances on the current execution path are
-// revived in place: leaves re-run their pending task, parents are reconstructed
-// as waiting (live children) or collecting (all children done). Completed work
-// is never redone. force overrides the only_once protection on pending tasks.
-//
-// Only root instances are accepted — like cancellation, retry is a decision
-// about the whole tree. A root that is failed/cancelled implies the tree has
-// fully settled (nodes only reach a terminal status once all their children
-// are terminal); draining roots are rejected as failing/cancelling by the
-// status check.
+// RetryProcess resumes a failed or cancelled root process from where its tree was
+// interrupted: failed/cancelled nodes on the current path are revived in place (leaves
+// re-run their pending task; parents reconstructed as waiting for live children or
+// collecting when all are done), while completed work is never redone. force overrides
+// only_once protection on pending tasks. Root-only — a terminal root implies the whole
+// tree has settled; draining roots are rejected by the status check.
 func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 	rootRow, err := db.q.GetInstance(ctx, id)
 	if err != nil {
@@ -451,12 +433,10 @@ func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 	return tx.Commit()
 }
 
-// SpawnChildrenAndWait atomically inserts child instances and transitions the parent
-// to wait_state='waiting'. Children inherit the parent's current status so that a
-// concurrently-cancelled parent spawns cancelling children (they self-cancel and
-// wake the parent via FinishChild).
-// Zero children: no-op (parent continues without entering the waiting state).
-// Hand-written because it requires coordinating multiple INSERTs with a parent update.
+// SpawnChildrenAndWait atomically inserts child instances and transitions the parent to
+// wait_state='waiting'. Children inherit the parent's current status, so a
+// concurrently-cancelled parent spawns cancelling children (they self-cancel and wake it
+// via FinishChild). Zero children is a no-op (the parent does not enter the wait state).
 func (db *DB) SpawnChildrenAndWait(ctx context.Context, parent *model.ProcessInstance, children []*model.ProcessInstance) error {
 	if len(children) == 0 {
 		return nil

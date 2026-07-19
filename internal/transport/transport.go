@@ -36,9 +36,8 @@ type Response struct {
 	Status       int
 }
 
-// Send dispatches a fetch HTTP request. url, method, and headers are pre-resolved (their
-// templates already evaluated); body is the raw request payload — an object is marshaled
-// to JSON, a string is sent as-is, and nil sends no body.
+// Send dispatches a fetch HTTP request. url, method, and headers are pre-resolved; body is
+// the raw payload — an object is marshaled to JSON, a string sent as-is, nil sends no body.
 func Send(ctx context.Context, call *model.Action, url, method string, headers map[string]string, body any) (*Response, error) {
 	switch call.Type {
 	case model.ActionTypeFetch:
@@ -101,7 +100,6 @@ func sendHTTP(ctx context.Context, url, method string, acceptedStatus []string, 
 	return &Response{Body: b, Status: resp.StatusCode}, nil
 }
 
-// methodAllowsBody reports whether an HTTP method conventionally carries a request body.
 func methodAllowsBody(method string) bool {
 	switch strings.ToUpper(method) {
 	case http.MethodGet, http.MethodHead:
@@ -110,9 +108,8 @@ func methodAllowsBody(method string) bool {
 	return true
 }
 
-// matchAcceptedStatus reports whether code is covered by patterns.
-// Patterns may be "2xx"/"3xx"/"4xx"/"5xx" (hundred-range) or exact 3-digit strings like "404".
-// Empty patterns defaults to accepting any 2xx.
+// matchAcceptedStatus reports whether code is covered by patterns — "2xx".."5xx"
+// hundred-ranges or exact 3-digit strings like "404". Empty patterns accepts any 2xx.
 func matchAcceptedStatus(code int, patterns []string) bool {
 	if len(patterns) == 0 {
 		return code >= 200 && code <= 299
@@ -132,12 +129,10 @@ func matchAcceptedStatus(code int, patterns []string) bool {
 	return false
 }
 
-// ClassifyGoError maps a transport-level Go error to an error code.
-// Used for REST call failures that never received an HTTP response.
-//
-// Returns pre.timeout or pre.error when the failure happened during the
-// TCP dial phase (the server never received the request). Returns http.timeout
-// when the connection was established but no response arrived in time.
+// ClassifyGoError maps a transport-level Go error (a REST call that never got an HTTP
+// response) to an error code: pre.timeout / pre.error for a failure during the dial phase
+// (server never received the request), http.timeout when the connection was established
+// but no response arrived in time.
 func ClassifyGoError(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		var netErr *net.OpError
@@ -189,8 +184,8 @@ func SQLLikeMatch(p, s string) bool {
 	return len(s) == 0
 }
 
-// ValidLikePattern reports whether p is a valid SQL LIKE pattern (only printable ASCII, no raw %).
-// We allow any non-empty string — validation is just a non-empty check for now.
+// ValidLikePattern reports whether p is a valid SQL LIKE pattern — for now just a
+// non-empty check.
 func ValidLikePattern(p string) bool {
 	return len(strings.TrimSpace(p)) > 0
 }

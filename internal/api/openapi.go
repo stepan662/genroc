@@ -16,8 +16,8 @@ import (
 	"github.com/swaggest/openapi-go/openapi31"
 )
 
-// Spec returns the OpenAPI 3.0 spec as JSON, built from the action registry.
-// Can be called without starting the server — useful for generating static spec files.
+// Spec returns the OpenAPI spec as JSON, built from the action registry; callable without
+// starting the server, to generate static spec files.
 func Spec() []byte { return buildSpec() }
 
 var (
@@ -182,9 +182,8 @@ func addOperation(r *openapi31.Reflector, a actionDef) {
 	}
 }
 
-// zeroOf returns a zero value of the same type as v.
-// This prevents runtime map/slice values from polluting the reflected schema
-// (e.g. map[string]any{"id": 42} would otherwise infer additionalProperties:{type:integer}).
+// zeroOf returns a zero value of v's type, so runtime map/slice values don't pollute the
+// reflected schema (e.g. {"id":42} would otherwise infer additionalProperties:{type:integer}).
 func zeroOf(v any) any {
 	t := reflect.TypeOf(v)
 	if t == nil {
@@ -196,7 +195,6 @@ func zeroOf(v any) any {
 	return reflect.New(t).Elem().Interface()
 }
 
-// swaggerUIHTML renders a Swagger UI page pointing at the given spec URL and title.
 func swaggerUIHTML(title, specURL string) string {
 	return `<!DOCTYPE html>
 <html>

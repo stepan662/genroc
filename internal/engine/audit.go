@@ -12,10 +12,9 @@ import (
 	"genroc/internal/schema"
 )
 
-// snippetResult redacts an action's raw result body against its result_schema
-// (which may mark response fields secret), then returns the capped JSON snippet.
-// The response body is not part of the instance context, so it cannot be scrubbed
-// by audit's context-secret pass — it is schema-redacted here instead.
+// snippetResult redacts an action's raw result body against its result_schema, then
+// returns the capped JSON snippet. The response body is not in the instance context, so
+// audit's context-secret pass can't scrub it — it is schema-redacted here instead.
 func (e *Engine) snippetResult(task *model.Task, body any) string {
 	if e.logCfg.Payloads && task.Action != nil && task.Action.ResultSchema != nil {
 		body = task.Action.ResultSchema.Redact(body)
@@ -38,9 +37,9 @@ type logEvent struct {
 	Meta  map[string]any
 }
 
-// audit records an instance event to the unified console (slog) and the durable
-// per-instance trail (the DB). Best-effort on the DB write: a failure is logged and
-// swallowed so audit logging can never abort an advance.
+// audit records an instance event to the console (slog) and the durable per-instance DB
+// trail. Best-effort on the DB write: a failure is logged and swallowed so audit logging
+// can never abort an advance.
 func (e *Engine) audit(inst *model.ProcessInstance, ev logEvent) {
 	ev.ID = inst.ID
 	// Scrub every secret value (config + input + output, identified by the taint
@@ -72,16 +71,14 @@ func (e *Engine) audit(inst *model.ProcessInstance, ev logEvent) {
 }
 
 // contextSecrets gathers every secret value currently in the instance's context —
-// config secrets, plus input/output values whose inferred schema is marked secret —
-// so audit can scrub them from log text. (The action response body is not in the
-// context; it is schema-redacted at its log site via snippetResult.)
+// config secrets plus input/output values whose inferred schema is marked secret — so
+// audit can scrub them from log text. (The response body is not in the context; it is
+// schema-redacted at its log site via snippetResult.)
 //
-// It considers only already-materialized values: inline values and slots that were
-// resolved earlier this advance (inst.ResolvedObjects). An unresolved *ObjectRef is
-// skipped, because a value that was never loaded was never used, so it cannot appear
-// in any log line being scrubbed. This relies on the invariant that anything logged
-// is derived from a value resolved BEFORE the audit call that logs it (every eval
-// path feeds inst.ResolvedObjects via resolveValue first) — preserve that ordering.
+// It considers only already-materialized values: an unresolved *ObjectRef is skipped,
+// because a value never loaded was never used, so it cannot appear in any log line. This
+// relies on the invariant that anything logged is derived from a value resolved BEFORE the
+// audit call that logs it (every eval path feeds inst.ResolvedObjects first) — preserve it.
 func (e *Engine) contextSecrets(inst *model.ProcessInstance) []string {
 	def, err := e.db.GetDefinition(inst.ProcessName, inst.ProcessVersion)
 	if err != nil {
@@ -123,7 +120,6 @@ func (e *Engine) contextSecrets(inst *model.ProcessInstance) []string {
 	return out
 }
 
-// redactSecrets replaces each secret value in s with "***".
 func redactSecrets(s string, secrets []string) string {
 	for _, sv := range secrets {
 		if sv != "" {
@@ -133,8 +129,8 @@ func redactSecrets(s string, secrets []string) string {
 	return s
 }
 
-// redactMeta returns a copy of meta with secret values scrubbed from its string
-// values (e.g. the resolved endpoint URL). The original map is left unchanged.
+// redactMeta returns a copy of meta with secret values scrubbed from its string values;
+// the original map is left unchanged.
 func redactMeta(meta map[string]any, secrets []string) map[string]any {
 	if len(meta) == 0 || len(secrets) == 0 {
 		return meta
@@ -150,20 +146,18 @@ func redactMeta(meta map[string]any, secrets []string) map[string]any {
 	return out
 }
 
-// logOnly records a console-only line (server lifecycle / operational events not in
-// any instance's durable trail). It carries no Event — it renders free-form (a
-// message + fields), distinct from the columnar audit rows.
+// logOnly records a console-only line (server lifecycle / operational events not in any
+// instance's durable trail). It carries no Event, so it renders free-form rather than as
+// a columnar audit row.
 func (e *Engine) logOnly(ev logEvent) {
 	ev.Event = "" // operational: no structured event
 	e.emit(ev)
 }
 
-// emit renders one record to the server console via slog. It builds the attrs only
-// when the level is enabled (most are dropped at the common low-verbosity setting),
-// keeping audit's hot path — the DB write — cheap. A record with an Event is a
-// structured audit event (marked, so the console renders it in aligned columns); one
-// without is operational (rendered free-form). The fields come from logview.Record
-// so the console and the CLI show the same fields in the same order.
+// emit renders one record to the console via slog. It builds the attrs only when the
+// level is enabled, keeping audit's hot path — the DB write — cheap. A record with an
+// Event is a structured audit event (rendered in aligned columns); one without is
+// operational (free-form). Fields come from logview.Record so console and CLI match.
 func (e *Engine) emit(ev logEvent) {
 	lvl := slogLevel(ev.Level)
 	if !e.log.Enabled(context.Background(), lvl) {
@@ -205,7 +199,6 @@ func sortedMetaKeys(m map[string]any) []string {
 	return keys
 }
 
-// slogLevel maps an audit level to the matching slog level for console output.
 func slogLevel(l model.LogLevel) slog.Level {
 	switch l {
 	case model.LogDebug:
@@ -228,27 +221,23 @@ func statusMeta(status int) map[string]any {
 	return map[string]any{"status": status}
 }
 
-// AuditCreated records the instance_created milestone for a freshly created
-// instance, capturing its process input (subject to payload-logging config). The
-// API calls it for a root instance right after persisting it; the engine calls it
-// for each spawned child. It bookends the trail with instance_completed, which
-// carries the final output.
+// AuditCreated records the instance_created milestone, capturing the instance's process
+// input (subject to payload-logging config). Called by the API for a root instance and by
+// the engine for each spawned child; it bookends the trail with instance_completed.
 func (e *Engine) AuditCreated(inst *model.ProcessInstance) {
 	e.audit(inst, logEvent{Level: model.LogInfo, Event: model.EventInstanceCreated, Data: e.snippet(inst.ContextData["input"])})
 }
 
-// outputData captures the process's final output for the instance_completed event:
-// the raw snippet of context_data["output"] (set by computeOutput from the
-// definition's output projection), or "" when the process defines no output (or
-// payload logging is off).
+// outputData is the snippet of the process's final output (context_data["output"], set by
+// computeOutput) for the instance_completed event; "" when there is no output or payload
+// logging is off.
 func (e *Engine) outputData(inst *model.ProcessInstance) string {
 	return e.snippet(inst.ContextData["output"])
 }
 
-// snippet renders v as JSON for inclusion in an audit detail. It returns the FULL
-// payload (no truncation): audit caps it for the console and externalizes anything
-// over the payload size to a log object, so the captured value is never lossy.
-// Returns "" when payload capture is disabled or v is empty.
+// snippet renders v as JSON for an audit detail, returning the FULL payload (no
+// truncation — audit caps it for the console and externalizes oversized values, so the
+// capture is never lossy). Returns "" when payload capture is off or v is empty.
 func (e *Engine) snippet(v any) string {
 	if !e.logCfg.Payloads || v == nil {
 		return ""
@@ -260,9 +249,9 @@ func (e *Engine) snippet(v any) string {
 	return string(b)
 }
 
-// snippetRaw returns an already-string payload (e.g. an error response body, raw
-// text not a value to JSON-encode) in full; audit caps/externalizes it like snippet.
-// Returns "" when payload capture is off or s is empty.
+// snippetRaw returns an already-string payload (e.g. a raw error response body) in full;
+// audit caps/externalizes it like snippet. Returns "" when payload capture is off or s
+// is empty.
 func (e *Engine) snippetRaw(s string) string {
 	if !e.logCfg.Payloads {
 		return ""
@@ -270,8 +259,8 @@ func (e *Engine) snippetRaw(s string) string {
 	return s
 }
 
-// payloadCap is the configured per-payload size used both as the console truncation
-// point and the inline-vs-externalize threshold for log data.
+// payloadCap is the configured per-payload size — both the console truncation point and
+// the inline-vs-externalize threshold for log data.
 func (e *Engine) payloadCap() int {
 	if e.logCfg.PayloadBytes > 0 {
 		return e.logCfg.PayloadBytes
@@ -290,11 +279,11 @@ func truncateStr(s string, max int) string {
 	return s
 }
 
-// encodeLogData renders a (already secret-scrubbed) log payload into the data column:
-// a small payload is stored inline as an envelope; a large one is written to a log
-// object and stored as a reference plus a short preview, so the high-churn process_logs
-// table never holds a huge value. Best-effort: if the object write fails it falls back
-// to an inline, truncated preview.
+// encodeLogData renders a (secret-scrubbed) log payload into the data column: a small
+// payload is stored inline as an envelope, a large one is written to a log object and
+// stored as a reference plus a short preview, so the high-churn process_logs table never
+// holds a huge value. Best-effort: a failed object write falls back to a truncated inline
+// preview.
 func (e *Engine) encodeLogData(instanceID, full string) string {
 	if full == "" {
 		return ""

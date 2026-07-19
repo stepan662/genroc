@@ -41,12 +41,9 @@ func (db *DB) RenewWorkerLeases(workerID string, leaseDur time.Duration) error {
 }
 
 // ClaimInstances atomically leases up to limit runnable instances to workerID.
-// PostgreSQL appends FOR UPDATE SKIP LOCKED so concurrent workers never block on
-// each other; SQLite's single-writer model needs no such clause. db.exec rewrites
-// the ? placeholders to $N on Postgres.
-//
-// wait_state <> 'waiting' excludes parents suspended for children.
-// Both ” (none) and 'collecting' are claimable.
+// PostgreSQL appends FOR UPDATE SKIP LOCKED so concurrent workers never block;
+// SQLite's single-writer model needs no such clause. wait_state <> 'waiting'
+// excludes parents suspended for children; both ” (none) and 'collecting' are claimable.
 func (db *DB) ClaimInstances(workerID string, leaseDur time.Duration, limit int) ([]*model.ProcessInstance, error) {
 	now := nowMillis()
 	leaseExpiry := now + leaseDur.Milliseconds()

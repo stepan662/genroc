@@ -32,9 +32,8 @@ var instancePaginator = paginator{
 	maxLimit:   100,
 }
 
-// instanceCursorVals returns the active sort mode's key-column values for inst,
-// matching externalPaginator's column order for that mode (the external-task queue
-// keys on park time, updated_at).
+// instanceCursorVals returns inst's key-column values for the active sort, matching
+// externalPaginator's column order (the external-task queue keys on updated_at).
 func instanceCursorVals(sort string, inst *model.ProcessInstance) []any {
 	switch sort {
 	case "updated": // external-task queue
@@ -44,8 +43,8 @@ func instanceCursorVals(sort string, inst *model.ProcessInstance) []any {
 	}
 }
 
-// instanceSummaryCursorVals is instanceCursorVals for the summary list path,
-// matching instancePaginator's sort modes (updated / created).
+// instanceSummaryCursorVals is instanceCursorVals for the summary list path
+// (instancePaginator's created/updated sorts).
 func instanceSummaryCursorVals(sort string, s *model.InstanceSummary) []any {
 	switch sort {
 	case "created":
@@ -120,10 +119,8 @@ type outputsColumn struct {
 }
 
 // CurrentTask resolves an instance's current task object from its (immutable,
-// version-pinned) definition, or nil when the instance has no current task (Task == "",
-// i.e. completed or drained). Only the current task is ever needed; its successors are
-// implied by the definition's task order, so no queue is materialised. Used by callers
-// that need the task's shape (action, only_once) rather than just its id.
+// version-pinned) definition, or nil when there is no current task (Task == "";
+// completed or drained). Successors are implied by task order, so no queue is materialised.
 func (db *DB) CurrentTask(inst *model.ProcessInstance) (*model.Task, error) {
 	if inst.Task == "" {
 		return nil, nil
@@ -140,10 +137,9 @@ func (db *DB) CurrentTask(inst *model.ProcessInstance) (*model.Task, error) {
 	return nil, fmt.Errorf("task %q not found in %s v%d", inst.Task, inst.ProcessName, inst.ProcessVersion)
 }
 
-// encodeValueSlot externalizes a value-bearing slot (input / a task output / the
-// process output): big values become an object reference (appended to pending and
-// recorded in referenced), small ones stay inline. An *model.ObjectRef (an
-// unchanged, still-lazy slot) is re-emitted as its reference with no new object.
+// encodeValueSlot encodes a value-bearing slot: big values become an object reference
+// (appended to pending, recorded in referenced), small ones stay inline, and an
+// unchanged *model.ObjectRef is re-emitted with no new object.
 func encodeValueSlot(v any, pending *[]*pendingObject, referenced map[string]struct{}) (model.Envelope, error) {
 	env, p, err := encodeContextValue(v)
 	if err != nil {
@@ -159,9 +155,8 @@ func encodeValueSlot(v any, pending *[]*pendingObject, referenced map[string]str
 }
 
 // encodeContext splits inst.ContextData into the six column strings, collecting the
-// objects to write (pending) and the full set of object hashes the value-slots still
-// reference (referenced) so the write transaction can pin new objects and dereference
-// ones a slot no longer points at.
+// objects to write (pending) and the hashes the value-slots still reference
+// (referenced) so the write transaction can pin new objects and dereference dropped ones.
 func encodeContext(inst *model.ProcessInstance) (cols contextCols, pending []*pendingObject, referenced map[string]struct{}, err error) {
 	referenced = map[string]struct{}{}
 	cd := inst.ContextData
@@ -223,9 +218,8 @@ func encodeContext(inst *model.ProcessInstance) (cols contextCols, pending []*pe
 }
 
 // encodeExternalData serialises the parked external-task bookkeeping (task_id, token,
-// the inline input snapshot, and a submitted result) into external_data. Returns ""
-// when no external state is present. External payloads stay inline in v1 (their own
-// column already keeps them off the main runnable index).
+// input snapshot, submitted result) into external_data, or "" when none is present.
+// External payloads stay inline (their own column keeps them off the runnable index).
 func encodeExternalData(cd map[string]any) (string, error) {
 	ext := map[string]any{}
 	if e, ok := cd[model.CtxExternal].(map[string]any); ok {
@@ -244,10 +238,9 @@ func encodeExternalData(cd map[string]any) (string, error) {
 	return string(b), err
 }
 
-// withExternalResult writes a submitted/buffered result into an external_data column
-// value (the {task_id,token,input,...} bookkeeping), marking has_result so the engine
-// consumes it on the next claim. Used by the resolve/deliver paths that operate on the
-// column string directly rather than the in-memory context map.
+// withExternalResult writes a result into an external_data column value, marking
+// has_result so the engine consumes it on the next claim. Used by the resolve/deliver
+// paths that operate on the column string rather than the in-memory context map.
 func withExternalResult(externalData string, result any) (string, error) {
 	ext := map[string]any{}
 	if externalData != "" {
@@ -330,8 +323,6 @@ func (db *DB) persistContext(ctx context.Context, qtx *dbgen.Queries, inst *mode
 	return cols, nil
 }
 
-// updateInstanceParams builds UpdateInstance params from inst + already-encoded
-// columns, stamping updated_at with now.
 func updateInstanceParams(inst *model.ProcessInstance, cols contextCols, now int64) dbgen.UpdateInstanceParams {
 	return dbgen.UpdateInstanceParams{
 		ID:           inst.ID,
@@ -351,9 +342,8 @@ func updateInstanceParams(inst *model.ProcessInstance, cols contextCols, now int
 }
 
 // insertInstanceParams builds InsertInstance params from inst + already-encoded
-// columns. status is passed explicitly so callers can override it (e.g. spawned
-// children inherit the parent's status); created/updated timestamps are passed for
-// the same reason.
+// columns. status and the created/updated timestamps are passed explicitly so callers
+// can override them (e.g. spawned children inherit the parent's status).
 func insertInstanceParams(inst *model.ProcessInstance, cols contextCols, status string, createdAt, updatedAt int64) (dbgen.InsertInstanceParams, error) {
 	callStack, err := json.Marshal(inst.CallStack)
 	if err != nil {
@@ -411,14 +401,11 @@ func (db *DB) UpdateInstance(inst *model.ProcessInstance) error {
 	})
 }
 
-// UpdateInstanceProgress writes the mutable task state (queue, context, retry
-// counters, wait_state) without touching status or error. Used after a task
-// completes mid-process so that a concurrent CancelProcess or FailAncestors
-// result is preserved in the DB for the next tick. wait_state IS written: it is
-// owned exclusively by the lease-holding worker (WakeParent only fires
-// while the DB row says 'waiting', which is never the case mid-claim), and the
-// post-collect reset to ” must be persisted or the stale 'collecting' would
-// make the next spawn task skip phase 1 entirely.
+// UpdateInstanceProgress writes the mutable task state (context, retry counters,
+// wait_state) without touching status or error, so a concurrent CancelProcess/
+// FailAncestors result survives to the next tick. wait_state IS written: it is owned by
+// the lease-holding worker, and the post-collect reset to ” must persist or a stale
+// 'collecting' would make the next spawn task skip phase 1.
 func (db *DB) UpdateInstanceProgress(inst *model.ProcessInstance) error {
 	ctx := context.Background()
 	now := nowMillis()
@@ -453,10 +440,8 @@ func (db *DB) GetInstance(id string) (*model.ProcessInstance, error) {
 	return toInstance(r)
 }
 
-// ListInstances returns a page of instance summaries, optionally filtered by
-// status (empty = all), sorted and paged per req. Summaries omit the context blob
-// (use GetInstance for full detail). It returns the page items and the navigation
-// metadata (before/after counts and cursors).
+// ListInstances returns a page of instance summaries, optionally filtered by status
+// (empty = all). Summaries omit the context blob — use GetInstance for full detail.
 func (db *DB) ListInstances(status string, req PageReq) ([]*model.InstanceSummary, PageInfo, error) {
 	b, err := instancePaginator.query(req).EqIf("status", status, status != "").build()
 	if err != nil {
@@ -465,9 +450,8 @@ func (db *DB) ListInstances(status string, req PageReq) ([]*model.InstanceSummar
 	return runPage(db, b, scanInstanceSummary, instanceSummaryCursorVals)
 }
 
-// queryInstancePage runs a built instance-listing query (page + count) and returns
-// the scanned page plus its PageInfo. Shared by ListInstances and
-// ListExternalTasks, which select the same columns and cursor on the same keys.
+// queryInstancePage runs a built instance-listing query and returns the scanned page
+// plus its PageInfo. Shared by the full-instance list paths (same columns and keys).
 func (db *DB) queryInstancePage(b built) ([]*model.ProcessInstance, PageInfo, error) {
 	return runPage(db, b, func(s rowScanner) (*model.ProcessInstance, error) {
 		r, err := scanInstance(s)
@@ -478,8 +462,6 @@ func (db *DB) queryInstancePage(b built) ([]*model.ProcessInstance, PageInfo, er
 	}, instanceCursorVals)
 }
 
-// ChildrenForTask returns all child instances spawned by the given task of a
-// parent, as model instances. Used by the engine to collect child outputs.
 func (db *DB) ChildrenForTask(ctx context.Context, parentID, spawnTaskID string) ([]*model.ProcessInstance, error) {
 	rows, err := db.q.GetChildrenForTask(ctx, dbgen.GetChildrenForTaskParams{
 		ParentID:    parentID,
@@ -532,9 +514,8 @@ func toInstance(r dbgen.ProcessInstance) (*model.ProcessInstance, error) {
 }
 
 // decodeContext reassembles the six context columns into the in-memory ContextData
-// map. Externalized value-slots become *model.ObjectRef markers (resolved lazily on
-// first access); loaded is the set of referenced object hashes, used at write time to
-// dereference objects a slot stops pointing at.
+// map. Externalized value-slots become *model.ObjectRef markers (resolved lazily);
+// loaded is the set of referenced hashes, used at write time to dereference dropped ones.
 func decodeContext(r dbgen.ProcessInstance) (map[string]any, map[string]struct{}, error) {
 	cd := map[string]any{}
 	loaded := map[string]struct{}{}

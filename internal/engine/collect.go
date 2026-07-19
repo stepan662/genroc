@@ -8,16 +8,14 @@ import (
 	"genroc/internal/schema"
 )
 
-// collectChildOutputs is called when a parent instance is in WaitStateCollecting.
-// It reads all child instances of the task and returns their merged output as the
-// task's action result (self.result) — a keyed map for child_map, or an ordered
-// array for child_list. It is exported to outputs.<id> only if the task projects
-// it via `output`.
+// collectChildOutputs runs when a parent is in WaitStateCollecting: it reads all child
+// instances of the task and returns their merged output as the task's action result
+// (self.result) — a keyed map for child_map, an ordered array for child_list. Exported to
+// outputs.<id> only if the task projects it via `output`.
 //
-// Collecting is only valid when every child of the batch completed — a failed
-// or cancelled child makes the parent failing/cancelling, which exits advance()
-// before the collect phase. The guard below enforces this rather than silently
-// merging nil outputs if that invariant is ever broken.
+// Collecting is valid only when every child completed — a failed/cancelled child makes the
+// parent failing/cancelling, which exits advance() before this phase. The guard below
+// enforces that rather than silently merging nil outputs.
 func (e *Engine) collectChildOutputs(ctx context.Context, inst *model.ProcessInstance, task *model.Task) (any, error) {
 	siblings, err := e.db.ChildrenForTask(ctx, inst.ID, task.ID)
 	if err != nil {
@@ -34,9 +32,9 @@ func (e *Engine) collectChildOutputs(ctx context.Context, inst *model.ProcessIns
 	return e.buildMapChildOutput(siblings)
 }
 
-// buildMapChildOutput returns a map of each sibling's output keyed by its
-// child key (validated against the declared result_schema, if any), resolving each
-// from the object store if externalized.
+// buildMapChildOutput returns each sibling's output keyed by its child key, validated
+// against the declared result_schema (if any) and resolved from the object store when
+// externalized.
 func (e *Engine) buildMapChildOutput(siblings []*model.ProcessInstance) (any, error) {
 	result := make(map[string]any, len(siblings))
 	for _, child := range siblings {
@@ -51,10 +49,10 @@ func (e *Engine) buildMapChildOutput(siblings []*model.ProcessInstance) (any, er
 }
 
 // buildListChildOutput returns the children's outputs as an array in input order.
-// Siblings come back from the DB unordered, so each output is placed at the child's
-// recorded _spawn_index — guaranteeing the result order matches the `over` array
-// order regardless of completion or scan order. Each output is validated against the
-// declared result_schema and resolved from the object store if externalized.
+// Siblings come back unordered, so each is placed at its recorded _spawn_index —
+// guaranteeing result order matches the `over` array regardless of scan order. Each is
+// validated against the declared result_schema and resolved from the object store if
+// externalized.
 func (e *Engine) buildListChildOutput(siblings []*model.ProcessInstance) (any, error) {
 	result := make([]any, len(siblings))
 	for _, child := range siblings {
@@ -71,10 +69,9 @@ func (e *Engine) buildListChildOutput(siblings []*model.ProcessInstance) (any, e
 	return result, nil
 }
 
-// resolveAndValidateChildOutput reads a completed child's projected output, resolving
-// it from the object store if externalized and validating it against the child's
-// stored (already-normalized) result_schema when one was declared. Shared by the map
-// and list collectors, which differ only in how they place the result.
+// resolveAndValidateChildOutput reads a completed child's projected output, resolving it
+// from the object store if externalized and validating it against the child's stored
+// (already-normalized) result_schema when declared. Shared by the map and list collectors.
 func (e *Engine) resolveAndValidateChildOutput(child *model.ProcessInstance) (any, error) {
 	output, err := e.resolveValue(child, child.ContextData["output"])
 	if err != nil {
@@ -104,9 +101,9 @@ func spawnIndex(child *model.ProcessInstance) (int, bool) {
 	return 0, false
 }
 
-// validateChildOutput parses the child's stored (already-normalized) result_schema
-// and validates the child output against it, returning the normalized output
-// (undeclared keys dropped, defaults filled).
+// validateChildOutput parses the child's stored (already-normalized) result_schema and
+// validates the child output against it, returning the normalized output (undeclared keys
+// dropped, defaults filled).
 func validateChildOutput(schemaRaw string, output any) (any, error) {
 	raw, err := schema.Parse([]byte(schemaRaw))
 	if err != nil {

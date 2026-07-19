@@ -51,9 +51,7 @@ func saveConfig(cfg genrocConfig) error {
 
 // ── last-instance state (genctl run → @last) ───────────────────────────────────
 
-// lastInstanceFilePath is where `run` records the most recently started instance
-// id, kept beside the config so a follow-up command can resolve `@last` (or a bare
-// default) without the caller copy-pasting it.
+// lastInstanceFilePath is where `run` records the last started instance id for `@last`.
 func lastInstanceFilePath() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
@@ -62,8 +60,6 @@ func lastInstanceFilePath() (string, error) {
 	return filepath.Join(dir, "genroc", "last"), nil
 }
 
-// saveLastInstance records id as the most recently started instance. Best-effort:
-// the caller treats a failure as non-fatal so `run` still succeeds.
 func saveLastInstance(id string) error {
 	path, err := lastInstanceFilePath()
 	if err != nil {
@@ -75,8 +71,6 @@ func saveLastInstance(id string) error {
 	return os.WriteFile(path, []byte(id+"\n"), 0600)
 }
 
-// loadLastInstance returns the most recently started instance id, or "" if none
-// has been recorded yet.
 func loadLastInstance() string {
 	path, err := lastInstanceFilePath()
 	if err != nil {
@@ -89,11 +83,8 @@ func loadLastInstance() string {
 	return strings.TrimSpace(string(data))
 }
 
-// resolveInstanceID maps an instance-id argument to a concrete id. The id must be
-// given explicitly: the literal "@last" resolves to the most recently started
-// instance (recorded by `run`), and any other non-empty value is returned
-// unchanged. An empty argument is an error — a bare command never implies @last —
-// as is "@last" when nothing has been started yet.
+// resolveInstanceID maps an instance-id argument to a concrete id: "@last" → the last
+// started instance, else the value unchanged. Empty, or "@last" with none recorded, is fatal.
 func resolveInstanceID(arg string) string {
 	if arg == "" {
 		fatal("an instance id is required — pass one explicitly, or @last for the most recently started instance")

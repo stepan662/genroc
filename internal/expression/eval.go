@@ -20,9 +20,8 @@ import (
 	"github.com/expr-lang/expr/parser"
 )
 
-// Eval evaluates expression against context and returns the result.
-// Only the same subset of constructs accepted by schema.Schema.Infer is
-// supported; any other construct returns ErrUnsupported.
+// Eval evaluates expression against context. Only the subset accepted by
+// schema.Schema.Infer is supported; anything else returns ErrUnsupported.
 func Eval(expression string, context map[string]any) (any, error) {
 	tree, err := parser.Parse(expression)
 	if err != nil {

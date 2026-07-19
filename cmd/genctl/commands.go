@@ -215,10 +215,6 @@ func runStatusCmd(server string, args []string) {
 	}
 }
 
-// runRunCmd starts a new process instance. The process name is the first
-// argument; flags follow it (e.g. `genctl run greeter --set name=Sam`). Input is
-// assembled from --input (a JSON/YAML literal, or - for stdin) or -f (a file path),
-// plus any number of --set key=value overrides; see buildInput.
 func runRunCmd(server string, args []string) {
 	if len(args) == 0 {
 		fatal("usage: genctl run <process> [--channel C | --version N] [--input <json|-> | -f file] [--set k=v ...] [-q]")
@@ -280,11 +276,6 @@ func runRunCmd(server string, args []string) {
 	fmt.Printf("started: %s  %s@v%d  (%s)\n", resp.ID, resp.Process, resp.Version, resp.Status)
 }
 
-// runResolveCmd submits a result for a task parked on an external action, resuming its
-// process. The task's resolve token (from the external-task queue, GET /external-tasks)
-// is the first argument; the result payload is assembled from --result (a JSON/YAML
-// literal, or - for stdin) or -f (a file path), plus any number of --set key=value
-// overrides — exactly like run assembles its input.
 func runResolveCmd(server string, args []string) {
 	if len(args) == 0 {
 		fatal("usage: genctl resolve <token> [--result <json|-> | -f file] [--set k=v ...] [-q]")
@@ -327,11 +318,8 @@ func runResolveCmd(server string, args []string) {
 	fmt.Printf("resolved: %s\n", token)
 }
 
-// runSignalCmd delivers a result to a named external task of an instance, addressed by
-// instance id (accepts @last) + --task, rather than by a queue token like resolve. If the
-// task is armed now the signal resolves it immediately; otherwise the server buffers it
-// FIFO until the task next arms. The result is assembled from --result (a JSON/YAML
-// literal, or - for stdin) or -f (a file path), plus any --set key=value overrides.
+// runSignalCmd delivers a result to an instance's external task by id + --task (not a
+// queue token like resolve): resolved now if the task is armed, else buffered FIFO until armed.
 func runSignalCmd(server string, args []string) {
 	fs := flag.NewFlagSet("signal", flag.ExitOnError)
 	serverFlag := addServerFlag(fs, server)
@@ -377,8 +365,6 @@ func runSignalCmd(server string, args []string) {
 	fmt.Printf("signaled: %s  task=%s  (%s)\n", id, *taskFlag, state)
 }
 
-// runGetCmd prints a single instance's details, including its full context. The
-// instance id is the first argument; pass --json for the raw response.
 func runGetCmd(server string, args []string) {
 	fs := flag.NewFlagSet("get", flag.ExitOnError)
 	serverFlag := addServerFlag(fs, server)
@@ -688,14 +674,10 @@ func runLogsCmd(server string, args []string) {
 	}
 }
 
-// inputValidationError extracts the detail of a server-side input-schema rejection
-// ("input validation: <detail>") so run can present it as its own message.
 func inputValidationError(err error) (string, bool) {
 	return serverErrorDetail(err, "input validation: ")
 }
 
-// resultValidationError extracts the detail of a server-side external-task result
-// rejection ("result validation: <detail>") so resolve can present it as its own message.
 func resultValidationError(err error) (string, bool) {
 	return serverErrorDetail(err, "result validation: ")
 }
@@ -736,13 +718,10 @@ func runRetryCmd(server string, args []string) {
 	fmt.Printf("retried: %s\n", id)
 }
 
-// runLastCmd prints the most recently started instance id (recorded by `run`), so
-// it can be spliced into other commands, e.g. `genctl logs $(genctl last)`.
 func runLastCmd(args []string) {
 	fmt.Println(resolveInstanceID("@last"))
 }
 
-// loadDefs reads all files and returns a slice of raw definition objects.
 func loadDefs(files []string) ([]any, error) {
 	var all []any
 	for _, path := range files {

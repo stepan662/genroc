@@ -148,11 +148,8 @@ func main() {
 	}
 }
 
-// newLogger builds the server console logger via the shared logview handler, so its
-// rows are the same layout genctl logs prints. The level is the orthogonal severity
-// threshold; mode picks the layout (basic/detail columns, or json one object per
-// line). The engine's emit decides which fields each record carries (basic omits the
-// data body) and whether it's a columnar audit event or a free-form operational line.
+// newLogger builds the server console logger on the shared logview handler, so its rows
+// match genctl logs. level is the severity threshold; mode picks the layout.
 func newLogger(level string, mode logview.Mode) *slog.Logger {
 	var l slog.Level
 	switch level {

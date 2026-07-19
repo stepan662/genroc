@@ -2,17 +2,15 @@ package schema
 
 import "sort"
 
-// Equal reports whether a and b denote the same type, compared in canonical form.
+// nodesEqual reports whether a and b denote the same type, compared in canonical form.
 func nodesEqual(a, b *node) bool {
 	return nodeCanonJSON(canonicalizeNode(a)) == nodeCanonJSON(canonicalizeNode(b))
 }
 
-// Join returns the least upper bound of a and b: the narrowest type that admits
-// every value of either. Two objects are merged property-by-property (a key
-// present on only one side becomes nullable, since it may be absent); anything
-// else becomes a union. Nullability is preserved (the result is nullable if
-// either input is). The result is canonical, which — together with Equal — gives
-// the recursive-inference fixpoint a monotone, terminating accumulation step.
+// joinNodes returns the least upper bound of a and b. Two objects merge
+// property-by-property (a key on only one side becomes nullable, since it may be
+// absent); anything else becomes a union. Nullability is preserved. The canonical
+// result, with nodesEqual, gives the fixpoint a monotone, terminating accumulation step.
 func joinNodes(a, b *node) *node {
 	if a == nil {
 		return canonicalizeNode(b)
@@ -56,9 +54,9 @@ func isObjectType(s *node) bool {
 	return s != nil && (s.Type.Contains("object") || s.Properties != nil || s.AdditionalProperties != nil)
 }
 
-// joinObjects merges two object schemas property-wise. A key present on both is
-// joined; a key on only one side is kept but made nullable (it can be absent in
-// the other). A property is required only when both sides require it.
+// joinObjects merges two object schemas property-wise: a key on both is joined; a key
+// on only one side is kept but made nullable; a property is required only when both
+// sides require it.
 func joinObjects(a, b *node) *node {
 	keys := make(map[string]struct{}, len(a.Properties)+len(b.Properties))
 	for k := range a.Properties {

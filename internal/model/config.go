@@ -9,17 +9,11 @@ import (
 	"genroc/internal/schema"
 )
 
-// ResolveConfig reads each config var declared in ConfigSchema from the OS
-// environment via lookup (os.LookupEnv in production; injectable for tests). Both
-// the process name and the var name are run through envToken (normalized to
-// UPPER_SNAKE — camelCase split, non-alphanumerics → '_'), so the schema may use
-// any case: config.apiKey reads a process-scoped GENROC_<PROCESS>_API_KEY, falling
-// back to a shared GENROC_GLOBAL_API_KEY, then the property's default, else an error
-// if required. The string is coerced to the declared type, and the assembled
-// object is validated against ConfigSchema (required/enum/ranges). The returned
-// map is keyed by the declared name (the "config" namespace for expressions).
-// Values are never persisted; this runs at instance start (to reject a bad start)
-// and on every tick.
+// ResolveConfig resolves each declared config var from the OS environment via lookup:
+// a process-scoped GENROC_<PROCESS>_<NAME> (both parts envToken-normalized to
+// UPPER_SNAKE, so the schema may use any case), then GENROC_GLOBAL_<NAME>, then the
+// property default, else an error if required. Values are coerced to the declared type
+// and validated against ConfigSchema. Never persisted; runs at start and every tick.
 func (d *ProcessDefinition) ResolveConfig(lookup func(string) (string, bool)) (map[string]any, error) {
 	if d.ConfigSchema == nil {
 		return map[string]any{}, nil
@@ -66,8 +60,8 @@ func (d *ProcessDefinition) ResolveConfig(lookup func(string) (string, bool)) (m
 	return out, nil
 }
 
-// propType returns the single declared type of a primitive config property, or ""
-// (treated as string) when none is set.
+// propType returns a primitive config property's single declared type, or "" (treated as
+// string) when none is set.
 func propType(prop schema.Schema) string {
 	if t := prop.Type(); len(t) > 0 {
 		return t[0]
@@ -75,11 +69,9 @@ func propType(prop schema.Schema) string {
 	return ""
 }
 
-// envToken converts a name to the UPPER_SNAKE token used in config environment
-// variable names. It uppercases, turns any run of non-alphanumeric characters
-// into a single '_', and splits camelCase / PascalCase humps so a schema may use
-// any case: apiKey -> API_KEY, serverUrl -> SERVER_URL, URLPath -> URL_PATH,
-// order-flow -> ORDER_FLOW.
+// envToken converts a name to the UPPER_SNAKE token used in config env var names:
+// uppercases, collapses non-alphanumeric runs to a single '_', and splits
+// camelCase/PascalCase humps (apiKey -> API_KEY, URLPath -> URL_PATH).
 func envToken(s string) string {
 	runes := []rune(s)
 	out := make([]byte, 0, len(runes)+4)
@@ -118,9 +110,8 @@ func envToken(s string) string {
 	return string(out)
 }
 
-// SecretConfigValues returns the resolved values of config properties marked
-// secret:true, formatted as strings, used to scrub config-resolution error
-// messages (which gojsonschema generates and we cannot obscure at eval time).
+// SecretConfigValues returns the string forms of resolved secret:true config values, used
+// to scrub secrets from config-resolution error messages.
 func (d *ProcessDefinition) SecretConfigValues(resolved map[string]any) []string {
 	if d.ConfigSchema == nil {
 		return nil
@@ -142,10 +133,9 @@ func (d *ProcessDefinition) SecretConfigValues(resolved map[string]any) []string
 	return secrets
 }
 
-// coerceConfigValue converts an environment string to the config var's declared
-// type. An empty or "string" type passes the value through unchanged. When the var
-// is secret, the value is never echoed in an error (it would leak to the CLI, the
-// instance error field, and logs); a non-secret value is shown to aid debugging.
+// coerceConfigValue converts an env string to the config var's declared type ("" or
+// "string" passes through). A secret value is never echoed in an error (it would leak to
+// the CLI, instance error field, and logs); a non-secret value is shown to aid debugging.
 func coerceConfigValue(name, typ, raw string, secret bool) (any, error) {
 	shown := raw
 	if secret {

@@ -12,9 +12,8 @@ import (
 	"github.com/go-playground/validator/v10"
 )
 
-// Validate checks the definition and all its tasks against the struct tag rules,
-// and verifies that any attached JSON Schemas are valid schema documents.
-// It also checks statically that all switch goto targets name known tasks.
+// Validate checks the definition and its tasks against the struct-tag rules, that attached
+// JSON Schemas are well-formed, and that switch goto targets name known tasks.
 func (d *ProcessDefinition) Validate() error {
 	if err := fmtValidationErr(v.Struct(d)); err != nil {
 		return err
@@ -61,7 +60,6 @@ func validateTask(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int, po
 	return validateActionSchemas(s, pool)
 }
 
-// validateActionRequiredFields checks the per-action-type required fields.
 func validateActionRequiredFields(s *Task) error {
 	if s.Action == nil {
 		return nil
@@ -203,10 +201,9 @@ func validLikePattern(p string) bool {
 	return strings.TrimSpace(p) != ""
 }
 
-// patternOnlyMatchesPre reports whether a LIKE pattern can exclusively match
-// error codes in the pre.* namespace. It computes the constant prefix before
-// the first '%' or '_' wildcard and checks it starts with "pre.". Patterns
-// without wildcards must literally start with "pre.".
+// patternOnlyMatchesPre reports whether a LIKE pattern can only match error codes in the
+// pre.* namespace: its constant prefix (before the first % or _ wildcard) must start with
+// "pre.".
 func patternOnlyMatchesPre(p string) bool {
 	for i := 0; i < len(p); i++ {
 		if p[i] == '%' || p[i] == '_' {
@@ -265,12 +262,10 @@ func validAcceptedStatusPattern(p string) bool {
 // must be an identifier.
 var configNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// validateConfigSchema enforces the config_schema shape: a flat object whose
-// properties are primitive values. type must be "object"; each property declares a
-// single scalar type (string/integer/number/boolean) with no nested object/array,
-// combinators, or $ref. Property names must be identifiers (used as config.<name>
-// in expressions) and must not collide once normalized to their environment
-// variable suffix. A required property may not also carry a default.
+// validateConfigSchema enforces the config_schema shape: a flat "object" whose properties
+// each declare a single scalar type (string/integer/number/boolean) with no nested
+// object/array, combinators, or $ref. Property names must be identifiers that don't
+// collide once normalized to their env var suffix; a required property may not carry a default.
 func validateConfigSchema(cs *schema.Schema) error {
 	if cs == nil {
 		return nil
@@ -318,9 +313,8 @@ func validateConfigSchema(cs *schema.Schema) error {
 	return nil
 }
 
-// checkSchemaDoc verifies s is a well-formed schema document. The process-level
-// $defs pool is merged in so a schema referencing a shared definition passes even
-// before Normalize has baked the pool in (the dry-run validate path).
+// checkSchemaDoc verifies s is a well-formed schema document; the $defs pool is merged in
+// so a schema referencing a shared definition validates before Normalize bakes it in.
 func checkSchemaDoc(field string, s *schema.Schema, pool schema.Defs) error {
 	if s == nil {
 		return nil
@@ -331,11 +325,9 @@ func checkSchemaDoc(field string, s *schema.Schema, pool schema.Defs) error {
 	return nil
 }
 
-// validateDefs checks that each process-level $defs definition is a well-formed
-// document, resolving its $refs against the whole pool since definitions may
-// reference each other. Name collisions with generated schema names need no
-// check: generation renames a colliding user definition (rewriting its $refs),
-// so generated names always take precedence without rejecting anything.
+// validateDefs checks each process-level $defs definition is well-formed, resolving $refs
+// against the whole pool (definitions may reference each other). Collisions with generated
+// schema names need no check — generation renames the colliding user definition.
 func (d *ProcessDefinition) validateDefs() error {
 	if d.Defs.IsZero() {
 		return nil
@@ -363,7 +355,6 @@ var v = func() *validator.Validate {
 	return val
 }()
 
-// fmtValidationErr converts validator.ValidationErrors into a readable API error.
 func fmtValidationErr(err error) error {
 	if err == nil {
 		return nil

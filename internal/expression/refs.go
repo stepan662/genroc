@@ -7,9 +7,8 @@ import (
 	"github.com/expr-lang/expr/parser"
 )
 
-// OutputRefs returns the distinct task ids referenced via outputs.<id> in expr
-// (e.g. "outputs.charge.ok + outputs.ship.n" → ["charge", "ship"]). Used to build
-// the output-dependency graph for ordering and recursion detection.
+// OutputRefs returns the distinct task ids referenced via outputs.<id> in expr — the
+// edges of the output-dependency graph used for ordering and recursion detection.
 func OutputRefs(expression string) ([]string, error) {
 	tree, err := parser.Parse(expression)
 	if err != nil {
@@ -57,7 +56,6 @@ type Roots struct {
 	SelfResult bool // reads self.result (the task's raw action result)
 }
 
-// RootRefs reports which context roots expr reads.
 func RootRefs(expr string) (Roots, error) {
 	tree, err := parser.Parse(expr)
 	if err != nil {
@@ -106,9 +104,8 @@ func collectRoots(node ast.Node, r *Roots) {
 	}
 }
 
-// isSelfPrevious reports whether n is exactly self.previous (base identifier
-// "self", string property "previous"). A deeper access like self.previous.x is a
-// MemberNode whose .Node is this node, so collectRoots reaches it while descending.
+// isSelfPrevious reports whether n is exactly self.previous. A deeper self.previous.x
+// is a MemberNode whose .Node is this node, so collectRoots still reaches it.
 func isSelfPrevious(n *ast.MemberNode) bool {
 	base, ok := n.Node.(*ast.IdentifierNode)
 	if !ok || base.Value != "self" {
@@ -118,9 +115,8 @@ func isSelfPrevious(n *ast.MemberNode) bool {
 	return ok && prop.Value == "previous"
 }
 
-// isSelfResult reports whether n is exactly self.result (base identifier "self",
-// string property "result"). A deeper access like self.result.x is a MemberNode whose
-// .Node is this node, so collectRoots reaches it while descending.
+// isSelfResult reports whether n is exactly self.result. A deeper self.result.x is a
+// MemberNode whose .Node is this node, so collectRoots still reaches it.
 func isSelfResult(n *ast.MemberNode) bool {
 	base, ok := n.Node.(*ast.IdentifierNode)
 	if !ok || base.Value != "self" {
@@ -130,8 +126,7 @@ func isSelfResult(n *ast.MemberNode) bool {
 	return ok && prop.Value == "result"
 }
 
-// outputRefID returns <id> when n is exactly outputs.<id> (base identifier
-// "outputs", string property), else "".
+// outputRefID returns <id> when n is exactly outputs.<id>, else "".
 func outputRefID(n *ast.MemberNode) string {
 	base, ok := n.Node.(*ast.IdentifierNode)
 	if !ok || base.Value != "outputs" {

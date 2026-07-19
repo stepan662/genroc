@@ -12,20 +12,12 @@ import (
 )
 
 // ArmExternalOrConsumeSignal is the engine's atomic entry into an external task. Under
-// the instance row lock (which it shares with DeliverSignal, so the two never interleave)
-// it either:
-//
-//   - consumes the oldest buffered signal for (instance, task) if one is waiting — writing
-//     it as _external_result so advance() resumes immediately, and KEEPING this worker's
-//     lease so the instance is never claimable mid-advance (the engine's own progress write
-//     at the end of the call releases the lease); or
-//   - parks the instance (wait_state='external', the per-occurrence token + input snapshot
-//     in _external) and RELEASES the lease — the engine then returns outcomeNoop, exactly
-//     like a child spawn parking its parent.
-//
-// Popping the signal and writing its result is one commit, so a crash after this returns
-// (but before the engine's progress write) still resumes via runExternal phase 2 — the
-// signal is never lost. Mirrors the two-writer coordination of FinishChild / SpawnChildrenAndWait.
+// the instance row lock (shared with DeliverSignal, so the two never interleave) it
+// either consumes the oldest buffered signal — writing it as _external_result so
+// advance() resumes, keeping the lease so the row stays non-claimable mid-advance — or
+// parks the instance (wait_state='external', per-occurrence token + input in _external)
+// and releases the lease. Pop-and-write is one commit, so a crash before the engine's
+// progress write still resumes via runExternal phase 2; the signal is never lost.
 func (db *DB) ArmExternalOrConsumeSignal(ctx context.Context, inst *model.ProcessInstance, taskID, token string, input any, wakeAt *time.Time) (consumed bool, result any, err error) {
 	tx, qtx, raw, err := db.beginTx(ctx, nil)
 	if err != nil {
@@ -102,11 +94,10 @@ func (db *DB) ArmExternalOrConsumeSignal(ctx context.Context, inst *model.Proces
 	return false, nil, nil
 }
 
-// DeliverSignal delivers a signal addressed to (instance, external task). Under the
-// instance row lock it resolves the task immediately when it is armed right now (and not
-// mid-timeout-claim), otherwise it buffers the result FIFO for the task's next arming.
-// Returns delivered=true when it resolved immediately, false when it was buffered. The
-// caller validates the result against the task's result_schema before calling.
+// DeliverSignal delivers a signal to (instance, external task). Under the instance row
+// lock it resolves the task immediately when armed now (and not mid-timeout-claim),
+// otherwise buffers the result FIFO for the next arming (delivered reports which). The
+// caller validates the result against the task's result_schema first.
 func (db *DB) DeliverSignal(ctx context.Context, instanceID, taskID, signalID string, result any) (delivered bool, err error) {
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
@@ -177,8 +168,6 @@ func (db *DB) DeliverSignal(ctx context.Context, instanceID, taskID, signalID st
 	return false, nil
 }
 
-// CountBufferedSignals returns how many signals are buffered for (instance, task).
-// Used by tests and observability.
 func (db *DB) CountBufferedSignals(instanceID, taskID string) (int, error) {
 	n, err := db.q.CountBufferedSignals(context.Background(), dbgen.CountBufferedSignalsParams{
 		InstanceID: instanceID,

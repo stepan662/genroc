@@ -9,10 +9,10 @@ import (
 	tmpl "genroc/internal/template"
 )
 
-// resolveValue returns v as-is unless it is an *model.ObjectRef marker (an
-// externalized, not-yet-loaded value), in which case it loads the object from the
-// store and memoises it on the instance for the rest of the advance. inst must be the
-// instance that OWNS the value (e.g. a child instance for its own output).
+// resolveValue returns v as-is unless it is an *model.ObjectRef marker (an externalized,
+// not-yet-loaded value), which it loads from the store and memoises on the instance for
+// the rest of the advance. inst must be the instance that OWNS the value (e.g. a child
+// for its own output).
 func (e *Engine) resolveValue(inst *model.ProcessInstance, v any) (any, error) {
 	ref, ok := v.(*model.ObjectRef)
 	if !ok {
@@ -32,11 +32,10 @@ func (e *Engine) resolveValue(inst *model.ProcessInstance, v any) (any, error) {
 	return val, nil
 }
 
-// buildEnv assembles the expression environment for inst, resolving only the
-// externalized value-slots the expression actually reads (per roots). A small inline
-// value is always included (cheap, and robust to any ref under-detection); a big
-// externalized value (an *model.ObjectRef marker) is loaded only when referenced —
-// this is the slot-level lazy load.
+// buildEnv assembles the expression environment for inst, resolving only the externalized
+// value-slots the expression reads (per roots). A small inline value is always included; a
+// big externalized value (an *model.ObjectRef marker) is loaded only when referenced —
+// the slot-level lazy load.
 func (e *Engine) buildEnv(inst *model.ProcessInstance, self any, roots expression.Roots) (map[string]any, error) {
 	config := inst.Config
 	if config == nil {
@@ -147,7 +146,6 @@ func (e *Engine) evalShapeCtx(inst *model.ProcessInstance, node any, self any) (
 	return evalShape(node, env)
 }
 
-// evalAnyCtx evaluates a single template expression against inst's context.
 func (e *Engine) evalAnyCtx(inst *model.ProcessInstance, expr string) (any, error) {
 	roots, err := tmpl.RootRefs(expr)
 	if err != nil {
@@ -164,7 +162,6 @@ func (e *Engine) evalAnyCtx(inst *model.ProcessInstance, expr string) (any, erro
 	return result, nil
 }
 
-// evalBoolCtx evaluates a boolean switch expression against inst's context.
 func (e *Engine) evalBoolCtx(inst *model.ProcessInstance, expr string, self any) (bool, error) {
 	roots, err := expression.RootRefs(expr)
 	if err != nil {
@@ -211,10 +208,9 @@ func evalAny(expression string, contextData, config map[string]any) (any, error)
 	return result, nil
 }
 
-// evalShape recursively evaluates a model.Shape value against env: a string leaf
-// is evaluated as a template (preserving type), an object recurses into each
-// value. The string|object grammar is enforced at unmarshal (model.checkShape),
-// so any other node type is an internal error.
+// evalShape recursively evaluates a model.Shape against env: a string leaf as a template
+// (preserving type), an object recursing into each value. The string|object grammar is
+// enforced at unmarshal, so any other node type is an internal error.
 func evalShape(node any, env map[string]any) (any, error) {
 	switch n := node.(type) {
 	case string:

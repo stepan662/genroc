@@ -9,11 +9,9 @@ import (
 	"genroc/internal/model"
 )
 
-// decodeLogData unpacks the stored log-data envelope into the API view: a small inline
-// payload comes back as its string value; an externalized one comes back as a bare
-// reference with no inline data (the full value is fetched on demand via the log-object
-// endpoint, or inlined by the caller with ?resolve=true). A non-envelope value is
-// returned verbatim.
+// decodeLogData unpacks the stored log-data envelope into the API view: an inline payload
+// as its string value, an externalized one as a bare ref (fetched on demand or inlined
+// with ?resolve=true), a non-envelope value verbatim.
 func decodeLogData(raw string) (string, *LogDataRef) {
 	if raw == "" {
 		return "", nil
@@ -81,9 +79,8 @@ func (h *Handlers) listInstanceLogs(id string, raw json.RawMessage) Reply {
 	return okReply(PageResp[LogEntryResp]{Items: resp, Page: info})
 }
 
-// getLogObject returns the full payload of an externalized log entry (referenced by a
-// log row's data_ref). Only log objects are served — they are stored pre-redacted, so
-// returning the raw content leaks no secrets.
+// getLogObject returns the full payload of an externalized log entry (via its data_ref).
+// Only log objects are served — they are stored pre-redacted, so this leaks no secrets.
 func (h *Handlers) getLogObject(id, hash string) Reply {
 	if id == "" || hash == "" {
 		return errReply(fmt.Errorf("id and ref are required"))

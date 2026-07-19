@@ -6,9 +6,8 @@ import (
 	"maps"
 )
 
-// ProcessSpec returns the full OpenAPI spec with the input schema for POST /instances
-// patched to match the specific process definition. Input stays as `any` when the
-// process has no input_schema.
+// ProcessSpec returns the full OpenAPI spec with POST /instances' input schema patched to
+// the given process definition (left as `any` when it has no input_schema).
 func (h *Handlers) ProcessSpec(name string, version int) ([]byte, error) {
 	if version == 0 {
 		v, err := h.resolveDefaultVersion(name)

@@ -47,11 +47,9 @@ func (c inferCtx) withGuard(path string, narrowed Schema) inferCtx {
 	return inferCtx{s: c.s, guards: guards}
 }
 
-// Infer statically determines the JSON Schema type of an expr-lang expression
-// when evaluated against s (e.g. "user.issues[0].value ?? 0"). $refs are
-// resolved against s's root $defs, and the result carries them, so it stays
-// navigable/validatable. For plain sub-path lookup without expression
-// semantics, see At.
+// Infer statically determines the JSON Schema type of an expr-lang expression against
+// s (e.g. "user.issues[0].value ?? 0"). The result carries s's root $defs, so it stays
+// navigable/validatable. For plain sub-path lookup without expression semantics, see At.
 func (s Schema) Infer(expression string) (Schema, error) {
 	tree, err := parser.Parse(expression)
 	if err != nil {
@@ -60,12 +58,9 @@ func (s Schema) Infer(expression string) (Schema, error) {
 	return inferNode(tree.Node, inferCtx{s: s})
 }
 
-// ReferencesSecret reports whether expression reads any value whose schema — or
-// an enclosing object's schema along the access path — is marked secret. It is
-// deliberately conservative: any path that passes through a secret node taints
-// the whole expression, regardless of what the expression then does with the
-// value. This is the reliable half of secret taint tracking (the structural half
-// is the secret bit carried on the schema node itself).
+// ReferencesSecret reports whether expression reads any value whose schema — or an
+// enclosing object's along the access path — is secret. Conservative: any path through
+// a secret node taints the whole expression, whatever it then does with the value.
 func (s Schema) ReferencesSecret(expression string) (bool, error) {
 	tree, err := parser.Parse(expression)
 	if err != nil {

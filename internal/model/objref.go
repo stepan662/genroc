@@ -32,5 +32,4 @@ type ObjectRef struct {
 	Size int64  `json:"size"`
 }
 
-// IsRef reports whether the envelope externalizes its value (vs. holding it inline).
 func (e Envelope) IsRef() bool { return len(e.Refs) > 0 }

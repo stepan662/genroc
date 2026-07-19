@@ -165,7 +165,6 @@ func (q *listQuery) EqIf(col string, value any, include bool) *listQuery {
 	return q
 }
 
-// Gte adds "col >= ?".
 func (q *listQuery) Gte(col string, value any) *listQuery { return q.cond(col, ">=", value) }
 
 // GteIf adds "col >= ?" only when include is true.
@@ -189,9 +188,8 @@ func (q *listQuery) cond(col, op string, value any) *listQuery {
 	return q
 }
 
-// build assembles the page + count plan for the paginator's own table:
-// "SELECT <columns> FROM <table>" for the page and "SELECT 1 FROM <table>" as the
-// count inner source.
+// build assembles the page + count plan for the paginator's own table (SELECT <columns>
+// FROM <table> for the page, SELECT 1 FROM <table> as the count source).
 func (q *listQuery) build() (built, error) {
 	return q.buildSource(
 		"SELECT "+q.pg.columns+" FROM "+q.pg.table,
@@ -200,14 +198,10 @@ func (q *listQuery) build() (built, error) {
 	)
 }
 
-// buildSource is build for callers needing a custom static prefix (e.g. a
-// recursive CTE). Both source fragments are TRUSTED constants:
-//   - pagePrefix: "[<CTE>] SELECT <cols> FROM <source>" (the page query, before WHERE)
-//   - countInner: "[<CTE>] SELECT 1 FROM <source>"      (one row per match, for counting)
-//
-// prefixArgs bind any ? in the CTE (shared by the page and both count subqueries)
-// and are placed first. The page gets WHERE/ORDER BY/LIMIT appended; the count
-// scaffolding (countInner + the shared filter conds) is stashed for countQuery.
+// buildSource is build for callers needing a custom static prefix (e.g. a recursive
+// CTE). pagePrefix ("[CTE] SELECT <cols> FROM <source>") and countInner ("[CTE] SELECT 1
+// FROM <source>") are TRUSTED constants; prefixArgs bind any ? in the CTE (shared by the
+// page and both count subqueries) and are placed first.
 func (q *listQuery) buildSource(pagePrefix, countInner string, prefixArgs []any) (built, error) {
 	if q.err != nil {
 		return built{}, q.err
@@ -299,11 +293,10 @@ func (q *listQuery) buildSource(pagePrefix, countInner string, prefixArgs []any)
 	}, nil
 }
 
-// countQuery assembles the before/after counts as two bounded subqueries — how
-// many rows fall strictly before the first row and strictly after the last row, in
-// display order, each counted up to pageCountCap+1 (the LIMIT bounds the scan). It
-// returns one statement yielding (before, after). first/last are the page's
-// boundary key values; nil (empty page) makes that side a literal 0.
+// countQuery assembles the before/after counts as two bounded subqueries (rows strictly
+// before first / after last in display order, each capped at pageCountCap+1 by LIMIT),
+// as one statement yielding (before, after). A nil boundary (empty page) makes that side
+// a literal 0.
 func (b built) countQuery(first, last []any) (string, []any) {
 	// "before the first row" / "after the last row" in display order.
 	beforeCmp, afterCmp := "<", ">"
@@ -339,11 +332,9 @@ func whereClause(conds []string) string {
 	return " WHERE " + strings.Join(conds, " AND ")
 }
 
-// orient restores display order for a backward page (which was scanned in reverse)
-// and returns the page plus its boundary key values — the first and last rows'
-// sort-key values, in display order — which the count query and cursors are built
-// from. Both boundaries are nil for an empty page. valsOf returns a row's
-// key-column values for the active sort.
+// orient restores display order for a backward page (scanned in reverse) and returns the
+// page plus its boundary key values — the first/last rows' sort-key values that the count
+// query and cursors are built from (both nil for an empty page).
 func orient[T any](b built, rows []T, valsOf func(sort string, row T) []any) (items []T, first, last []any) {
 	if b.backward {
 		for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
@@ -361,9 +352,8 @@ func orient[T any](b built, rows []T, valsOf func(sort string, row T) []any) (it
 type rowScanner = interface{ Scan(dest ...any) error }
 
 // runPage executes a built page query, scans each row via scanRow, restores display
-// order, and returns the page together with its navigation metadata. It centralizes
-// the query → scan-loop → orient → pageInfo tail shared by every list endpoint;
-// callers supply only the per-row scan and the cursor-value extractor.
+// order, and returns the page with its navigation metadata — the query → scan → orient →
+// pageInfo tail shared by every list endpoint. Callers supply scanRow and cursorVals.
 func runPage[T any](db *DB, b built, scanRow func(rowScanner) (T, error), cursorVals func(sort string, row T) []any) ([]T, PageInfo, error) {
 	rows, err := db.exec.QueryContext(context.Background(), b.pageSQL, b.pageArgs...)
 	if err != nil {
@@ -389,13 +379,10 @@ func runPage[T any](db *DB, b built, scanRow func(rowScanner) (T, error), cursor
 	return items, info, nil
 }
 
-// keysetPredicate builds the lexicographic OR-chain that selects rows strictly
-// after the cursor under comparator cmp (> for an ascending scan, < for
-// descending). For columns (a, b, c):
-//
-//	(a cmp ?) OR (a = ? AND b cmp ?) OR (a = ? AND b = ? AND c cmp ?)
-//
-// Spelled out (not row-value syntax) so it runs identically on SQLite and Postgres.
+// keysetPredicate builds the lexicographic OR-chain selecting rows strictly after the
+// cursor under cmp (> ascending, < descending) — e.g. for (a,b,c): (a cmp ?) OR (a = ?
+// AND b cmp ?) OR (a = ? AND b = ? AND c cmp ?). Spelled out (not row-value syntax) so
+// it runs identically on SQLite and Postgres.
 func keysetPredicate(mode sortMode, cmp string, vals []any) (string, []any) {
 	ors := make([]string, 0, len(mode))
 	args := make([]any, 0, len(mode)*(len(mode)+1)/2)
@@ -422,7 +409,6 @@ type cursorToken struct {
 	V []any  `json:"v"` // key-column values, in mode order
 }
 
-// encodeCursor mints the opaque cursor for a boundary row.
 func encodeCursor(sort string, desc bool, mode sortMode, vals []any) (string, error) {
 	if len(vals) != len(mode) {
 		return "", fmt.Errorf("cursor: got %d values, want %d", len(vals), len(mode))
@@ -434,9 +420,8 @@ func encodeCursor(sort string, desc bool, mode sortMode, vals []any) (string, er
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// decodeCursor parses tok and returns its key-column values, coerced to each
-// column's Go type. It rejects a token minted under a different sort/direction and
-// any malformed token.
+// decodeCursor parses tok into its key-column values, coerced to each column's Go type.
+// It rejects a malformed token or one minted under a different sort/direction.
 func decodeCursor(tok, sort string, desc bool, mode sortMode) ([]any, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(tok)
 	if err != nil {

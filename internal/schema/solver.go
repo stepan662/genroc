@@ -128,10 +128,9 @@ func (c *solverCluster) names() []string {
 	return out
 }
 
-// NewSolver returns a solver writing into the given definitions handle. The
-// handle must be live (NewDefs or a schema's own defs): declared names get a
-// pending sentinel immediately and their solved types afterwards, observed by
-// every schema sharing the handle.
+// NewSolver returns a solver writing into the given definitions handle, which must be
+// live (NewDefs or a schema's own defs): declared names get a pending sentinel
+// immediately and their solved types afterwards, observed by every schema sharing it.
 func NewSolver(defs Defs) *Solver {
 	if defs.m == nil {
 		// A zero handle has no backing map to publish into; that is a
@@ -141,9 +140,9 @@ func NewSolver(defs Defs) *Solver {
 	return &Solver{defs: defs, members: map[string]*solverMember{}}
 }
 
-// Declare registers a definition to be solved. Any existing entry under name
-// (e.g. a permissive placeholder) is replaced by a pending sentinel until
-// Solve resolves it. Declaring the same name twice is a programming error.
+// Declare registers a definition to be solved, replacing any existing entry under name
+// with a pending sentinel until Solve resolves it. Declaring the same name twice is a
+// programming error.
 func (s *Solver) Declare(name string, compute func() (Schema, error)) {
 	if _, dup := s.members[name]; dup {
 		panic(fmt.Sprintf("schema.Solver: definition %q declared twice", name))
@@ -155,11 +154,10 @@ func (s *Solver) Declare(name string, compute func() (Schema, error)) {
 	registerPending(sentinel, s, name)
 }
 
-// Solve computes every declared definition, in exact dependency order (a
-// computation reading `$ref <other>` pulls <other> first), resolving cycles
-// with a joint fixpoint per cluster. On success every declared name holds its
-// solved type in the defs handle; on error the handle's pending entries are
-// unusable and the caller should discard the generation.
+// Solve computes every declared definition in exact dependency order (a computation
+// reading `$ref <other>` pulls <other> first), resolving cycles with a joint fixpoint
+// per cluster. On success every declared name holds its solved type in the defs handle;
+// on error the pending entries are unusable and the caller should discard the generation.
 func (s *Solver) Solve() error {
 	defer func() {
 		for _, m := range s.members {
@@ -192,18 +190,13 @@ func (s *Solver) Solve() error {
 	return nil
 }
 
-// collapseDegenerateCycles resolves definition cycles that make no structural
-// progress — every edge a bare `$ref` in union position. Such a cycle is a
-// coinductive tautology, not a recursive data type: X = anyOf[$ref X, I]
-// says nothing beyond X = I, so each member collapses to the union of the
-// cycle's non-cyclic remainders (μX.(X ∨ I) = I). A cycle with no remainder
-// anywhere (X defined only in terms of itself) has no base case and is an
-// error. Cycles that pass through properties/items are left alone — they are
-// legitimate recursive types (the keep half of collapse-or-keep).
-//
-// Cycles still involving a pending (sentinel) definition are skipped: a
-// sentinel has no outgoing refs, so such a "cycle" cannot form until its
-// members are solved, and a later call collapses it then.
+// collapseDegenerateCycles resolves definition cycles with no structural progress —
+// every edge a bare `$ref` in union position. Such a cycle is a coinductive tautology,
+// not a recursive type: X = anyOf[$ref X, I] says nothing beyond X = I, so each member
+// collapses to the union of the cycle's non-cyclic remainders (μX.(X ∨ I) = I); a cycle
+// with no remainder has no base case and is an error. Cycles through properties/items
+// are left alone (legitimate recursion). Cycles still involving a pending sentinel are
+// skipped — the sentinel has no outgoing refs, so a later call collapses them.
 func (s *Solver) collapseDegenerateCycles() error {
 	// Bare-edge graph over the current defs (see collectBareRefs).
 	defs := s.defs.m
@@ -275,10 +268,9 @@ func (s *Solver) collapseDegenerateCycles() error {
 	return nil
 }
 
-// dropBareSCCRefs returns n with every bare-position $ref into the SCC removed
-// from its unions, or nil when nothing else remains at this position (the node
-// was only cycle references). Properties/items subtrees are untouched — a ref
-// there is productive and stays.
+// dropBareSCCRefs returns n with every bare-position $ref into the SCC removed from its
+// unions, or nil when nothing else remains at this position. Properties/items subtrees
+// are untouched — a ref there is productive and stays.
 func dropBareSCCRefs(n *node, scc map[string]bool) *node {
 	if n == nil {
 		return nil
@@ -315,9 +307,8 @@ func dropBareSCCRefs(n *node, scc map[string]bool) *node {
 	return &m
 }
 
-// tarjanSCC returns the strongly-connected components of graph in dependency-
-// first (reverse-topological) order. nodes fixes iteration order for
-// determinism.
+// tarjanSCC returns the strongly-connected components of graph in dependency-first
+// (reverse-topological) order. nodes fixes iteration order for determinism.
 func tarjanSCC(graph map[string][]string, nodes []string) [][]string {
 	index := make(map[string]int, len(nodes))
 	low := make(map[string]int, len(nodes))
@@ -364,9 +355,9 @@ func tarjanSCC(graph map[string][]string, nodes []string) [][]string {
 	return sccs
 }
 
-// resolvePending is called from deref when a `$ref` lands on a pending
-// sentinel: it returns the node the reader should see — the final type once
-// solved, or the running (nullable) estimate when the read closes a cycle.
+// resolvePending is called from deref when a `$ref` lands on a pending sentinel; it
+// returns the node the reader should see — the final type once solved, or the running
+// (nullable) estimate when the read closes a cycle.
 func (s *Solver) resolvePending(name string) (*node, error) {
 	m := s.members[name]
 	if m == nil {
@@ -395,11 +386,10 @@ func (s *Solver) resolvePending(name string) (*node, error) {
 	}
 }
 
-// estimateNode serves the member's running estimate to a reader inside the
-// cycle: the null seed before the first fixpoint pass (which is what lets a
-// `?? default` base case fire), and the nullable-wrapped estimate afterwards.
-// Nullability is expressed here, at the use site — the definition itself is
-// stored as the exact type.
+// estimateNode serves the member's running estimate to a reader inside the cycle: the
+// null seed before the first fixpoint pass (which lets a `?? default` base case fire),
+// then the nullable-wrapped estimate. Nullability is expressed here at the use site —
+// the definition itself is stored as the exact type.
 func (m *solverMember) estimateNode() *node {
 	if !m.hasEst {
 		return &node{Type: SchemaType{"null"}}
@@ -407,11 +397,10 @@ func (m *solverMember) estimateNode() *node {
 	return withNull(m.est.n)
 }
 
-// solveMember runs a member's first computation. If no cycle was discovered
-// the result is final (everything it read was solved first, on demand). If the
-// computation landed in a cluster, the discovery result is discarded and the
-// cluster root drives the joint fixpoint instead — every member starts from
-// the same null seed, exactly as if the cycle had been known upfront.
+// solveMember runs a member's first computation. With no cycle the result is final
+// (everything it read was solved on demand first). If it landed in a cluster, the
+// discovery result is discarded and the cluster root drives the joint fixpoint instead —
+// every member from the same null seed, as if the cycle had been known upfront.
 func (s *Solver) solveMember(m *solverMember) error {
 	m.state = memberOnStack
 	m.stackPos = len(s.stack)
@@ -441,12 +430,10 @@ func (s *Solver) solveMember(m *solverMember) error {
 	return s.solveCluster(m)
 }
 
-// solveCluster runs the joint fixpoint for the cluster rooted at self. The
-// cluster may grow while a pass runs (a member's computation can demand a new
-// definition that reaches back in); growth restarts the fixpoint from fresh
-// seeds so the enlarged system gets the same treatment as one known upfront.
-// Growth is monotone and bounded by the declared-member count, so the restarts
-// terminate.
+// solveCluster runs the joint fixpoint for the cluster rooted at self. The cluster may
+// grow mid-pass (a member's computation can demand a new definition that reaches back
+// in); growth restarts the fixpoint from fresh seeds. Growth is monotone and bounded by
+// the declared-member count, so the restarts terminate.
 func (s *Solver) solveCluster(self *solverMember) error {
 	for {
 		c := self.cluster
@@ -504,9 +491,9 @@ func (s *Solver) solveCluster(self *solverMember) error {
 	}
 }
 
-// finalize publishes a member's solved type into the defs handle and retires
-// its sentinel. The stored definition is the exact type — estimate readers got
-// their nullable wrapper at the use site instead.
+// finalize publishes a member's solved type into the defs handle and retires its
+// sentinel. The stored definition is the exact type — estimate readers got their
+// nullable wrapper at the use site instead.
 func (s *Solver) finalize(m *solverMember, res Schema) {
 	final := res.n
 	if final == nil {
@@ -519,10 +506,9 @@ func (s *Solver) finalize(m *solverMember, res Schema) {
 	m.cluster = nil
 }
 
-// mergeFrom collapses the stack segment [pos..top] — plus any clusters its
-// members already belong to — into a single cluster. Re-merging an existing
-// cluster is a no-op (no version bump), so intra-cluster reads during a
-// fixpoint pass do not restart it.
+// mergeFrom collapses the stack segment [pos..top] — plus any clusters its members
+// already belong to — into a single cluster. Re-merging an existing cluster is a no-op
+// (no version bump), so intra-cluster reads during a pass do not restart it.
 func (s *Solver) mergeFrom(pos int) {
 	segment := s.stack[pos:]
 	if len(segment) == 0 {
@@ -567,10 +553,9 @@ func (s *Solver) clusterRoot(c *solverCluster) *solverMember {
 	return root
 }
 
-// wrapMemberErr attributes a computation error. A definition failing at the
-// top level returns its error untouched (matching the previous fixpoint's
-// behavior); one failing while demanded by another is prefixed with its name
-// so the demand chain is visible.
+// wrapMemberErr attributes a computation error: a top-level definition's error is
+// returned untouched; one failing while demanded by another is prefixed with its name so
+// the demand chain is visible.
 func (s *Solver) wrapMemberErr(m *solverMember, err error) error {
 	if m.stackPos == 0 {
 		return err

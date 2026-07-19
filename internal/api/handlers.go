@@ -45,9 +45,8 @@ type Reply struct {
 	Error string          `json:"error,omitempty"`
 }
 
-// Handle dispatches an incoming Envelope and returns a Reply.
-// This is the single entry-point used by all transports (HTTP, TCP, UDS).
-// Actions are defined in actions.go — add a new entry there to register a new action.
+// Handle is the single entry-point shared by all transports (HTTP, TCP, UDS); it
+// dispatches to the matching action in the registry (actions.go).
 func (h *Handlers) Handle(env Envelope) Reply {
 	for i := range registry {
 		if registry[i].Name == env.Action {
@@ -66,8 +65,8 @@ func errReply(err error) Reply {
 	return Reply{OK: false, Error: err.Error()}
 }
 
-// decodeBody unmarshals a required JSON request body into a T. An empty or malformed
-// body is an error, already wrapped with the "decode:" prefix for errReply.
+// decodeBody unmarshals a required JSON body into T; an empty or malformed body is an
+// error wrapped with the "decode:" prefix.
 func decodeBody[T any](raw json.RawMessage) (T, error) {
 	var v T
 	if err := json.Unmarshal(raw, &v); err != nil {
@@ -76,9 +75,8 @@ func decodeBody[T any](raw json.RawMessage) (T, error) {
 	return v, nil
 }
 
-// decodeOptionalBody unmarshals an optional JSON body into a T, best-effort: an empty
-// body yields the zero T and a malformed body is ignored. Used by the list/tick
-// handlers whose fields are all optional query-style params.
+// decodeOptionalBody best-effort unmarshals an optional JSON body into T: an empty body
+// yields the zero T and a malformed body is ignored.
 func decodeOptionalBody[T any](raw json.RawMessage) T {
 	var v T
 	if len(raw) > 0 {

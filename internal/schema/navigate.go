@@ -13,7 +13,6 @@ type pathStep struct {
 	index int
 }
 
-// parsePath splits a path like "user.issues[0].value" into typed steps.
 func parsePath(path string) ([]pathStep, error) {
 	if path == "" {
 		return nil, fmt.Errorf("path must not be empty")
@@ -53,8 +52,6 @@ func parsePath(path string) ([]pathStep, error) {
 	return steps, nil
 }
 
-// navigate navigates a dot-path expression from the root of s, resolving $refs
-// against defs, and returns the subschema at the end of the path.
 func navigate(s *node, defs map[string]*node, path string) (*node, error) {
 	steps, err := parsePath(path)
 	if err != nil {
@@ -63,24 +60,19 @@ func navigate(s *node, defs map[string]*node, path string) (*node, error) {
 	return navigateSchema(s, defs, steps)
 }
 
-// lookupProperty returns the subschema for a single named property within s.
-// Optional properties with no default are returned wrapped as nullable; required
-// properties and optionals with a default (always filled by validation) are not.
-//
-// A property whose value is a `$ref` is returned as the reference itself, not
-// its expansion: passing a referenced value through whole keeps the reference
-// in the inferred type (which is what lets a recursive output type stay a
-// finite recursive schema). Descending *into* it — the next lookupProperty on
-// that base, an operator, a union walk below — resolves it then, on demand.
+// lookupProperty returns the subschema for a single named property within s. An
+// optional property with no default comes back nullable (required ones and optionals
+// with a default do not). A $ref-valued property is returned as the ref itself, not its
+// expansion — keeping a recursive output type finite; descending into it resolves on
+// demand.
 func lookupProperty(s *node, name string, defs map[string]*node) (*node, error) {
 	return lookupPropertyGuard(s, name, defs, nil)
 }
 
-// lookupPropertyGuard is lookupProperty with a union-walk cycle guard:
-// visiting holds union nodes already being walked at this value position, so a
-// reference cycle threaded through union variants fails that variant (treated
-// as a miss) instead of recursing forever. Recursion through properties/items
-// starts fresh — that is productive structure, not a cycle.
+// lookupPropertyGuard is lookupProperty with a union-walk cycle guard: visiting holds
+// union nodes already being walked at this value position, so a reference cycle through
+// union variants fails that variant (a miss) instead of recursing forever. Recursion
+// through properties/items starts fresh — that is productive structure, not a cycle.
 func lookupPropertyGuard(s *node, name string, defs map[string]*node, visiting map[*node]bool) (*node, error) {
 	resolved, err := deref(s, defs)
 	if err != nil {
@@ -182,8 +174,8 @@ func lookupPropertyGuard(s *node, name string, defs map[string]*node, visiting m
 	return prop, nil
 }
 
-// inferIndex returns the (nullable) element type for array index access on s.
-// Always nullable because the index may be out of bounds at runtime.
+// inferIndex returns the element type for array index access on s, always nullable
+// because the index may be out of bounds at runtime.
 func inferIndex(s *node, defs map[string]*node) (*node, error) {
 	return inferIndexGuard(s, defs, nil)
 }
@@ -261,16 +253,12 @@ func inferIndexGuard(s *node, defs map[string]*node, visiting map[*node]bool) (*
 	return withNull(resolved.Items), nil
 }
 
-// deref resolves s to a concrete (non-ref) node, following chains of $ref
-// pointers through defs — a definition may itself be a bare alias for another
-// (e.g. after a collision rename), so a single hop is not enough. A repeated
-// node means a pure ref cycle, which can never bottom out and is an error.
-// Returns s unchanged if no $ref is present.
-//
-// A target that is a solver sentinel routes back to its owning Solver, which
-// computes the definition on demand (or serves the running estimate when the
-// read closes a cycle) — this is the hook that makes definition resolution
-// demand-driven during generation.
+// deref resolves s to a concrete (non-ref) node, following chains of $ref through defs —
+// a definition may be a bare alias for another (e.g. after a collision rename), so one
+// hop is not enough. A repeated node is a pure ref cycle and an error. A target that is
+// a solver sentinel routes back to its owning Solver, which computes the definition on
+// demand (or serves the running estimate when the read closes a cycle) — the hook that
+// makes resolution demand-driven during generation.
 func deref(s *node, defs map[string]*node) (*node, error) {
 	var seen map[*node]bool
 	for s != nil && s.Ref != "" {
@@ -308,9 +296,8 @@ func deref(s *node, defs map[string]*node) (*node, error) {
 	return s, nil
 }
 
-// isSecret reports whether s is a secret value (marked secret:true), looking
-// through nullable / single-variant union wrappers so an optional or wrapped
-// secret is still recognised.
+// isSecret reports whether s is marked secret:true, looking through nullable /
+// single-variant union wrappers so an optional or wrapped secret is still recognised.
 func isSecret(s *node) bool {
 	if s == nil {
 		return false
@@ -331,8 +318,8 @@ func isSecret(s *node) bool {
 	return false
 }
 
-// Taint returns a copy of s marked secret:true. It is used to taint the result of
-// an expression that reads a secret value (conservatively, the whole value).
+// taintNode returns a copy of s marked secret:true — used to taint (conservatively, as
+// a whole) the result of an expression that reads a secret value.
 func taintNode(s *node) *node {
 	if s == nil {
 		return &node{Secret: true}
@@ -345,10 +332,9 @@ func taintNode(s *node) *node {
 	return &n
 }
 
-// nodeOrTargetSecret reports whether n, or the definition it resolves to, is
-// marked secret. A taint on a $ref node marks the pointer rather than the
-// shared target (tainting the target would over-taint its other users), so
-// both sides must be consulted.
+// nodeOrTargetSecret reports whether n, or the definition it resolves to, is secret. A
+// taint on a $ref node marks the pointer, not the shared target (tainting the target
+// would over-taint its other users), so both sides must be consulted.
 func nodeOrTargetSecret(n *node, defs map[string]*node) bool {
 	if isSecret(n) {
 		return true
@@ -361,9 +347,9 @@ func nodeOrTargetSecret(n *node, defs map[string]*node) bool {
 	return false
 }
 
-// pathHitsSecret reports whether navigating path from s passes through (or ends
-// at) a node marked secret — reading from inside a secret object is itself
-// secret. Returns false if the path cannot be resolved.
+// pathHitsSecret reports whether navigating path from s passes through (or ends at) a
+// secret node — reading from inside a secret object is itself secret. False if the path
+// cannot be resolved.
 func pathHitsSecret(s *node, defs map[string]*node, path string) bool {
 	steps, err := parsePath(path)
 	if err != nil {
@@ -392,12 +378,10 @@ func pathHitsSecret(s *node, defs map[string]*node, path string) bool {
 	return false
 }
 
-// collectSecrets appends to *out the string form of every value in value whose
-// schema is marked secret. It descends objects and arrays with the same primitives
-// type inference uses — lookupProperty / inferIndex, which resolve $refs, nullable
-// wrappers, and oneOf/anyOf/allOf combinators — so the walk cannot drift from the
-// schema navigation. It is the gather half of log redaction: the collected values
-// are then scrubbed from free-form log text.
+// collectSecrets appends to *out the string form of every secret-marked value in value.
+// It descends via lookupProperty / inferIndex — the same primitives type inference uses
+// — so the walk cannot drift from schema navigation. Gather half of log redaction: the
+// collected values are then scrubbed from free-form log text.
 func collectSecrets(value any, node *node, defs map[string]*node, out *[]string) {
 	if node == nil || value == nil {
 		return
@@ -430,11 +414,9 @@ func collectSecrets(value any, node *node, defs map[string]*node, out *[]string)
 	}
 }
 
-// redact returns value with every field whose schema is marked secret replaced by
-// "***". Like collectSecrets it descends via lookupProperty / inferIndex, so $ref,
-// nullable, and combinator handling lives in one place. Non-secret values pass
-// through unchanged. Used to scrub secret-derived values before they cross a public
-// boundary (API, logs).
+// redact returns value with every secret-marked field replaced by "***", descending via
+// lookupProperty / inferIndex like collectSecrets. Non-secret values pass through
+// unchanged. Used to scrub secret-derived values before they cross a public boundary.
 func redact(value any, node *node, defs map[string]*node) any {
 	if node == nil || value == nil {
 		return value
@@ -472,11 +454,10 @@ func redact(value any, node *node, defs map[string]*node) any {
 	}
 }
 
-// SecretString renders a secret value the way it appears in logs so the substring
-// scrub matches it. Strings pass through raw — they appear unquoted (e.g. inside a
-// URL) and as a substring of their quoted JSON form, so the raw value catches both.
-// Everything else uses its JSON encoding: notably a number is "1000000" as
-// json.Marshal writes it, not fmt's "1e+06", which would never match the log text.
+// SecretString renders a secret value as it appears in logs so the substring scrub
+// matches it. Strings pass through raw (they appear unquoted, and as a substring of
+// their quoted JSON form). Everything else uses its JSON encoding — notably a number is
+// "1000000" as json.Marshal writes it, not fmt's "1e+06", which would never match.
 func SecretString(v any) string {
 	if s, ok := v.(string); ok {
 		return s
@@ -513,12 +494,10 @@ func hasNullType(s *node) bool {
 	return false
 }
 
-// IsType reports whether s resolves to exactly the given type: its type list is
-// non-empty with every entry equal to typ, or it is a oneOf/anyOf all of whose
-// variants themselves resolve to typ. $refs are followed (against the root
-// $defs), so a reference to a boolean definition is a boolean. It is the "is
-// this uniformly type X" gate used, e.g., to require a switch expression to be
-// boolean.
+// IsType reports whether s resolves to uniformly type typ: a non-empty type list all
+// equal to typ, or a oneOf/anyOf whose variants all resolve to typ. $refs are followed,
+// so a reference to a boolean definition is a boolean. Used, e.g., to require a switch
+// expression to be boolean.
 func (s Schema) IsType(typ string) bool { return nodeIsType(s.n, s.rootDefs(), typ) }
 
 func nodeIsType(s *node, defs map[string]*node, typ string) bool {
@@ -548,10 +527,10 @@ func nodeIsType(s *node, defs map[string]*node, typ string) bool {
 	return false
 }
 
-// hasNullResolved reports whether null is a possible runtime value for s,
-// following $refs (top-level and one union level, matching hasNullType's
-// structural depth) so nullability declared inside a referenced definition is
-// seen. Resolution failures degrade to the structural answer.
+// hasNullResolved reports whether null is a possible runtime value for s, following
+// $refs (top-level and one union level, matching hasNullType's depth) so nullability
+// declared inside a referenced definition is seen. Resolution failures degrade to the
+// structural answer.
 func hasNullResolved(s *node, defs map[string]*node) bool {
 	r, err := deref(s, defs)
 	if err != nil {
@@ -574,9 +553,8 @@ func hasNullResolved(s *node, defs map[string]*node) bool {
 	return false
 }
 
-// TypeName returns a readable name for s's type — a single type ("string"), a
-// union ("string|null"), or "unknown" when it can't be determined. Intended for
-// error messages.
+// TypeName returns a readable name for s's type ("string", "string|null", or "unknown"),
+// for error messages.
 func (s Schema) TypeName() string { return nodeTypeName(s.n) }
 
 func nodeTypeName(s *node) string {
@@ -607,8 +585,8 @@ func nodeTypeName(s *node) string {
 	return "unknown"
 }
 
-// WithNull makes s nullable. Simple types produce {type:[T,"null"]};
-// complex schemas are wrapped in {oneOf:[s,{type:"null"}]}.
+// withNull makes s nullable: a simple type widens to {type:[T,"null"]}; a complex schema
+// is wrapped in {oneOf:[s,{type:"null"}]}.
 func withNull(s *node) *node {
 	if s == nil || isEmptyNode(s) {
 		return s
@@ -637,7 +615,6 @@ func withNull(s *node) *node {
 	return &node{OneOf: []*node{s, {Type: SchemaType{"null"}}}}
 }
 
-// StripNull removes null from a schema's possible types.
 func stripNull(s *node) *node {
 	if s == nil {
 		return s
@@ -693,9 +670,9 @@ func stripNull(s *node) *node {
 	return s
 }
 
-// isEmptyNode reports whether s constrains nothing. Root $defs are deliberately
-// ignored: a node carrying only a resolution context (as sub-schemas returned by
-// navigation do) still accepts any value.
+// isEmptyNode reports whether s constrains nothing. Root $defs are deliberately ignored:
+// a node carrying only a resolution context (as navigation's sub-schemas do) still
+// accepts any value.
 func isEmptyNode(s *node) bool {
 	return s == nil || (len(s.Type) == 0 && s.Properties == nil && s.Required == nil &&
 		s.AdditionalProperties == nil &&

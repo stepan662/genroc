@@ -190,17 +190,11 @@ type ProcessDefinition struct {
 	Output       *Shape         `json:"output,omitempty"                description:"Templated value (a string expression or nested object of expressions) evaluated at completion to produce the process output."`
 }
 
-// Normalize normalizes InputSchema and all task OutputSchemas in-place using the
-// schema package (flattens $defs to root, removes unused definitions, rewrites $refs).
-//
-// Process-level $defs are flattened first (they may reference each other) and made
-// visible to every schema during its normalization, so a schema may reference a
-// shared definition as "#/$defs/<name>". Each schema comes out self-contained —
-// the shared definitions it uses are baked into its own root $defs — so runtime
-// validation, spawn marshaling, and API responses need no shared context. A
-// schema-local root definition wins over a process-level one of the same name for
-// that schema (nearest-wins scoping); generation later reconciles the copies,
-// renaming safely where contents genuinely differ.
+// Normalize normalizes InputSchema and all task result schemas in-place (flatten $defs,
+// drop unused definitions, rewrite $refs). Process-level $defs are flattened first and
+// made visible to each schema, which comes out self-contained — the shared definitions
+// it uses baked into its own root $defs. A schema-local definition wins over a
+// process-level one of the same name (nearest-wins).
 func (d *ProcessDefinition) Normalize() error {
 	if !d.Defs.IsZero() {
 		flat, err := d.Defs.Flatten()
@@ -247,9 +241,8 @@ func (d *ProcessDefinition) Normalize() error {
 	return nil
 }
 
-// ValidateInput checks input against InputSchema and returns the normalized value
-// (undeclared properties dropped, defaults filled). Returns input unchanged when
-// InputSchema is nil.
+// ValidateInput validates input against InputSchema and returns the normalized value
+// (undeclared props dropped, defaults filled); passes input through when the schema is nil.
 func (d *ProcessDefinition) ValidateInput(input any) (any, error) {
 	if d.InputSchema == nil {
 		return input, nil
@@ -257,9 +250,8 @@ func (d *ProcessDefinition) ValidateInput(input any) (any, error) {
 	return d.InputSchema.Validate(input)
 }
 
-// ValidateOutput checks output against call.ResultSchema and returns the
-// normalized value (undeclared properties dropped, defaults filled). Returns
-// output unchanged when ResultSchema is nil.
+// ValidateOutput validates output against ResultSchema and returns the normalized value
+// (undeclared props dropped, defaults filled); passes output through when the schema is nil.
 func (c *Action) ValidateOutput(output any) (any, error) {
 	if c.ResultSchema == nil {
 		return output, nil

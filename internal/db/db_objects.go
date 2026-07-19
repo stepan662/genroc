@@ -31,9 +31,8 @@ const contextObjectThreshold = 2 * 1024
 // log retention is disabled (logs are kept forever, so their objects must be too).
 const logForeverMillis = math.MaxInt64
 
-// SetObjectRetention sets the log-retention window used to compute how long a
-// log-referenced object must survive. The engine calls this at startup with the same
-// window it uses for audit-log retention.
+// SetObjectRetention sets the retention window so a log-referenced object outlives its
+// log; the engine passes the same window it uses for audit-log retention.
 func (db *DB) SetObjectRetention(d time.Duration) { db.objectRetentionMs.Store(d.Milliseconds()) }
 
 // pendingObject is a content object an encode step wants written. Hash is the
@@ -45,24 +44,20 @@ type pendingObject struct {
 	Size    int64
 }
 
-// hashContent is the content address of an object: the first 16 bytes (128 bits) of
-// the sha256, hex-encoded (32 chars). It is deterministic, so byte-identical content
-// still collapses to one row (the context/log dedup), and 128 bits stays collision-free
-// at any foreseeable scale while keeping the reference compact in API and CLI output.
-// Truncation is safe because the hash is only ever produced and compared here — never
-// reconstructed from the full digest.
+// hashContent is an object's content address: the first 16 bytes of the sha256, hex
+// (32 chars). Deterministic, so byte-identical content dedups to one row; 128 bits
+// stays collision-free at any real scale. Truncation is safe — the hash is only
+// produced and compared here, never reconstructed from the full digest.
 func hashContent(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:16])
 }
 
-// encodeContextValue turns a plain value into the envelope stored for a context
-// value-slot. Small values are kept inline ({data: v}); large ones are replaced by a
-// single root reference ({refs:[{ref,size}]}) and the bytes are returned as a
-// pendingObject for the caller to persist + pin in the same transaction. A value
-// that is already an *model.ObjectRef (an unchanged, still-lazy slot) is re-emitted
-// as its reference with no new object — this is how an untouched big slot avoids any
-// rewrite.
+// encodeContextValue turns a value into the envelope stored for a context value-slot.
+// Small values stay inline ({data:v}); large ones become a single reference
+// ({refs:[...]}) with the bytes returned as a pendingObject to persist + pin in the same
+// transaction. An unchanged *model.ObjectRef is re-emitted as-is, so an untouched big
+// slot avoids any rewrite.
 func encodeContextValue(v any) (model.Envelope, *pendingObject, error) {
 	if ref, ok := v.(*model.ObjectRef); ok {
 		return model.Envelope{Refs: []*model.ObjectRef{ref}}, nil, nil
@@ -79,9 +74,8 @@ func encodeContextValue(v any) (model.Envelope, *pendingObject, error) {
 		&pendingObject{Hash: h, Content: string(b), Size: int64(len(b))}, nil
 }
 
-// decodeEnvelope turns a stored envelope back into an in-memory value: an inline
-// value is returned as-is; an externalized one becomes an *model.ObjectRef marker
-// that the engine resolves lazily on first access.
+// decodeEnvelope turns a stored envelope into an in-memory value: inline values as-is,
+// externalized ones into an *model.ObjectRef marker the engine resolves lazily.
 func decodeEnvelope(env model.Envelope) any {
 	if env.IsRef() {
 		return env.Refs[0]
@@ -89,7 +83,6 @@ func decodeEnvelope(env model.Envelope) any {
 	return env.Data
 }
 
-// loadObjectValue reads and unmarshals one context/log object's content.
 func (db *DB) loadObjectValue(ctx context.Context, instanceID, hash string) (any, error) {
 	content, err := db.q.GetObject(ctx, dbgen.GetObjectParams{InstanceID: instanceID, Hash: hash})
 	if err != nil {
@@ -102,23 +95,15 @@ func (db *DB) loadObjectValue(ctx context.Context, instanceID, hash string) (any
 	return v, nil
 }
 
-// ResolveObject loads the value behind a reference produced for instanceID. Used by
-// the engine's lazy resolver.
 func (db *DB) ResolveObject(ctx context.Context, instanceID string, ref *model.ObjectRef) (any, error) {
 	return db.loadObjectValue(ctx, instanceID, ref.Ref)
 }
 
-// applyContextObjectDiff persists the object changes implied by one instance write,
-// inside that write's transaction (qtx). pending are the new objects to write+pin;
-// referenced is the set of hashes the instance still points at after the write;
-// loaded is the set it pointed at when read.
-//   - pending (new) → written and pinned (PinContextObject; ON CONFLICT re-pins a
-//     previously-dereferenced shared row).
-//   - dereferenced (loaded − referenced) → deleted immediately when no live log still
-//     references the row, so a replaced value (and any secret in it) does not linger;
-//     a row a log still needs is only unpinned and left for the GC sweep.
-//
-// (loaded ∩ referenced is left untouched — those rows are still pinned from before.)
+// applyContextObjectDiff persists the object changes of one instance write, inside its
+// transaction (qtx). pending (new) are written and pinned; dereferenced (loaded −
+// referenced) are deleted immediately when no live log needs the row — so a replaced
+// value and any secret in it does not linger — else just unpinned for the GC sweep.
+// loaded ∩ referenced is left untouched (still pinned from before).
 func (db *DB) applyContextObjectDiff(ctx context.Context, qtx *dbgen.Queries, instanceID string, pending []*pendingObject, loaded, referenced map[string]struct{}, now int64) error {
 	for _, obj := range pending {
 		if err := qtx.PinContextObject(ctx, dbgen.PinContextObjectParams{
@@ -150,10 +135,9 @@ func (db *DB) applyContextObjectDiff(ctx context.Context, qtx *dbgen.Queries, in
 	return nil
 }
 
-// HydrateContext resolves every externalized value-slot (input, outputs, output) in
-// inst.ContextData in place, replacing *model.ObjectRef markers with their loaded
-// values. Used by the API detail view, which returns the full context and so needs
-// it fully materialized (and then redacted) rather than lazily.
+// HydrateContext resolves every externalized value-slot in inst.ContextData in place,
+// replacing *model.ObjectRef markers with their loaded values. Used by the API detail
+// view, which needs the full context materialized (then redacted) rather than lazily.
 func (db *DB) HydrateContext(inst *model.ProcessInstance) error {
 	resolve := func(v any) (any, error) {
 		ref, ok := v.(*model.ObjectRef)
@@ -189,12 +173,10 @@ func (db *DB) HydrateContext(inst *model.ProcessInstance) error {
 	return nil
 }
 
-// WriteLogObject records that a log references a (pre-redacted) payload too large to
-// keep inline, returning a reference to it. The object is kept until the log-retention
-// horizon (forever when retention is disabled) so it stays resolvable for at least as
-// long as the log row that references it. If the content collides with an existing
-// (e.g. context-pinned, secret-free) object the rows are shared — only the log horizon
-// is extended.
+// WriteLogObject records a (pre-redacted) log payload too large to keep inline and
+// returns a reference. The object is kept until the log-retention horizon (forever when
+// disabled) so it outlives its log row. Content that collides with an existing object
+// shares the row — only the log horizon is extended.
 func (db *DB) WriteLogObject(instanceID, content string) (*model.ObjectRef, error) {
 	h := hashContent([]byte(content))
 	logUntil := int64(logForeverMillis)

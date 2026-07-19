@@ -55,11 +55,8 @@ func (h *Handlers) listDefinitions(raw json.RawMessage) Reply {
 	return okReply(PageResp[DefinitionSummary]{Items: summaries, Page: info})
 }
 
-// resolveDefaultVersion returns the version a bare process reference (no explicit
-// version or channel) resolves to: the version the "latest" channel points at —
-// i.e. what apply most recently published. ensureLatestChannel guarantees "latest"
-// exists from the first apply, so the fallback to the highest version number is
-// only a safety net for definitions registered before that invariant.
+// resolveDefaultVersion resolves a bare process reference to the version "latest" points
+// at, falling back to the highest version for definitions predating that invariant.
 func (h *Handlers) resolveDefaultVersion(process string) (int, error) {
 	if v, err := h.db.GetChannel(process, defaultChannel); err == nil {
 		return v, nil
@@ -67,11 +64,8 @@ func (h *Handlers) resolveDefaultVersion(process string) (int, error) {
 	return h.db.LatestVersion(process)
 }
 
-// ensureLatestChannel guarantees the "latest" channel exists for a process — it is
-// created (pointing at version) on the first apply even when applied to another
-// channel, so a bare process reference always resolves via a channel. It only
-// creates "latest" when absent; an apply targeting "latest" updates it through the
-// normal path.
+// ensureLatestChannel creates the "latest" channel (pointing at version) when absent, so
+// a bare process reference always resolves via a channel; a no-op when it already exists.
 func (h *Handlers) ensureLatestChannel(name string, version int) error {
 	if _, err := h.db.GetChannel(name, defaultChannel); err == nil {
 		return nil
@@ -118,7 +112,6 @@ func (h *Handlers) putDefinitions(raw json.RawMessage) Reply {
 	return okReply(results)
 }
 
-// applyBatch is the core implementation for channel-aware batch apply.
 func (h *Handlers) applyBatch(defs []model.ProcessDefinition, channel string, autoUpdateParents bool) ([]BatchApplyResult, error) {
 	ptrs := make([]*model.ProcessDefinition, len(defs))
 	for i := range defs {
@@ -215,10 +208,9 @@ func (h *Handlers) applyBatch(defs []model.ProcessDefinition, channel string, au
 	return results, nil
 }
 
-// buildResolvedDeps returns dependency rows for all child_map/child_list tasks in def,
-// resolving version=0 refs via batchVersions or the channel.
-// Self-references are excluded — the engine always runs them at the caller's own version.
-// It does not mutate def — the raw definition is stored as-is.
+// buildResolvedDeps returns dependency rows for a def's child_map/child_list tasks,
+// resolving version=0 refs via batchVersions or the channel. Self-refs are excluded
+// (the engine runs them at the caller's version) and def is not mutated.
 func (h *Handlers) buildResolvedDeps(def *model.ProcessDefinition, selfVersion int, channel string, batchVersions map[string]int) ([]db.DependencyRow, error) {
 	var deps []db.DependencyRow
 	for _, task := range def.Tasks {
@@ -283,9 +275,8 @@ func (h *Handlers) resolveChildVersion(childName string, childVersion int, taskI
 	return v, nil
 }
 
-// cascadeUpdate finds all processes on channel whose deps point to old versions
-// of any process in changedVersions, creates new versions, and repeats until fixpoint.
-// allUpdated accumulates all resolved versions from the originating batch.
+// cascadeUpdate repeatedly creates new versions of processes on channel whose deps point
+// at superseded versions, until fixpoint; allUpdated accumulates the resolved versions.
 func (h *Handlers) cascadeUpdate(channel string, changedVersions map[string]int, allUpdated map[string]int) ([]BatchApplyResult, error) {
 	var results []BatchApplyResult
 
@@ -434,10 +425,9 @@ type taskChildKey struct {
 	childKey string
 }
 
-// applyDepsToDefCopy returns a deep copy of def with resolved child versions baked in.
-// Self-refs (entry.Name == def.Name) keep version=0 since genrocschema handles them
-// separately and the engine resolves them via inst.ProcessVersion.
-// Used to produce a validation copy for genrocschema — the raw def stored in DB is unchanged.
+// applyDepsToDefCopy returns a deep copy of def with resolved child versions baked in, as
+// a validation copy for genrocschema (the stored def is unchanged). Self-refs keep
+// version=0 — the engine resolves them via inst.ProcessVersion.
 func applyDepsToDefCopy(def *model.ProcessDefinition, deps []db.DependencyRow) *model.ProcessDefinition {
 	data, _ := json.Marshal(def)
 	var copy model.ProcessDefinition
@@ -468,8 +458,8 @@ func applyDepsToDefCopy(def *model.ProcessDefinition, deps []db.DependencyRow) *
 	return &copy
 }
 
-// contentHash returns a SHA256 hex digest over rawJSON and the sorted deps,
-// uniquely identifying a (definition, resolved-children) snapshot.
+// contentHash is a SHA256 digest over rawJSON and the sorted deps, uniquely identifying
+// a (definition, resolved-children) snapshot for content dedup.
 func contentHash(rawJSON []byte, deps []db.DependencyRow) string {
 	h := sha256.New()
 	h.Write(rawJSON)
@@ -486,8 +476,8 @@ func contentHash(rawJSON []byte, deps []db.DependencyRow) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// subtree collects the definition for rootName and all its dependencies (recursively)
-// from the provided slice, following baked-in child refs.
+// subtree collects the definition for rootName and, recursively, all its dependencies
+// present in defs, following baked-in child refs.
 func subtree(defs []db.VersionedDef, rootName string) ([]db.VersionedDef, error) {
 	byName := make(map[string]*model.ProcessDefinition, len(defs))
 	for _, vd := range defs {

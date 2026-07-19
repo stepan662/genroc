@@ -58,10 +58,9 @@ func rewritePlaceholders(query string) string {
 	return b.String()
 }
 
-// beginTx starts a transaction and returns the raw *sql.Tx, a *dbgen.Queries,
-// and a DBTX executor — both the latter already wrapped in pgRewriter when
-// running on Postgres. Use the returned executor (not the raw *sql.Tx) for
-// hand-written SQL so it can keep using ? placeholders on both engines.
+// beginTx starts a transaction, returning the raw *sql.Tx, a *dbgen.Queries, and a DBTX
+// executor (the latter two pgRewriter-wrapped on Postgres). Use the returned executor,
+// not the raw *sql.Tx, for hand-written SQL so ? placeholders work on both engines.
 func (db *DB) beginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, *dbgen.Queries, dbgen.DBTX, error) {
 	tx, err := db.sqldb.BeginTx(ctx, opts)
 	if err != nil {
@@ -74,11 +73,9 @@ func (db *DB) beginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, *dbgen
 	return tx, dbgen.New(dbtx), dbtx, nil
 }
 
-// withTx runs fn inside a transaction, rolling back if fn returns an error and
-// committing otherwise. fn receives the pgRewriter-wrapped *dbgen.Queries and DBTX
-// executor from beginTx — use those (never the raw *sql.Tx) for hand-written SQL so
-// ? placeholders keep working on both engines. It is the single owner of the
-// begin / defer-rollback / commit dance for the error-returning transactional methods.
+// withTx runs fn inside a transaction, committing on success and rolling back on error.
+// fn receives the pgRewriter-wrapped *dbgen.Queries and DBTX executor — use those, never
+// the raw *sql.Tx, for hand-written SQL so ? placeholders keep working on both engines.
 func (db *DB) withTx(ctx context.Context, fn func(qtx *dbgen.Queries, exec dbgen.DBTX) error) error {
 	tx, qtx, exec, err := db.beginTx(ctx, nil)
 	if err != nil {

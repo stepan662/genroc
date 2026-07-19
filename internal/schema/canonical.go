@@ -6,19 +6,12 @@ import (
 	"sort"
 )
 
-// Canonicalize returns a structurally-canonical copy of s, suitable for
-// type-equality by JSON comparison (the equality test used by the recursive
-// type-inference fixpoint). Two schemas that denote the same type canonicalize
-// to byte-identical JSON.
-//
-// It: canonicalizes Properties values and Items recursively; for each of
-// oneOf/anyOf/allOf, canonicalizes the variants, flattens nested compositions of
-// the *same* kind, and deduplicates and sorts them; collapses a single-variant
-// composition to that variant; and, for a union (oneOf/anyOf) whose variants are
-// all "simple" (a single primitive type, no other constraints) — including the
-// nullable case — merges them into one sorted {type:[...]} array (allOf is an
-// intersection and is never merged this way). Type and Required arrays are
-// sorted and deduped. It is idempotent.
+// canonicalizeNode returns a structurally-canonical copy of s so two schemas that
+// denote the same type become byte-identical JSON — the equality test the recursive
+// type-inference fixpoint relies on. Same-kind compositions are flattened, variants
+// deduped/sorted, a single-variant composition collapsed, and a union of simple
+// primitives merged into one {type:[...]} array (allOf is an intersection, never
+// merged). Idempotent.
 func canonicalizeNode(s *node) *node {
 	if s == nil {
 		return nil
@@ -55,9 +48,9 @@ const (
 	kindAllOf
 )
 
-// canonVariants canonicalizes each variant, flattens a variant that is itself a
-// pure composition of the same kind (oneOf-in-oneOf, allOf-in-allOf, …), then
-// dedups and sorts by canonical JSON for a stable order.
+// canonVariants canonicalizes each variant, flattens a variant that is itself a pure
+// composition of the same kind (oneOf-in-oneOf, …), then dedups and sorts by canonical
+// JSON for a stable order.
 func canonVariants(vs []*node, kind compositionKind) []*node {
 	if len(vs) == 0 {
 		return nil
@@ -88,11 +81,10 @@ func canonVariants(vs []*node, kind compositionKind) []*node {
 	return out
 }
 
-// collapse reduces a node that is purely a single composition (no other
-// constraints) toward its simplest equivalent form: a single variant unwraps;
-// for a union (oneOf/anyOf) whose variants are all simple primitives — including
-// "null" — the variants merge into one sorted {type:[...]} array. An allOf is an
-// intersection, so it only unwraps a singleton.
+// collapse reduces a node that is purely a single composition toward its simplest
+// form: a single variant unwraps; a union (oneOf/anyOf) of simple primitives (incl.
+// "null") merges into one {type:[...]} array. allOf is an intersection, so it only
+// unwraps a singleton.
 func collapse(n *node) *node {
 	// Unions (oneOf/anyOf) collapse via collapseUnion; otherwise n already carries
 	// its canonical variants.
@@ -123,7 +115,7 @@ func collapseUnion(n *node, variants []*node) *node {
 }
 
 // pureComposition returns the variants of s if s carries exactly the given
-// composition keyword and no other type-constraining fields, else (nil, false).
+// composition keyword and no other type-constraining field, else (nil, false).
 func pureComposition(s *node, kind compositionKind) ([]*node, bool) {
 	if s == nil {
 		return nil, false
@@ -150,9 +142,8 @@ func pureComposition(s *node, kind compositionKind) ([]*node, bool) {
 	return nil, false
 }
 
-// mergeSimpleVariants merges a union whose every variant is one or more primitive
-// types with no other constraints into one {type:[...]} node (sorted, deduped).
-// Returns (nil, false) if any variant is not simple.
+// mergeSimpleVariants merges a union of simple-primitive variants into one
+// {type:[...]} node (sorted, deduped), or (nil, false) if any variant is not simple.
 func mergeSimpleVariants(variants []*node) (*node, bool) {
 	types := make([]string, 0, len(variants))
 	for _, v := range variants {
@@ -165,8 +156,8 @@ func mergeSimpleVariants(variants []*node) (*node, bool) {
 }
 
 // isSimpleType reports whether s is one or more primitive types with no other
-// type-constraining fields (the shape mergeSimpleVariants can fold into a type
-// array — including an already-merged multi-entry {type:[...]}).
+// type-constraining fields — the shape mergeSimpleVariants can fold into a type
+// array, including an already-merged multi-entry {type:[...]}.
 func isSimpleType(s *node) bool {
 	if s == nil || len(s.Type) == 0 {
 		return false
@@ -198,11 +189,10 @@ func nodeCanonJSON(s *node) string {
 	return string(b)
 }
 
-// Size is the byte length of s's canonical JSON — a cheap proxy for type
-// complexity, used to bound the recursive-inference fixpoint against a
-// non-converging type that grows without limit. A schema that cannot be
-// marshaled (e.g. a reference cycle) is treated as infinitely large rather than
-// empty, so the growth bound fails loudly instead of masking the problem.
+// nodeSize is the byte length of s's canonical JSON — a cheap type-complexity proxy
+// bounding the recursive-inference fixpoint against a type that grows without limit. An
+// unmarshalable schema (e.g. a reference cycle) is treated as infinitely large, so the
+// bound fails loudly instead of masking the problem.
 func nodeSize(s *node) int {
 	b, err := json.Marshal(canonicalizeNode(s))
 	if err != nil {

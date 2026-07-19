@@ -11,7 +11,6 @@ import (
 	"strings"
 )
 
-// callGet sends a GET request with no body and decodes the response into out.
 func callGet(url string, out any) error {
 	resp, err := http.Get(url)
 	if err != nil {
@@ -45,10 +44,8 @@ type page[T any] struct {
 	} `json:"page"`
 }
 
-// listAll fetches every page of a list endpoint, following page.after until it is
-// absent (set only while more rows remain), and returns the concatenated items.
-// base is the request URL without an after cursor (it may already carry other
-// query params).
+// listAll fetches every page of a list endpoint, following page.after until absent
+// (set only while more rows remain). base must omit an after cursor.
 func listAll[T any](base string) ([]T, error) {
 	var all []T
 	after := ""
@@ -73,11 +70,8 @@ func listAll[T any](base string) ([]T, error) {
 	}
 }
 
-// printListJSON writes a list endpoint's items as an indented JSON array to stdout.
-// This is the one standard --json output shared by every list command: lossless
-// (each item verbatim from the server, not a re-marshaled subset) and honoring the
-// same paging as the table — a single --limit page, or every page when all is true.
-// See the "genctl command conventions" note above main.
+// printListJSON writes a list endpoint's items as an indented JSON array — the shared,
+// lossless --json output, honoring paging (one --limit page, or all when all is true).
 func printListJSON(u string, all bool) {
 	var items []json.RawMessage
 	var err error
@@ -103,7 +97,6 @@ func printListJSON(u string, all bool) {
 	os.Stdout.Write([]byte("\n"))
 }
 
-// call sends body as JSON to url and decodes the response into out.
 func call(url, method string, body any, out any) error {
 	payload, err := json.Marshal(body)
 	if err != nil {

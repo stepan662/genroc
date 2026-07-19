@@ -5,10 +5,8 @@ import (
 	"time"
 )
 
-// shortID returns a compact, distinguishing tag for an instance id in tree-log
-// display. It uses the id's tail, not its head: instance ids are UUIDv7s whose
-// leading bits are a millisecond timestamp, so a parent and a child spawned in the
-// same millisecond share a long prefix — the random tail is what tells them apart.
+// shortID returns a compact id tag for tree-log display: the id's random tail, not its
+// timestamp-prefixed head, so a parent and same-millisecond child differ.
 func shortID(id string) string {
 	if len(id) > 6 {
 		return id[len(id)-6:]
@@ -28,9 +26,8 @@ func parseTime(rfc string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// shortTime renders a timestamp compactly for list columns: a relative age for
-// recent times ("just now", "5m ago", "3h ago", "2d ago"), or a short absolute
-// "YY-MM-DD HH:MM" beyond a week. Unparseable input is returned unchanged.
+// shortTime renders a timestamp compactly for list columns: a relative age ("5m ago")
+// within a week, else a short absolute "YY-MM-DD HH:MM". Unparseable input is unchanged.
 func shortTime(rfc string) string {
 	t, ok := parseTime(rfc)
 	if !ok {
@@ -55,8 +52,7 @@ func relAge(t time.Time) string {
 	}
 }
 
-// longTime renders a full local timestamp with its relative age, for detail views:
-// "2006-01-02 15:04:05  (5m ago)".
+// longTime renders a full local timestamp with its relative age: "2006-01-02 15:04:05  (5m ago)".
 func longTime(rfc string) string {
 	t, ok := parseTime(rfc)
 	if !ok {

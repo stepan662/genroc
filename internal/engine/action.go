@@ -105,13 +105,11 @@ func (e *Engine) buildTaskData(inst *model.ProcessInstance, task *model.Task) (a
 	return e.evalShapeCtx(inst, task.Action.Input.Raw, nil)
 }
 
-// runDelay implements the delay action. On first entry — WakeAt is nil
-// because every task transition resets it — it evaluates the duration and parks the
-// instance by stamping wake_at (persisted via the progress outcome, which releases
-// the worker); the normal claim loop re-claims it once the timer elapses. On
-// re-entry (WakeAt set, so the claim guarantees the timer is due) it returns nil and
-// advance continues to the task's switch. Returns a non-nil outcome when it parked
-// or failed (the caller stops and persists it).
+// runDelay implements the delay action. First entry (WakeAt nil, reset on every task
+// transition) evaluates the duration and parks by stamping wake_at (the progress outcome
+// releases the worker); the claim loop re-claims once the timer elapses. Re-entry (WakeAt
+// set, so the claim guarantees the timer is due) returns nil to continue to the switch.
+// A non-nil outcome means it parked or failed (the caller stops and persists it).
 func (e *Engine) runDelay(inst *model.ProcessInstance, task *model.Task) *advanceOutcome {
 	if inst.WakeAt == nil {
 		ms, err := e.evalDurationMsCtx(inst, task.Action.Ms)
@@ -126,21 +124,18 @@ func (e *Engine) runDelay(inst *model.ProcessInstance, task *model.Task) *advanc
 	return nil
 }
 
-// runExternal implements the external (pull/callback) task. It has three entry
-// states, told apart by wait_state and the presence of a submitted result:
+// runExternal implements the external (pull/callback) task, with three entry states
+// told apart by wait_state and the presence of _external_result:
 //
-//  1. First arrival (wait_state none, no _external_result): evaluate and snapshot the
-//     input, mint a per-occurrence token, and park the instance (wait_state='external');
-//     if timeout_ms>0 also stamp wake_at as the timeout deadline. No worker is held while
-//     parked, and the claim will not return it again until the result arrives (which
+//  1. First arrival: snapshot the input, mint a per-occurrence token, and park
+//     (wait_state='external'); timeout_ms>0 also stamps wake_at as the deadline. No worker
+//     is held while parked, and the claim won't return it until the result arrives (which
 //     clears wait_state) or the timeout fires.
-//  2. Result submitted (wait_state none, _external_result present): the resolve API
-//     cleared wait_state and stored the validated result; consume it as self.result and
-//     continue to the task's output/switch.
-//  3. Timeout (wait_state still 'external'): the claim only returns a parked external
-//     instance once its wake_at deadline passed, so reaching here with wait_state still
-//     'external' means no result arrived in time → external.timeout via on_error. Retries
-//     on that code re-arm the wait with a fresh token.
+//  2. Result submitted: the resolve API cleared wait_state and stored the validated
+//     result; consume it as self.result and continue.
+//  3. Timeout: the claim only returns a parked external once wake_at passed, so wait_state
+//     still 'external' means no result arrived → external.timeout via on_error. A retry on
+//     that code re-arms the wait with a fresh token.
 //
 // Returns (result, nil) to continue advancing, or (nil, outcome) to stop and persist.
 func (e *Engine) runExternal(ctx context.Context, inst *model.ProcessInstance, task *model.Task) (any, *advanceOutcome) {
@@ -198,9 +193,9 @@ func (e *Engine) runExternal(ctx context.Context, inst *model.ProcessInstance, t
 	return nil, stop(advanceOutcome{kind: outcomeNoop})
 }
 
-// evalDurationMs evaluates a delay expression to a non-negative millisecond
-// count. The expression is a template, so a bare literal ("30000") returns the
-// string "30000" (parsed here) while a "{{ … }}" expression returns a number.
+// evalDurationMs evaluates a delay expression to a non-negative millisecond count. It is
+// a template, so a bare literal ("30000") comes back as a string (parsed here); a
+// "{{ … }}" expression comes back as a number.
 func evalDurationMs(expr string, ctx, config map[string]any) (int64, error) {
 	v, err := evalAny(expr, ctx, config)
 	if err != nil {
@@ -209,8 +204,8 @@ func evalDurationMs(expr string, ctx, config map[string]any) (int64, error) {
 	return durationFromValue(expr, v)
 }
 
-// evalDurationMsCtx is evalDurationMs against an instance's context, resolving only
-// the slots the duration expression references.
+// evalDurationMsCtx is evalDurationMs against inst's context, resolving only the slots
+// the expression references.
 func (e *Engine) evalDurationMsCtx(inst *model.ProcessInstance, expr string) (int64, error) {
 	v, err := e.evalAnyCtx(inst, expr)
 	if err != nil {
@@ -219,7 +214,6 @@ func (e *Engine) evalDurationMsCtx(inst *model.ProcessInstance, expr string) (in
 	return durationFromValue(expr, v)
 }
 
-// durationFromValue coerces an evaluated delay expression to a non-negative ms count.
 func durationFromValue(expr string, v any) (int64, error) {
 	var ms int64
 	switch n := v.(type) {
@@ -244,10 +238,9 @@ func durationFromValue(expr string, v any) (int64, error) {
 	return ms, nil
 }
 
-// resolveURL evaluates the fetch URL as a template so a base URL can come from config
-// or input (e.g. "{{ config.server_url }}/path"), returning the resolved URL. Returns
-// "" for actions without a URL. Secret values it carries are scrubbed from logged
-// URLs/errors by audit().
+// resolveURL evaluates the fetch URL as a template so a base URL can come from config or
+// input (e.g. "{{ config.server_url }}/path"). Returns "" for actions without a URL;
+// secrets it carries are scrubbed from logged URLs/errors by audit().
 func (e *Engine) resolveURL(inst *model.ProcessInstance, call *model.Action) (string, error) {
 	if call.URL == "" {
 		return "", nil
@@ -259,8 +252,7 @@ func (e *Engine) resolveURL(inst *model.ProcessInstance, call *model.Action) (st
 	return fmt.Sprintf("%v", val), nil
 }
 
-// resolveMethod evaluates the fetch method expression and upper-cases it, defaulting
-// to POST when unset.
+// resolveMethod evaluates the fetch method expression, upper-cased, defaulting to POST.
 func (e *Engine) resolveMethod(inst *model.ProcessInstance, call *model.Action) (string, error) {
 	if call.Method == "" {
 		return "POST", nil
@@ -277,9 +269,9 @@ func (e *Engine) resolveMethod(inst *model.ProcessInstance, call *model.Action) 
 }
 
 // resolveHeaders evaluates the fetch Headers shape to a string map. The shape may be a
-// literal map of templated values or a single expression yielding a map; either way the
-// resolved value must be an object, whose values are coerced to strings. Returns nil for
-// calls without headers.
+// literal map of templated values or a single expression yielding a map; either way it
+// must resolve to an object, whose values are coerced to strings. Returns nil when the
+// call has no headers.
 func (e *Engine) resolveHeaders(inst *model.ProcessInstance, call *model.Action) (map[string]string, error) {
 	if !call.Headers.Present() {
 		return nil, nil

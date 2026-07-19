@@ -38,9 +38,9 @@ func alwaysBoolean(_, _ Schema) (Schema, error) {
 }
 
 // binOperands runs the guard every binary numeric/comparison op shares — reject a
-// nullable operand, then resolve both to a single concrete type, rejecting an
-// ambiguous one — and returns the two operand types. nullErr/ambiguousErr are the
-// op-specific messages (already resolved: pass a literal "%", not "%%").
+// nullable operand, then resolve both to a single concrete type, rejecting an ambiguous
+// one — returning the two operand types. nullErr/ambiguousErr are already-resolved
+// messages (pass a literal "%", not "%%").
 func binOperands(left, right Schema, nullErr, ambiguousErr string) (lt, rt string, err error) {
 	if left.HasNull() || right.HasNull() {
 		return "", "", errors.New(nullErr)
@@ -156,12 +156,10 @@ func numericPassthrough(operand Schema) (Schema, error) {
 	return operand, nil
 }
 
-// inferNullCoalesce types `a ?? b`. It is a union-shaped (symbolic) operator:
-// a $ref operand is preserved in the result rather than expanded — that is
-// what keeps a recursive output type a finite recursive schema. Refs are
-// resolved for *analysis* only (nullability, the null seed, scalar merging),
-// via resolveTolerant, so the decisions are made on actual types while the
-// constructed result keeps the symbolic form.
+// inferNullCoalesce types `a ?? b`. It is a union-shaped (symbolic) operator: a $ref
+// operand is preserved in the result rather than expanded, which keeps a recursive
+// output type finite. Refs are resolved for analysis only (nullability, the null seed,
+// scalar merging) via resolveTolerant, so the result keeps the symbolic form.
 func inferNullCoalesce(left, right Schema) (Schema, error) {
 	if left.IsNull() {
 		return right, nil
@@ -214,9 +212,8 @@ func nullableSchema(a, b Schema) (Schema, bool) {
 	return tryNullable(b, a)
 }
 
-// tryNullable checks if other is {type:"null"} and self can be made nullable in
-// place. Schemas with properties are excluded (they need the oneOf wrapper the
-// caller builds).
+// tryNullable makes self nullable in place when other is {type:"null"}. Schemas with
+// properties are excluded — they need the oneOf wrapper the caller builds.
 func tryNullable(self, other Schema) (Schema, bool) {
 	if !other.IsNull() {
 		return Schema{}, false
@@ -235,11 +232,10 @@ func tryNullable(self, other Schema) (Schema, bool) {
 	return Schema{}, false
 }
 
-// resolveTolerant follows a $ref operand to its target for analysis — the
-// concrete type for solved definitions, the running (nullable) estimate for a
-// definition mid-solve. A resolution failure returns the schema unchanged:
-// the caller's structural analysis then reports its own (less specific) error,
-// and the underlying failure still surfaces through a look-inside path.
+// resolveTolerant follows a $ref operand to its target for analysis — the concrete
+// type once solved, the running (nullable) estimate mid-solve. A resolution failure
+// returns the schema unchanged, so the caller's structural analysis still runs (and the
+// underlying failure surfaces via a look-inside path).
 func resolveTolerant(s Schema) Schema {
 	if !s.HasRef() {
 		return s
@@ -251,9 +247,9 @@ func resolveTolerant(s Schema) Schema {
 	return r
 }
 
-// concreteTypeOf extracts a single effective type string from a schema,
-// resolving $refs (top-level and per union variant) so referenced scalar
-// types participate in operator typing.
+// concreteTypeOf extracts a single effective type string from a schema, resolving $refs
+// (top-level and per union variant) so referenced scalar types participate in operator
+// typing. An all-numeric union widens to "number".
 func concreteTypeOf(s Schema) (string, bool) {
 	s = resolveTolerant(s)
 	if t := s.Type(); len(t) == 1 {
@@ -308,8 +304,8 @@ func allSatisfy(ss []string, fn func(string) bool) bool {
 	return true
 }
 
-// unwrapSingleVariant simplifies a oneOf/anyOf schema that has exactly one
-// non-null variant into that variant directly.
+// unwrapSingleVariant simplifies a oneOf/anyOf with exactly one non-null variant into
+// that variant directly.
 func unwrapSingleVariant(s Schema) Schema {
 	variants := s.Variants()
 	if variants == nil {
@@ -328,9 +324,9 @@ func unwrapSingleVariant(s Schema) Schema {
 	return s
 }
 
-// schemasEqual compares two schemas structurally, ignoring the root $defs each
-// may carry (navigation attaches the shared resolution context; two identical
-// types must compare equal whether or not they were reached via navigation).
+// schemasEqual compares two schemas structurally, ignoring the root $defs each may
+// carry — navigation attaches the shared context, but two identical types must compare
+// equal whether or not they were reached via navigation.
 func schemasEqual(a, b Schema) bool {
 	aj, err1 := json.Marshal(a.WithoutDefs())
 	bj, err2 := json.Marshal(b.WithoutDefs())

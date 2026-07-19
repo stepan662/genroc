@@ -65,19 +65,10 @@ type defKey struct {
 }
 
 // OpenSQLite opens (or creates) the SQLite database at path and runs migrations.
-// synchronous picks the PRAGMA synchronous durability level (empty = NORMAL). The
-// genroc binary defaults its --sqlite-synchronous flag to FULL (full power-loss
-// durability, matching Postgres); empty is the relaxed level used by internal tests
-// that don't need it. Levels:
-//   - NORMAL: in WAL mode the WAL is fsync'd only at checkpoints, not per commit, so
-//     a commit is durable across a process crash but the most recent commits can be
-//     lost on an OS crash / power loss (the database stays consistent either way).
-//     Fast — this is the default.
-//   - FULL: fsync the WAL on every commit, so a committed transaction survives even a
-//     power loss — the same guarantee as Postgres's synchronous_commit=on, at a much
-//     higher per-commit cost.
-//
-// OFF and EXTRA are also accepted (weaker / stronger respectively).
+// synchronous is the PRAGMA synchronous level (empty = NORMAL): NORMAL fsyncs the WAL
+// only at checkpoints (fast; recent commits can be lost on power loss, DB stays
+// consistent), FULL fsyncs per commit (power-loss durable, matching Postgres). The
+// genroc binary defaults its flag to FULL; OFF and EXTRA are also accepted.
 func OpenSQLite(path, synchronous string) (*DB, error) {
 	sync, err := sqliteSynchronous(synchronous)
 	if err != nil {
@@ -109,12 +100,9 @@ func sqliteSynchronous(mode string) (string, error) {
 	}
 }
 
-// OpenPostgres opens a PostgreSQL connection and runs migrations.
-// DSN format: postgres://user:password@host:port/database?sslmode=disable
-//
-// maxOpenConns caps the connection pool; idle connections are kept at half that.
-// A fleet of workers must be sized so workers*maxOpenConns < the server's
-// max_connections. Values <= 0 fall back to the default of 50.
+// OpenPostgres opens a PostgreSQL connection and runs migrations. maxOpenConns caps
+// the pool (idle = half; <= 0 defaults to 50); size a worker fleet so
+// workers*maxOpenConns stays under the server's max_connections.
 func OpenPostgres(dsn string, maxOpenConns int) (*DB, error) {
 	sqldb, err := sql.Open("postgres", dsn)
 	if err != nil {
@@ -160,14 +148,10 @@ func open(sqldb *sql.DB, dialect string) (*DB, error) {
 // the same for every worker); this one spells "genroc".
 const pgBootstrapLockKey int64 = 0x67656E74 // "genroc"
 
-// bootstrapPostgres runs the post-migration Postgres-only setup: the json_each
-// helper function and aggressive autovacuum on process_instances. Both statements
-// rewrite a system-catalog tuple (pg_proc, pg_class), so a fleet that starts several
-// workers at once races on them and one fails with "tuple concurrently updated". A
-// transaction-scoped advisory lock serializes the block — the first worker applies
-// it, the rest wait and then re-apply it idempotently (CREATE OR REPLACE / SET to
-// the same values) with no concurrent catalog write. golang-migrate already guards
-// the migrations the same way; this covers the two statements that run after them.
+// bootstrapPostgres runs the post-migration Postgres-only setup (json_each helper +
+// aggressive autovacuum on process_instances). Both rewrite a system-catalog tuple, so
+// concurrent worker starts race ("tuple concurrently updated"); a transaction-scoped
+// advisory lock serializes the block and the losers re-apply it idempotently.
 func bootstrapPostgres(sqldb *sql.DB) error {
 	ctx := context.Background()
 	tx, err := sqldb.BeginTx(ctx, nil)
@@ -209,20 +193,16 @@ func bootstrapPostgres(sqldb *sql.DB) error {
 	return nil
 }
 
-// Close stops the audit-log flusher (writing out any buffered rows) and closes the
-// underlying connection pool.
+// Close flushes buffered audit-log rows, stops the flusher, and closes the pool.
 func (db *DB) Close() error {
 	close(db.logStop)
 	<-db.logStopped
 	return db.sqldb.Close()
 }
 
-// pageInfo runs the paginator's before/after counts for a page whose boundary key
-// values are first/last (in display order; nil for an empty page) and assembles
-// the PageInfo: the effective sort/order, the (capped) before/after counts, and a
-// cursor for each direction that actually has more rows (Before only when there
-// are rows before, After only when there are rows after — so cursor presence is
-// the has-more signal).
+// pageInfo runs the before/after counts for a page bounded by first/last (display
+// order; nil for an empty page) and assembles PageInfo. A cursor is set only for a
+// direction that has more rows, so cursor presence is the has-more signal.
 func (db *DB) pageInfo(b built, first, last []any) (PageInfo, error) {
 	query, args := b.countQuery(first, last)
 	var before, after int64
@@ -265,8 +245,7 @@ var clockOffset atomic.Int64
 
 func nowMillis() int64 { return time.Now().UnixMilli() + clockOffset.Load() }
 
-// AdvanceClock shifts the DB clock forward by d and returns the new total
-// offset. Testing only.
+// AdvanceClock shifts the DB clock forward by d. Testing only.
 func AdvanceClock(d time.Duration) time.Duration {
 	return time.Duration(clockOffset.Add(d.Milliseconds())) * time.Millisecond
 }

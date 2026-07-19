@@ -52,14 +52,11 @@ const (
 	logBatchRows     = 90
 )
 
-// AppendLog stamps and buffers one audit-trail row. It is best-effort by contract:
-// callers (the engine) must not let a failure here abort an instance advance, and a
-// buffered row may be lost on crash (see migration 008 — an observability gap, never
-// state corruption). A blank entry.ID is filled with a fresh uuid; a zero CreatedAt
-// is stamped with the DB clock. The row is stamped here (not at flush time) so the
-// (created_at, id) sort preserves insertion order; the actual write is batched off
-// the advance's hot path by logFlusher. The buffer is drained by the periodic
-// flusher, by an inline flush once it reaches logBatchRows, and by every log read.
+// AppendLog stamps and buffers one audit-trail row. Best-effort by contract: a failure
+// here must never abort an instance advance, and a buffered row may be lost on crash
+// (migration 008 — an observability gap, never state corruption). The row is stamped
+// here, not at flush time, so the (created_at, id) sort preserves insertion order; the
+// write is batched off the hot path by logFlusher (or inline once it hits logBatchRows).
 func (db *DB) AppendLog(entry *model.LogEntry) error {
 	params, err := buildLogParams(entry)
 	if err != nil {
@@ -75,11 +72,10 @@ func (db *DB) AppendLog(entry *model.LogEntry) error {
 	return nil
 }
 
-// buildLogParams stamps an entry's id/created_at/meta into the row params written to
-// process_logs. A blank id gets a fresh UUIDv7 (time-ordered, monotonic within a
-// millisecond, so the (created_at, id) sort preserves insertion order even when
-// several events of one advance() share a millisecond); a zero CreatedAt gets the DB
-// clock.
+// buildLogParams stamps an entry's id/created_at/meta into the process_logs row params.
+// A blank id gets a fresh UUIDv7 (monotonic within a millisecond, so the (created_at,
+// id) sort preserves insertion order for co-millisecond events); a zero CreatedAt gets
+// the DB clock.
 func buildLogParams(entry *model.LogEntry) (dbgen.InsertLogParams, error) {
 	id := entry.ID
 	if id == "" {
@@ -113,10 +109,9 @@ func buildLogParams(entry *model.LogEntry) (dbgen.InsertLogParams, error) {
 	}, nil
 }
 
-// logFlusher drains the audit-log buffer every logFlushInterval until Close stops
-// it, then performs one final flush. Errors are dropped (best-effort): the buffer is
-// already detached from the failed write, so a transient DB error costs at most the
-// rows in that batch, exactly the loss the schema tolerates.
+// logFlusher drains the audit-log buffer every logFlushInterval until Close stops it,
+// then flushes once more. Errors are dropped (best-effort): a transient DB error costs
+// at most that batch, exactly the loss the schema tolerates.
 func (db *DB) logFlusher() {
 	ticker := time.NewTicker(logFlushInterval)
 	defer ticker.Stop()
@@ -132,8 +127,7 @@ func (db *DB) logFlusher() {
 	}
 }
 
-// flushLogs detaches the current buffer and writes it. It is safe to call from any
-// goroutine (the periodic flusher, an inline overflow flush, or a log read): the
+// flushLogs detaches the current buffer and writes it. Safe from any goroutine: the
 // swap is done under the lock, so each buffered row is written exactly once.
 func (db *DB) flushLogs() error {
 	db.logMu.Lock()
@@ -147,10 +141,9 @@ func (db *DB) flushLogs() error {
 	return db.writeLogBatch(batch)
 }
 
-// writeLogBatch inserts rows in chunks of logBatchRows using a single multi-row
-// INSERT per chunk (one round-trip for up to logBatchRows audit events instead of
-// one per event). It runs through db.exec, so the ? placeholders are rewritten to
-// $N on Postgres.
+// writeLogBatch inserts rows in chunks of logBatchRows, one multi-row INSERT per chunk
+// (one round-trip per chunk instead of per event). Runs through db.exec, so ? is
+// rewritten to $N on Postgres.
 func (db *DB) writeLogBatch(rows []dbgen.InsertLogParams) error {
 	for start := 0; start < len(rows); start += logBatchRows {
 		end := min(start+logBatchRows, len(rows))
@@ -198,8 +191,6 @@ SELECT ` + logColumns + `, st.depth` + treeLogsJoin
 const treeLogsCountInner = logSubtreeCTE + `
 SELECT 1` + treeLogsJoin
 
-// ListLogs returns a page of one instance's audit trail, applying the filters and
-// pagination in opts, plus the navigation metadata.
 func (db *DB) ListLogs(instanceID string, opts LogQuery) ([]*model.LogEntry, PageInfo, error) {
 	db.flushLogs() // make any buffered rows for this instance visible to the read
 	b, err := logPaginator.query(opts.Page).
@@ -215,11 +206,10 @@ func (db *DB) ListLogs(instanceID string, opts LogQuery) ([]*model.LogEntry, Pag
 	}, logCursorVals)
 }
 
-// ListTreeLogs returns a page of every log for the subtree rooted at the given
-// instance (the node itself and all descendants). rootID may be any node. Each
-// entry's Depth is its instance's distance from rootID (rootID = 0), plus the
-// navigation metadata. The CTE prefixes are trusted constants; the filters/cursor
-// and ORDER BY are generated by the shared paginator via buildSource.
+// ListTreeLogs returns a page of every log in the subtree rooted at rootID (any node,
+// itself + all descendants); each entry's Depth is its distance from rootID (0 at the
+// root). The CTE prefixes are trusted constants; filters/cursor/ORDER BY come from the
+// shared paginator via buildSource.
 func (db *DB) ListTreeLogs(rootID string, opts LogQuery) ([]*model.LogEntry, PageInfo, error) {
 	db.flushLogs() // make any buffered rows for the subtree visible to the read
 	b, err := logPaginator.query(opts.Page).
@@ -254,9 +244,8 @@ func scanLogRow(s rowScanner, withDepth bool) (*model.LogEntry, error) {
 	return e, nil
 }
 
-// PruneLogs deletes every log older than the given cutoff (unix millis) and
-// returns how many rows were removed. Buffered rows are flushed first so a row that
-// is already older than the cutoff cannot linger in the buffer past a prune.
+// PruneLogs deletes every log older than before (unix millis), returning the count.
+// Buffered rows are flushed first so an already-old row can't linger past a prune.
 func (db *DB) PruneLogs(before int64) (int64, error) {
 	db.flushLogs()
 	return db.q.DeleteLogsBefore(context.Background(), before)

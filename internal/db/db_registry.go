@@ -149,8 +149,6 @@ func definitionCursorVals(sort string, vd VersionedDef) []any {
 	return []any{vd.Def.Name, int64(vd.Version)}
 }
 
-// ListDefinitions returns a page of registered definitions, sorted and paged per
-// req, plus the navigation metadata.
 func (db *DB) ListDefinitions(req PageReq) ([]VersionedDef, PageInfo, error) {
 	b, err := definitionPaginator.query(req).build()
 	if err != nil {
@@ -325,8 +323,6 @@ func channelCursorVals(sort string, r ChannelRow) []any {
 	return []any{r.Channel}
 }
 
-// ListChannels returns a page of the channels defined for a process, sorted and
-// paged per req, plus the navigation metadata.
 func (db *DB) ListChannels(name string, req PageReq) ([]ChannelRow, PageInfo, error) {
 	b, err := channelPaginator.query(req).Eq("name", name).build()
 	if err != nil {

@@ -46,7 +46,6 @@ type pageQuery struct {
 	Before string `query:"before" description:"Cursor from a previous page's page.previous_cursor — fetch the previous page"`
 }
 
-// paginationFrom reads the common sort/cursor query parameters from a request.
 func paginationFrom(r *http.Request) Pagination {
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
@@ -59,7 +58,6 @@ func paginationFrom(r *http.Request) Pagination {
 	}
 }
 
-// envelope builds an Envelope from an HTTP request using the action's fromHTTP func.
 func (a actionDef) envelope(r *http.Request) (Envelope, error) {
 	if a.fromHTTP != nil {
 		return a.fromHTTP(r)
@@ -75,8 +73,6 @@ func (a actionDef) envelope(r *http.Request) (Envelope, error) {
 	return Envelope{Action: a.Name, Payload: payload, ID: r.PathValue("id")}, nil
 }
 
-// schemaPtr adapts a built schema value to the pointer fields on model structs
-// (nil pointer = field absent).
 func schemaPtr(s schema.Schema) *schema.Schema { return &s }
 
 // registry is the authoritative list of all actions.

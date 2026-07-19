@@ -51,7 +51,6 @@ func (t *SchemaType) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Contains reports whether t includes the given type string.
 func (t SchemaType) Contains(s string) bool {
 	for _, v := range t {
 		if v == s {
@@ -143,8 +142,8 @@ type Raw struct {
 	n *node
 }
 
-// Parse parses a JSON-encoded schema into an unnormalized Raw, enforcing the strict
-// keyword allowlist. Call Normalize on the result to obtain an operable Schema.
+// Parse parses a JSON-encoded schema into an unnormalized Raw (strict keyword
+// allowlist). Call Normalize on the result to obtain an operable Schema.
 func Parse(data []byte) (Raw, error) {
 	var n node
 	if err := json.Unmarshal(data, &n); err != nil {
@@ -171,10 +170,9 @@ func (r Raw) Normalize() (Schema, error) {
 	return Schema{out}, nil
 }
 
-// AssumeNormalized wraps the parsed document as a Schema without normalizing it.
-// It is an escape hatch for input that is known to already be in normalized form
-// (defs only at the root) — e.g. a schema this package itself marshaled earlier.
-// Prefer Normalize when in doubt; it is idempotent.
+// AssumeNormalized wraps the parsed document as a Schema without normalizing it — an
+// escape hatch for input known to already be normalized (defs only at the root), e.g. a
+// schema this package marshaled earlier. Prefer Normalize when in doubt; it is idempotent.
 func (r Raw) AssumeNormalized() Schema {
 	if r.n == nil {
 		return Schema{&node{}}
@@ -281,10 +279,9 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// JSONSchemaBytes returns a permissive JSON Schema for OpenAPI reflection.
-// The actual keyword restrictions are enforced at parse/unmarshal time, not at
-// the spec level — keeping the API surface broad so callers can write schemas
-// in standard JSON Schema syntax without TypeScript type errors.
+// JSONSchemaBytes returns a permissive JSON Schema for OpenAPI reflection: keyword
+// restrictions are enforced at parse/unmarshal time, not at the spec level, keeping the
+// API surface broad enough to accept standard JSON Schema syntax.
 func (Schema) JSONSchemaBytes() ([]byte, error) {
 	return []byte(`{"type":"object","additionalProperties":true}`), nil
 }
@@ -306,10 +303,9 @@ func (s Schema) AsMap() map[string]any {
 	return m
 }
 
-// IsZero reports whether s is the zero Schema — `var s Schema`, no underlying
-// document ("no schema declared"), as opposed to IsNull (the schema {type:"null"}).
-// The name is the stdlib IsZero convention for value types, and is also the hook
-// encoding/json's `omitzero` tag option calls to drop absent value fields.
+// IsZero reports whether s is the zero Schema (no underlying document, "no schema
+// declared"), as opposed to IsNull (the schema {type:"null"}). It is also the hook
+// encoding/json's `omitzero` calls to drop absent value fields.
 func (s Schema) IsZero() bool {
 	return s.n == nil
 }
@@ -322,9 +318,7 @@ func (s Schema) Normalize() (Schema, error) {
 }
 
 // CheckDoc reports whether the schema is structurally well-formed in the supported
-// subset: every $ref resolves against the root $defs, combinator and property
-// entries are non-nil, paired numeric/length/item bounds are ordered, and declared
-// defaults validate against their schema.
+// subset (see checkDocRoot).
 func (s Schema) CheckDoc() error {
 	return checkDocRoot(s.n)
 }
@@ -339,10 +333,9 @@ func (s Schema) rootDefs() map[string]*node {
 
 // ─── Navigation ─────────────────────────────────────────────────────────────────
 
-// At navigates a dot-path (e.g. "user.issues[0].value") and returns the
-// subschema for the value at that path as a Schema carrying the same root
-// $defs, so the result stays navigable/validatable. For the type of a full
-// expression rather than a plain sub-path, see Infer.
+// At navigates a dot-path (e.g. "user.issues[0].value") and returns the subschema at
+// that path, carrying the same root $defs so it stays navigable/validatable. For the
+// type of a full expression rather than a plain sub-path, see Infer.
 func (s Schema) At(path string) (Schema, error) {
 	return s.subSchema(navigate(s.n, s.rootDefs(), path))
 }
@@ -360,9 +353,8 @@ func (s Schema) Index() (Schema, error) {
 	return s.subSchema(inferIndex(s.n, s.rootDefs()))
 }
 
-// subSchema wraps a one-step navigation result as a Schema whose node is the type
-// at the path and whose $defs are carried from the parent, so the sub-schema
-// resolves $refs against the same root. It threads the navigation error through.
+// subSchema wraps a one-step navigation result as a Schema carrying the parent's $defs,
+// so it resolves $refs against the same root, threading the navigation error through.
 func (s Schema) subSchema(n *node, err error) (Schema, error) {
 	if err != nil {
 		return Schema{}, err

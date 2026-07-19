@@ -6,15 +6,11 @@ import (
 	"strings"
 )
 
-// CheckDoc reports whether node is a well-formed schema document in the supported
-// subset: every $ref resolves against the root $defs, combinator and property
-// entries are non-nil, any paired numeric/length/item bounds are ordered, every
-// declared default validates against the schema it is attached to, and every
-// definition cycle is productive (see checkProductivity).
-//
-// Keyword validity is already guaranteed by node's strict UnmarshalJSON, so
-// CheckDoc only catches the structural errors that survive parsing — chiefly an
-// unresolvable $ref. It replaces the previous gojsonschema.NewSchema compile step.
+// checkDocRoot reports whether nd is well-formed in the supported subset: every $ref
+// resolves, combinator/property entries are non-nil, paired numeric/length/item bounds
+// are ordered, declared defaults validate, and every definition cycle is productive.
+// Keyword validity is already guaranteed by strict UnmarshalJSON, so this only catches
+// structural errors that survive parsing — chiefly an unresolvable $ref.
 func checkDocRoot(nd *node) error {
 	if nd == nil {
 		return nil
@@ -25,14 +21,12 @@ func checkDocRoot(nd *node) error {
 	return checkProductivity(nd.Defs)
 }
 
-// checkProductivity rejects definition cycles with no structural progress. A
-// $ref that occurs in a definition's body outside any properties/items subtree
-// (at the root, or reachable only through oneOf/anyOf/allOf) is a "bare" edge:
-// following it consumes no value depth. A cycle made entirely of bare edges —
-// e.g. x = oneOf[$ref x, …] — is degenerate: a validator walking it would spin
-// on the spot, and as an inferred type it denotes a recursion with no base
-// case. Recursion is legal exactly when every cycle passes through properties
-// or items, so each unrolling consumes one level of the (finite) value.
+// checkProductivity rejects definition cycles with no structural progress. A $ref
+// outside any properties/items subtree (at the root, or only through oneOf/anyOf/allOf)
+// is a "bare" edge that consumes no value depth; a cycle made entirely of bare edges
+// (e.g. x = oneOf[$ref x, …]) is a recursion with no base case. Recursion is legal
+// exactly when every cycle passes through properties or items, consuming one level of
+// the finite value per unrolling.
 func checkProductivity(defs map[string]*node) error {
 	if len(defs) == 0 {
 		return nil
@@ -90,10 +84,9 @@ func checkProductivity(defs map[string]*node) error {
 	return nil
 }
 
-// collectBareRefs gathers the $defs names referenced from nd without passing
-// through properties or items. Union variants keep the value at the same depth,
-// so they are walked; properties/items subtrees consume value depth, so any ref
-// below them is productive and skipped.
+// collectBareRefs gathers the $defs names referenced from nd without passing through
+// properties or items. Union variants keep the value at the same depth, so they are
+// walked; a ref below properties/items is productive and skipped.
 func collectBareRefs(nd *node, out map[string]struct{}) {
 	if nd == nil {
 		return
