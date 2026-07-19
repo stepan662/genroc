@@ -2,22 +2,15 @@
 name: order-pipeline
 
 input_schema:
-  $ref: "#/$defs/map"
+  $ref: "#/$defs/input"
 tasks:
   - id: parallel
-    output: "{{ 10 }}"
+    output: "{{ map(input, num => { num: num }) }}"
     switch: end
-output: "{{ 10 / 3 }}"
+output: "{{ outputs.parallel }}"
 
 $defs:
   input: 
     type: array
     items:
       type: integer
-  map:
-    type: object
-    properties:
-      first:
-        type: number
-    additionalProperties:
-      type: string
