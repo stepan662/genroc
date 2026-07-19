@@ -1,0 +1,254 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"time"
+
+	"genroc/internal/db"
+	"genroc/internal/idgen"
+	"genroc/internal/model"
+	"genroc/internal/validation"
+)
+
+func (h *Handlers) startInstance(raw json.RawMessage) Reply {
+	req, err := decodeBody[StartInstanceReq](raw)
+	if err != nil {
+		return errReply(err)
+	}
+	if req.Process == "" {
+		return errReply(fmt.Errorf("process name is required"))
+	}
+
+	version := 0
+	switch {
+	case req.Version != nil:
+		version = *req.Version
+	case req.Channel != nil:
+		v, err := h.db.GetChannel(req.Process, *req.Channel)
+		if err != nil {
+			return errReply(err)
+		}
+		version = v
+	default:
+		v, err := h.resolveDefaultVersion(req.Process)
+		if err != nil {
+			return errReply(err)
+		}
+		version = v
+	}
+
+	def, err := h.db.GetDefinition(req.Process, version)
+	if err != nil {
+		return errReply(err)
+	}
+
+	var input any
+	if req.Input != nil {
+		input = *req.Input
+	}
+
+	input, err = def.ValidateInput(input)
+	if err != nil {
+		return errReply(fmt.Errorf("input validation: %w", err))
+	}
+
+	// Resolve config up front so a missing required var or bad value rejects the
+	// start request rather than producing an instance that fails on first tick.
+	if _, err := def.ResolveConfig(os.LookupEnv); err != nil {
+		return errReply(fmt.Errorf("config: %w", err))
+	}
+
+	inst := &model.ProcessInstance{
+		ID:             idgen.New(),
+		ProcessName:    def.Name,
+		ProcessVersion: version,
+		Task:           def.Tasks[0].ID,
+		ContextData:    map[string]any{"input": input, "outputs": map[string]any{}, "error": nil},
+		Status:         model.StatusRunning,
+		CreatedAt:      time.Now(),
+	}
+
+	if err := h.db.SaveInstance(inst); err != nil {
+		return errReply(fmt.Errorf("save instance: %w", err))
+	}
+	if h.engine != nil {
+		h.engine.AuditCreated(inst) // bookend: instance_created with the process input
+		h.engine.NotifyWork()       // start advancing now instead of waiting for the next poll tick
+	}
+
+	return okReply(StartInstanceResp{
+		ID:      inst.ID,
+		Process: inst.ProcessName,
+		Version: inst.ProcessVersion,
+		Status:  inst.Status,
+	})
+}
+
+func (h *Handlers) listInstances(raw json.RawMessage) Reply {
+	req := decodeOptionalBody[ListInstancesReq](raw)
+	instances, info, err := h.db.ListInstances(req.Status, req.page())
+	if err != nil {
+		return errReply(err)
+	}
+	resp := make([]InstanceSummaryResp, len(instances))
+	for i, inst := range instances {
+		resp[i] = instanceSummaryToResp(inst)
+	}
+	return okReply(PageResp[InstanceSummaryResp]{Items: resp, Page: info})
+}
+
+func (h *Handlers) getInstance(id string, resolve bool) Reply {
+	if id == "" {
+		return errReply(fmt.Errorf("id is required"))
+	}
+	inst, err := h.db.GetInstance(id)
+	if err != nil {
+		return errReply(err)
+	}
+	// By default, externalized value-slots are left as {ref, size} references — a
+	// detail read should stay light and not pull large blobs out of the object store.
+	// With resolve=true the caller opts into materializing every slot inline (and then
+	// redacting), the way the full context used to always be returned.
+	if resolve {
+		if err := h.db.HydrateContext(inst); err != nil {
+			return errReply(err)
+		}
+	}
+	resp := instanceToResp(inst)
+	// Redact secret-derived values from the returned context (the DB still holds
+	// them plainly; they are just not exposed over the API).
+	if def, derr := h.db.GetDefinition(inst.ProcessName, inst.ProcessVersion); derr == nil {
+		if sf, gerr := validation.Generate(def); gerr == nil {
+			resp.Context = orderedContext(validation.RedactContext(inst.ContextData, sf))
+		}
+	}
+	return okReply(resp)
+}
+
+func (h *Handlers) cancelInstance(id string) Reply {
+	if id == "" {
+		return errReply(fmt.Errorf("id is required"))
+	}
+	if err := h.db.CancelProcess(context.Background(), id); err != nil {
+		return errReply(err)
+	}
+	return okReply(map[string]any{"cancelled": true})
+}
+
+func (h *Handlers) retryInstance(id string, raw json.RawMessage) Reply {
+	if id == "" {
+		return errReply(fmt.Errorf("id is required"))
+	}
+	req := decodeOptionalBody[RetryInstanceReq](raw)
+	if err := h.db.RetryProcess(context.Background(), id, req.Force); err != nil {
+		return errReply(err)
+	}
+	return okReply(map[string]any{"retried": true})
+}
+
+func (h *Handlers) tick(raw json.RawMessage) Reply {
+	if h.engine == nil {
+		return errReply(fmt.Errorf("engine not available"))
+	}
+	if !h.engine.ManualTick() {
+		return errReply(fmt.Errorf("tick is only available in manual mode; start the server with --poll 0"))
+	}
+	req := decodeOptionalBody[TickReq](raw)
+	if req.AdvanceMs < 0 {
+		return errReply(fmt.Errorf("advance_ms must not be negative"))
+	}
+	if req.AdvanceMs > 0 {
+		db.AdvanceClock(time.Duration(req.AdvanceMs) * time.Millisecond)
+	}
+	n, err := h.engine.Tick(context.Background())
+	if err != nil {
+		return errReply(err)
+	}
+	return okReply(map[string]any{"count": n})
+}
+
+func instanceToResp(inst *model.ProcessInstance) InstanceStatusResp {
+	return InstanceStatusResp{
+		InstanceSummaryResp: InstanceSummaryResp{
+			ID:         inst.ID,
+			Process:    inst.ProcessName,
+			Version:    inst.ProcessVersion,
+			Status:     inst.Status,
+			WaitState:  inst.WaitState,
+			RetryCount: inst.RetryCount,
+			Error:      inst.Error,
+			CreatedAt:  inst.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:  inst.UpdatedAt.Format(time.RFC3339),
+		},
+		Context: orderedContext(inst.ContextData),
+	}
+}
+
+func instanceSummaryToResp(s *model.InstanceSummary) InstanceSummaryResp {
+	return InstanceSummaryResp{
+		ID:         s.ID,
+		Process:    s.ProcessName,
+		Version:    s.ProcessVersion,
+		Status:     s.Status,
+		WaitState:  s.WaitState,
+		RetryCount: s.RetryCount,
+		Error:      s.Error,
+		CreatedAt:  s.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:  s.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
+// orderedContext returns a copy of contextData with outputs serialized in task
+// completion order (tracked by "output_order"), hiding the order key itself.
+func orderedContext(ctxData map[string]any) map[string]any {
+	result := make(map[string]any, len(ctxData))
+	for k, v := range ctxData {
+		if k != "output_order" {
+			result[k] = v
+		}
+	}
+
+	outputs, _ := ctxData["outputs"].(map[string]any)
+	if len(outputs) == 0 {
+		return result
+	}
+
+	var order []string
+	switch v := ctxData["output_order"].(type) {
+	case []string:
+		order = v
+	case []interface{}:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				order = append(order, s)
+			}
+		}
+	}
+
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	first := true
+	for _, key := range order {
+		val, ok := outputs[key]
+		if !ok {
+			continue
+		}
+		if !first {
+			buf.WriteByte(',')
+		}
+		keyBytes, _ := json.Marshal(key)
+		valBytes, _ := json.Marshal(val)
+		buf.Write(keyBytes)
+		buf.WriteByte(':')
+		buf.Write(valBytes)
+		first = false
+	}
+	buf.WriteByte('}')
+
+	result["outputs"] = json.RawMessage(buf.Bytes())
+	return result
+}

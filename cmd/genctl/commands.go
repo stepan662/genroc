@@ -1,0 +1,844 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"text/tabwriter"
+
+	"genroc/internal/logview"
+
+	"gopkg.in/yaml.v3"
+)
+
+func runApplyCmd(server string, args []string) {
+	fs := flag.NewFlagSet("apply", flag.ExitOnError)
+	var files multiFlag
+	fs.Var(&files, "f", "definition file (YAML or JSON); repeat for multiple files")
+	serverFlag := addServerFlag(fs, server)
+	channelFlag := fs.String("channel", "latest", "channel to apply definitions to")
+	autoUpdateFlag := fs.Bool("auto-update-parents", false, "auto-update parent processes on the same channel")
+	fs.Parse(args)
+
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "genctl: -f is required")
+		os.Exit(1)
+	}
+
+	defs, err := loadDefs(files)
+	if err != nil {
+		fatal("%v", err)
+	}
+
+	body := map[string]any{
+		"channel":             *channelFlag,
+		"auto_update_parents": *autoUpdateFlag,
+		"definitions":         defs,
+	}
+
+	var resp []struct {
+		Name    string `json:"name"`
+		Version int    `json:"version"`
+		Saved   bool   `json:"saved"`
+	}
+	if err := call(*serverFlag+"/definitions/batch", http.MethodPut, body, &resp); err != nil {
+		fatal("%v", err)
+	}
+	for _, r := range resp {
+		status := "saved"
+		if !r.Saved {
+			status = "unchanged"
+		}
+		fmt.Printf("%s: %s@v%d\n", status, r.Name, r.Version)
+	}
+}
+
+func runValidateCmd(server string, args []string) {
+	fs := flag.NewFlagSet("validate", flag.ExitOnError)
+	var files multiFlag
+	fs.Var(&files, "f", "definition file (YAML or JSON); repeat for multiple files")
+	serverFlag := addServerFlag(fs, server)
+	fs.Parse(args)
+
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "genctl: -f is required")
+		os.Exit(1)
+	}
+
+	defs, err := loadDefs(files)
+	if err != nil {
+		fatal("%v", err)
+	}
+
+	var raw json.RawMessage
+	if err := call(*serverFlag+"/definitions/validate", http.MethodPost, defs, &raw); err != nil {
+		fatal("%v", err)
+	}
+	var buf bytes.Buffer
+	json.Indent(&buf, raw, "", "  ")
+	os.Stdout.Write(buf.Bytes())
+	os.Stdout.Write([]byte("\n"))
+}
+
+func runChannelCmd(server string, args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: genctl channel <list|set|delete> ...")
+		os.Exit(1)
+	}
+
+	fs := flag.NewFlagSet("channel", flag.ExitOnError)
+	serverFlag := addServerFlag(fs, server)
+	fs.Parse(args[1:])
+	rest := fs.Args()
+
+	sub := args[0]
+	switch sub {
+	case "list":
+		if len(rest) < 1 {
+			fatal("usage: genctl channel list <process>")
+		}
+		type channelRow struct {
+			Channel string `json:"channel"`
+			Version int    `json:"version"`
+		}
+		listURL := *serverFlag + "/channels?name=" + url.QueryEscape(rest[0])
+		resp, err := listAll[channelRow](listURL)
+		if err != nil {
+			fatal("%v", err)
+		}
+		for _, e := range resp {
+			fmt.Printf("%s -> v%d\n", e.Channel, e.Version)
+		}
+
+	case "set":
+		if len(rest) < 3 {
+			fatal("usage: genctl channel set <process> <channel> <version>")
+		}
+		v, err := strconv.Atoi(rest[2])
+		if err != nil || v < 1 {
+			fatal("version must be a positive integer")
+		}
+		if err := call(*serverFlag+"/channels", http.MethodPut,
+			map[string]any{"name": rest[0], "channel": rest[1], "version": v}, nil); err != nil {
+			fatal("%v", err)
+		}
+		fmt.Printf("set: %s@%s -> v%d\n", rest[0], rest[1], v)
+
+	case "delete":
+		if len(rest) < 2 {
+			fatal("usage: genctl channel delete <process> <channel>")
+		}
+		if err := call(*serverFlag+"/channels", http.MethodDelete,
+			map[string]any{"name": rest[0], "channel": rest[1]}, nil); err != nil {
+			fatal("%v", err)
+		}
+		fmt.Printf("deleted: %s@%s\n", rest[0], rest[1])
+
+	default:
+		fatal("unknown channel subcommand %q", sub)
+	}
+}
+
+func runPromoteCmd(server string, args []string) {
+	fs := flag.NewFlagSet("promote", flag.ExitOnError)
+	serverFlag := addServerFlag(fs, server)
+	fromFlag := fs.String("from", "", "source channel")
+	toFlag := fs.String("to", "", "target channel")
+	processFlag := fs.String("process", "", "limit to this process and its dependency subtree (optional)")
+	fs.Parse(args)
+
+	if *fromFlag == "" || *toFlag == "" {
+		fatal("--from and --to are required")
+	}
+
+	body := map[string]any{"from": *fromFlag, "to": *toFlag}
+	if *processFlag != "" {
+		body["process"] = *processFlag
+	}
+
+	var resp struct {
+		From     string           `json:"from"`
+		To       string           `json:"to"`
+		Promoted []map[string]any `json:"promoted"`
+	}
+	if err := call(*serverFlag+"/channels/promote", http.MethodPost, body, &resp); err != nil {
+		fatal("%v", err)
+	}
+	for _, p := range resp.Promoted {
+		fmt.Printf("promoted: %v@v%v -> %s\n", p["name"], p["version"], resp.To)
+	}
+}
+
+func runStatusCmd(server string, args []string) {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	serverFlag := addServerFlag(fs, server)
+	channelFlag := fs.String("channel", "latest", "channel to inspect")
+	fs.Parse(args)
+
+	var resp []struct {
+		Name      string `json:"name"`
+		Version   int    `json:"version"`
+		StaleRefs []struct {
+			TaskID         string `json:"task_id"`
+			ChildName      string `json:"child_name"`
+			BakedVersion   int    `json:"baked_version"`
+			ChannelVersion int    `json:"channel_version"`
+		} `json:"stale_refs"`
+	}
+	if err := call(*serverFlag+"/channels/status", http.MethodPost,
+		map[string]any{"channel": *channelFlag}, &resp); err != nil {
+		fatal("%v", err)
+	}
+
+	allClean := true
+	for _, item := range resp {
+		if len(item.StaleRefs) == 0 {
+			continue
+		}
+		allClean = false
+		fmt.Printf("STALE  %s@v%d\n", item.Name, item.Version)
+		for _, ref := range item.StaleRefs {
+			fmt.Printf("  task %q: %s baked@v%d, channel@v%d\n",
+				ref.TaskID, ref.ChildName, ref.BakedVersion, ref.ChannelVersion)
+		}
+	}
+	if allClean {
+		fmt.Printf("channel %q is coherent\n", *channelFlag)
+	}
+}
+
+// runRunCmd starts a new process instance. The process name is the first
+// argument; flags follow it (e.g. `genctl run greeter --set name=Sam`). Input is
+// assembled from --input (a JSON/YAML literal, or - for stdin) or -f (a file path),
+// plus any number of --set key=value overrides; see buildInput.
+func runRunCmd(server string, args []string) {
+	if len(args) == 0 {
+		fatal("usage: genctl run <process> [--channel C | --version N] [--input <json|-> | -f file] [--set k=v ...] [-q]")
+	}
+	process := args[0]
+
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	serverFlag := addServerFlag(fs, server)
+	channelFlag := fs.String("channel", "", "resolve the version via this channel")
+	versionFlag := fs.Int("version", 0, "pin an explicit process version")
+	inputFlag := fs.String("input", "", "input as a JSON/YAML literal, or - for stdin")
+	fileFlag := fs.String("f", "", "read input from a file (path)")
+	var sets multiFlag
+	fs.Var(&sets, "set", "set an input field: key=value (repeatable; dotted keys nest, values are type-inferred)")
+	quietFlag := fs.Bool("quiet", false, "print only the new instance id, e.g. id=$(genctl run NAME -q)")
+	fs.BoolVar(quietFlag, "q", false, "shorthand for --quiet")
+	fs.Parse(args[1:])
+
+	input, hasInput, err := buildInput(*inputFlag, *fileFlag, sets)
+	if err != nil {
+		fatal("%v", err)
+	}
+
+	body := map[string]any{"process": process}
+	switch {
+	case *versionFlag > 0:
+		body["version"] = *versionFlag
+	case *channelFlag != "":
+		body["channel"] = *channelFlag
+	}
+	if hasInput {
+		body["input"] = input
+	}
+
+	var resp struct {
+		ID      string `json:"id"`
+		Process string `json:"process"`
+		Version int    `json:"version"`
+		Status  string `json:"status"`
+	}
+	if err := call(*serverFlag+"/instances", http.MethodPost, body, &resp); err != nil {
+		// Surface an input-schema mismatch as a clear, dedicated message instead of
+		// the generic "server: ..." wrapper.
+		if detail, ok := inputValidationError(err); ok {
+			fatal("input is not valid for %s:\n  %s", process, detail)
+		}
+		fatal("%v", err)
+	}
+	// Record the id so a follow-up command can resolve @last (or a bare-id default)
+	// without copy-pasting. Best-effort: an unwritable state dir must not fail run.
+	if err := saveLastInstance(resp.ID); err != nil {
+		fmt.Fprintf(os.Stderr, "genctl: warning: could not record last instance id: %v\n", err)
+	}
+	// -q prints just the id so it composes: id=$(genctl run NAME -q).
+	if *quietFlag {
+		fmt.Println(resp.ID)
+		return
+	}
+	fmt.Printf("started: %s  %s@v%d  (%s)\n", resp.ID, resp.Process, resp.Version, resp.Status)
+}
+
+// runResolveCmd submits a result for a task parked on an external action, resuming its
+// process. The task's resolve token (from the external-task queue, GET /external-tasks)
+// is the first argument; the result payload is assembled from --result (a JSON/YAML
+// literal, or - for stdin) or -f (a file path), plus any number of --set key=value
+// overrides — exactly like run assembles its input.
+func runResolveCmd(server string, args []string) {
+	if len(args) == 0 {
+		fatal("usage: genctl resolve <token> [--result <json|-> | -f file] [--set k=v ...] [-q]")
+	}
+	token := args[0]
+
+	fs := flag.NewFlagSet("resolve", flag.ExitOnError)
+	serverFlag := addServerFlag(fs, server)
+	resultFlag := fs.String("result", "", "result as a JSON/YAML literal, or - for stdin")
+	fileFlag := fs.String("f", "", "read result from a file (path)")
+	var sets multiFlag
+	fs.Var(&sets, "set", "set a result field: key=value (repeatable; dotted keys nest, values are type-inferred)")
+	quietFlag := fs.Bool("quiet", false, "on success print nothing (exit 0); by default prints a confirmation line")
+	fs.BoolVar(quietFlag, "q", false, "shorthand for --quiet")
+	fs.Parse(args[1:])
+
+	// A missing --result/-f/--set means an empty result: valid for a task with no
+	// result_schema, and rejected by the server otherwise (surfaced below).
+	result, _, err := buildInput(*resultFlag, *fileFlag, sets)
+	if err != nil {
+		fatal("%v", err)
+	}
+
+	body := map[string]any{"token": token, "result": result}
+
+	var resp struct {
+		Resolved bool `json:"resolved"`
+	}
+	if err := call(*serverFlag+"/external-tasks/resolve", http.MethodPost, body, &resp); err != nil {
+		// Surface a result-schema mismatch as a clear, dedicated message instead of the
+		// generic "server: ..." wrapper (mirrors run's input-validation handling).
+		if detail, ok := resultValidationError(err); ok {
+			fatal("result is not valid for this task:\n  %s", detail)
+		}
+		fatal("%v", err)
+	}
+	if *quietFlag {
+		return
+	}
+	fmt.Printf("resolved: %s\n", token)
+}
+
+// runSignalCmd delivers a result to a named external task of an instance, addressed by
+// instance id (accepts @last) + --task, rather than by a queue token like resolve. If the
+// task is armed now the signal resolves it immediately; otherwise the server buffers it
+// FIFO until the task next arms. The result is assembled from --result (a JSON/YAML
+// literal, or - for stdin) or -f (a file path), plus any --set key=value overrides.
+func runSignalCmd(server string, args []string) {
+	fs := flag.NewFlagSet("signal", flag.ExitOnError)
+	serverFlag := addServerFlag(fs, server)
+	taskFlag := fs.String("task", "", "the external task id to signal")
+	resultFlag := fs.String("result", "", "result as a JSON/YAML literal, or - for stdin")
+	fileFlag := fs.String("f", "", "read result from a file (path)")
+	var sets multiFlag
+	fs.Var(&sets, "set", "set a result field: key=value (repeatable; dotted keys nest, values are type-inferred)")
+	quietFlag := fs.Bool("quiet", false, "on success print nothing (exit 0); by default prints a confirmation line")
+	fs.BoolVar(quietFlag, "q", false, "shorthand for --quiet")
+	// The instance id is the sole positional (before or after flags); resolves @last.
+	id := instanceIDAndFlags(fs, args)
+
+	if *taskFlag == "" {
+		fatal("usage: genctl signal <instance-id> --task <task-id> [--result <json|-> | -f file] [--set k=v ...] [-q]")
+	}
+
+	result, _, err := buildInput(*resultFlag, *fileFlag, sets)
+	if err != nil {
+		fatal("%v", err)
+	}
+
+	body := map[string]any{"task_id": *taskFlag, "result": result}
+
+	var resp struct {
+		Delivered bool `json:"delivered"`
+		Buffered  bool `json:"buffered"`
+	}
+	if err := call(*serverFlag+"/instances/"+url.PathEscape(id)+"/signal", http.MethodPost, body, &resp); err != nil {
+		// Surface a result-schema mismatch as a dedicated message (mirrors resolve/run).
+		if detail, ok := resultValidationError(err); ok {
+			fatal("result is not valid for task %q:\n  %s", *taskFlag, detail)
+		}
+		fatal("%v", err)
+	}
+	if *quietFlag {
+		return
+	}
+	state := "delivered"
+	if resp.Buffered {
+		state = "buffered"
+	}
+	fmt.Printf("signaled: %s  task=%s  (%s)\n", id, *taskFlag, state)
+}
+
+// runGetCmd prints a single instance's details, including its full context. The
+// instance id is the first argument; pass --json for the raw response.
+func runGetCmd(server string, args []string) {
+	fs := flag.NewFlagSet("get", flag.ExitOnError)
+	serverFlag := addServerFlag(fs, server)
+	jsonFlag := fs.Bool("json", false, "print the raw JSON response")
+	resolveFlag := fs.Bool("resolve", false, "resolve externalized context values inline instead of {ref, size} references")
+	id := instanceIDAndFlags(fs, args)
+
+	u := *serverFlag + "/instances/" + url.PathEscape(id)
+	if *resolveFlag {
+		u += "?resolve=true"
+	}
+	if *jsonFlag {
+		var raw json.RawMessage
+		if err := callGet(u, &raw); err != nil {
+			fatal("%v", err)
+		}
+		var buf bytes.Buffer
+		json.Indent(&buf, raw, "", "  ")
+		os.Stdout.Write(buf.Bytes())
+		os.Stdout.Write([]byte("\n"))
+		return
+	}
+
+	var inst struct {
+		ID         string         `json:"id"`
+		Process    string         `json:"process"`
+		Version    int            `json:"version"`
+		Status     string         `json:"status"`
+		WaitState  string         `json:"wait_state"`
+		RetryCount int            `json:"retry_count"`
+		Error      string         `json:"error"`
+		CreatedAt  string         `json:"created_at"`
+		UpdatedAt  string         `json:"updated_at"`
+		Context    map[string]any `json:"context"`
+	}
+	if err := callGet(u, &inst); err != nil {
+		fatal("%v", err)
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(w, "ID:\t%s\n", inst.ID)
+	fmt.Fprintf(w, "Process:\t%s@v%d\n", inst.Process, inst.Version)
+	fmt.Fprintf(w, "Status:\t%s\n", inst.Status)
+	if inst.WaitState != "" {
+		fmt.Fprintf(w, "Wait:\t%s\n", inst.WaitState)
+	}
+	if inst.RetryCount > 0 {
+		fmt.Fprintf(w, "Retries:\t%d\n", inst.RetryCount)
+	}
+	fmt.Fprintf(w, "Created:\t%s\n", longTime(inst.CreatedAt))
+	fmt.Fprintf(w, "Updated:\t%s\n", longTime(inst.UpdatedAt))
+	if inst.Error != "" {
+		fmt.Fprintf(w, "Error:\t%s\n", inst.Error)
+	}
+	w.Flush()
+
+	if len(inst.Context) > 0 {
+		fmt.Println("\nContext:")
+		b, _ := json.MarshalIndent(inst.Context, "", "  ")
+		os.Stdout.Write(b)
+		os.Stdout.Write([]byte("\n"))
+	}
+}
+
+func runInstancesCmd(server string, args []string) {
+	fs := flag.NewFlagSet("instances", flag.ExitOnError)
+	serverFlag := addServerFlag(fs, server)
+	statusFlag := fs.String("status", "", "filter by status (running, completed, failing, failed, cancelling, cancelled)")
+	sortFlag := fs.String("sort", "created", "sort key: created (newest first) or updated (most recently active)")
+	limitFlag := fs.Int("limit", 20, "max instances to show (server caps a page at 100; use --all for more)")
+	allFlag := fs.Bool("all", false, "list every instance (follow all pages)")
+	jsonFlag := fs.Bool("json", false, "print the raw items as a JSON array (honors --limit/--all)")
+	fs.Parse(args)
+
+	q := url.Values{}
+	if *statusFlag != "" {
+		q.Set("status", *statusFlag)
+	}
+	q.Set("sort", *sortFlag)
+	q.Set("order", "desc")
+	if !*allFlag {
+		q.Set("limit", strconv.Itoa(*limitFlag))
+	}
+	u := *serverFlag + "/instances?" + q.Encode()
+
+	if *jsonFlag {
+		printListJSON(u, *allFlag)
+		return
+	}
+
+	type instanceRow struct {
+		ID        string `json:"id"`
+		Process   string `json:"process"`
+		Version   int    `json:"version"`
+		Status    string `json:"status"`
+		Error     string `json:"error"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+	}
+
+	var rows []instanceRow
+	var err error
+	if *allFlag {
+		rows, err = listAll[instanceRow](u)
+	} else {
+		var p page[instanceRow]
+		if err = callGet(u, &p); err == nil {
+			rows = p.Items
+		}
+	}
+	if err != nil {
+		fatal("%v", err)
+	}
+	if len(rows) == 0 {
+		fmt.Println("no instances")
+		return
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tSTATUS\tPROCESS\tUPDATED\tCREATED\tERROR")
+	for _, r := range rows {
+		errMsg := r.Error
+		if len(errMsg) > 50 {
+			errMsg = errMsg[:47] + "..."
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s@v%d\t%s\t%s\t%s\n",
+			r.ID, r.Status, r.Process, r.Version,
+			shortTime(r.UpdatedAt), shortTime(r.CreatedAt), errMsg)
+	}
+	w.Flush()
+}
+
+func runExternalTasksCmd(server string, args []string) {
+	fs := flag.NewFlagSet("external-tasks", flag.ExitOnError)
+	serverFlag := addServerFlag(fs, server)
+	processFlag := fs.String("process", "", "filter by process name")
+	versionFlag := fs.Int("version", 0, "filter by process version (0 = any)")
+	taskFlag := fs.String("task", "", "filter by task id")
+	limitFlag := fs.Int("limit", 20, "max tasks to show (server caps a page at 100; use --all for more)")
+	allFlag := fs.Bool("all", false, "list every waiting task (follow all pages)")
+	jsonFlag := fs.Bool("json", false, "print the raw items as a JSON array (includes each task's input and result_schema)")
+	fs.Parse(args)
+
+	q := url.Values{}
+	if *processFlag != "" {
+		q.Set("process", *processFlag)
+	}
+	if *versionFlag != 0 {
+		q.Set("version", strconv.Itoa(*versionFlag))
+	}
+	if *taskFlag != "" {
+		q.Set("task", *taskFlag)
+	}
+	if !*allFlag {
+		q.Set("limit", strconv.Itoa(*limitFlag))
+	}
+	u := *serverFlag + "/external-tasks"
+	if enc := q.Encode(); enc != "" {
+		u += "?" + enc
+	}
+
+	if *jsonFlag {
+		printListJSON(u, *allFlag)
+		return
+	}
+
+	// The queue never exposes process context, so these fields mirror ExternalTaskResp.
+	// The table shows only the addressable columns; --json carries input + result_schema.
+	type taskRow struct {
+		Token        string `json:"token"`
+		Process      string `json:"process"`
+		Version      int    `json:"version"`
+		TaskID       string `json:"task_id"`
+		WaitingSince string `json:"waiting_since"`
+	}
+
+	var rows []taskRow
+	var err error
+	if *allFlag {
+		rows, err = listAll[taskRow](u)
+	} else {
+		var p page[taskRow]
+		if err = callGet(u, &p); err == nil {
+			rows = p.Items
+		}
+	}
+	if err != nil {
+		fatal("%v", err)
+	}
+
+	if len(rows) == 0 {
+		fmt.Println("no external tasks waiting")
+		return
+	}
+
+	// TOKEN goes last (it is long) and is what you pass to `genctl resolve`; use --json
+	// to inspect each task's input and result_schema.
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "WAITING\tPROCESS\tTASK\tTOKEN")
+	for _, r := range rows {
+		fmt.Fprintf(w, "%s\t%s@v%d\t%s\t%s\n",
+			shortTime(r.WaitingSince), r.Process, r.Version, r.TaskID, r.Token)
+	}
+	w.Flush()
+}
+
+func runLogsCmd(server string, args []string) {
+	fs := flag.NewFlagSet("logs", flag.ExitOnError)
+	serverFlag := addServerFlag(fs, server)
+	levelFlag := fs.String("level", "", "filter by level (debug, info, warn, error); empty = all")
+	sinceFlag := fs.Int64("since", 0, "only logs at/after this unix-millis timestamp")
+	limitFlag := fs.Int("limit", 200, "max entries to return")
+	recursiveFlag := fs.Bool("recursive", false, "include the whole process subtree (root instance id)")
+	resolveFlag := fs.Bool("resolve", false, "inline full externalized payloads instead of a preview + reference")
+	modeFlag := fs.String("mode", "detail", "output: basic (no data body), detail (+ data), or json (one JSON object per line, untruncated)")
+	id := instanceIDAndFlags(fs, args)
+	mode, err := logview.ParseMode(*modeFlag)
+	if err != nil {
+		fatal("%v", err)
+	}
+
+	q := url.Values{}
+	if *levelFlag != "" {
+		q.Set("level", *levelFlag)
+	}
+	if *sinceFlag > 0 {
+		q.Set("since", strconv.FormatInt(*sinceFlag, 10))
+	}
+	if *limitFlag > 0 {
+		q.Set("limit", strconv.Itoa(*limitFlag))
+	}
+	if *recursiveFlag {
+		q.Set("recursive", "true")
+	}
+	if *resolveFlag {
+		q.Set("resolve", "true")
+	}
+	u := *serverFlag + "/instances/" + url.PathEscape(id) + "/logs"
+	if enc := q.Encode(); enc != "" {
+		u += "?" + enc
+	}
+
+	// json mode dumps each entry as the server's JSON, one per line (JSONL):
+	// everything, untruncated, pipe-friendly (jq).
+	if mode == logview.ModeJSON {
+		var raw struct {
+			Items []json.RawMessage `json:"items"`
+		}
+		if err := callGet(u, &raw); err != nil {
+			fatal("%v", err)
+		}
+		for _, it := range raw.Items {
+			os.Stdout.Write(it)
+			os.Stdout.Write([]byte("\n"))
+		}
+		return
+	}
+
+	type logDataRef struct {
+		Ref  string `json:"ref"`
+		Size int64  `json:"size"`
+	}
+	type logRow struct {
+		Time     string         `json:"time"`
+		Instance string         `json:"instance"`
+		Level    string         `json:"level"`
+		Event    string         `json:"event"`
+		Task     string         `json:"task"`
+		Message  string         `json:"message"`
+		Code     string         `json:"code"`
+		Data     string         `json:"data"`
+		DataRef  *logDataRef    `json:"data_ref"`
+		Meta     map[string]any `json:"meta"`
+	}
+	// A single page, bounded by --limit (the server caps it at 1000). Unlike
+	// instances/channels we don't follow next_cursor here: --limit is a deliberate
+	// cap on how much trail to print.
+	var resp page[logRow]
+	if err := callGet(u, &resp); err != nil {
+		fatal("%v", err)
+	}
+	if len(resp.Items) == 0 {
+		return
+	}
+
+	// Render via the shared logview column layout — the same one the server console
+	// uses, so a row reads identically in either place. The CLI adds a header (it has
+	// the whole page) and shows the ID column only with --recursive (a single-instance view
+	// repeats one id). The data body is shown only in detail mode.
+	fmt.Println(logview.Header(*recursiveFlag))
+	for _, l := range resp.Items {
+		t, _ := parseTime(l.Time)
+		// An externalized payload comes back as a bare {ref, size} reference with no
+		// inline body — show the reference itself in the body's place (rendered raw via
+		// the leading "{"). Pass --resolve to fetch and inline the full value instead.
+		data := l.Data
+		if data == "" && l.DataRef != nil {
+			if b, err := json.Marshal(l.DataRef); err == nil {
+				data = string(b)
+			}
+		}
+		rec := logview.Record{Event: l.Event, Task: l.Task, Msg: l.Message, Code: l.Code, Data: data, Meta: l.Meta}
+		idTag := ""
+		if *recursiveFlag {
+			idTag = shortID(l.Instance)
+		}
+		fmt.Println(logview.RenderEvent(t, l.Level, idTag, l.Event, l.Task, rec.Detail(mode), *recursiveFlag))
+	}
+}
+
+// inputValidationError extracts the detail of a server-side input-schema rejection
+// ("input validation: <detail>") so run can present it as its own message.
+func inputValidationError(err error) (string, bool) {
+	return serverErrorDetail(err, "input validation: ")
+}
+
+// resultValidationError extracts the detail of a server-side external-task result
+// rejection ("result validation: <detail>") so resolve can present it as its own message.
+func resultValidationError(err error) (string, bool) {
+	return serverErrorDetail(err, "result validation: ")
+}
+
+// serverErrorDetail returns the part of err's message after marker, if present.
+func serverErrorDetail(err error, marker string) (string, bool) {
+	s := err.Error()
+	if i := strings.Index(s, marker); i >= 0 {
+		return s[i+len(marker):], true
+	}
+	return "", false
+}
+
+func runCancelCmd(server string, args []string) {
+	fs := flag.NewFlagSet("cancel", flag.ExitOnError)
+	serverFlag := addServerFlag(fs, server)
+	id := instanceIDAndFlags(fs, args)
+
+	if err := call(*serverFlag+"/instances/"+url.PathEscape(id)+"/cancel", http.MethodPost, nil, nil); err != nil {
+		fatal("%v", err)
+	}
+	fmt.Printf("cancelled: %s\n", id)
+}
+
+func runRetryCmd(server string, args []string) {
+	fs := flag.NewFlagSet("retry", flag.ExitOnError)
+	serverFlag := addServerFlag(fs, server)
+	forceFlag := fs.Bool("force", false, "override only_once retry protection")
+	id := instanceIDAndFlags(fs, args)
+
+	u := *serverFlag + "/instances/" + url.PathEscape(id) + "/retry"
+	if *forceFlag {
+		u += "?force=true"
+	}
+	if err := call(u, http.MethodPost, nil, nil); err != nil {
+		fatal("%v", err)
+	}
+	fmt.Printf("retried: %s\n", id)
+}
+
+// runLastCmd prints the most recently started instance id (recorded by `run`), so
+// it can be spliced into other commands, e.g. `genctl logs $(genctl last)`.
+func runLastCmd(args []string) {
+	fmt.Println(resolveInstanceID("@last"))
+}
+
+// loadDefs reads all files and returns a slice of raw definition objects.
+func loadDefs(files []string) ([]any, error) {
+	var all []any
+	for _, path := range files {
+		docs, err := readFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		all = append(all, docs...)
+	}
+	if len(all) == 0 {
+		return nil, fmt.Errorf("no process definitions found in provided files")
+	}
+	return all, nil
+}
+
+func readFile(path string) ([]any, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == ".json" {
+		var doc any
+		if err := json.Unmarshal(data, &doc); err != nil {
+			return nil, fmt.Errorf("parse JSON: %w", err)
+		}
+		if arr, ok := doc.([]any); ok {
+			return arr, nil
+		}
+		return []any{doc}, nil
+	}
+
+	var docs []any
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	for {
+		var doc any
+		if err := dec.Decode(&doc); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("parse YAML: %w", err)
+		}
+		if doc == nil {
+			continue
+		}
+		jsonBytes, err := json.Marshal(doc)
+		if err != nil {
+			return nil, fmt.Errorf("convert YAML to JSON: %w", err)
+		}
+		var jsonDoc any
+		json.Unmarshal(jsonBytes, &jsonDoc)
+		docs = append(docs, jsonDoc)
+	}
+	return docs, nil
+}
+
+func runConfigCmd(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "Usage: genctl config get <key>")
+		fmt.Fprintln(os.Stderr, "       genctl config set <key> <value>")
+		os.Exit(1)
+	}
+	sub, key := args[0], args[1]
+	switch sub {
+	case "get":
+		cfg := loadConfig()
+		switch key {
+		case "server":
+			if cfg.Server == "" {
+				fmt.Println("(not set)")
+			} else {
+				fmt.Println(cfg.Server)
+			}
+		default:
+			fatal("unknown config key %q", key)
+		}
+	case "set":
+		if len(args) < 3 {
+			fatal("usage: genctl config set <key> <value>")
+		}
+		val := args[2]
+		cfg := loadConfig()
+		switch key {
+		case "server":
+			cfg.Server = val
+		default:
+			fatal("unknown config key %q", key)
+		}
+		if err := saveConfig(cfg); err != nil {
+			fatal("save config: %v", err)
+		}
+		path, _ := configFilePath()
+		fmt.Printf("set server = %s  (%s)\n", val, path)
+	default:
+		fatal("unknown config subcommand %q", sub)
+	}
+}

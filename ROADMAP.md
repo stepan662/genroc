@@ -1,7 +1,7 @@
 # Planned improvements
 
 ## CLI
-- [] commands mirroring the API capabilities
+- [x] commands mirroring the API capabilities
 - [x] yaml support
 - [x] config file with the url to the server
 - [] test with different auth types + add helpers for genctl
@@ -16,6 +16,8 @@
 - [x] pagination
 - [x] filtering
 - [x] env variables
+- [] map function
+- [] think about action extensivity/passability from parent
 
 # docs
 
