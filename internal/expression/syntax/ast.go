@@ -32,10 +32,15 @@ package syntax
 type Node interface{ isNode() }
 
 type (
-	// IntNode is an integer literal. Kept distinct from FloatNode because
-	// inference reports "integer" and "number" as different types.
-	IntNode   struct{ Value int }
-	FloatNode struct{ Value float64 }
+	// IntNode is an integer literal, carrying its exact decimal text rather than a
+	// Go int. A literal has to be as precise as the data path — an id past int64
+	// is an ordinary value here, and parsing into an int rejected it while the
+	// identical value arriving as data was exact. Radix prefixes and digit
+	// separators are normalised away at parse time, so Text is always a valid JSON
+	// number. Kept distinct from FloatNode because inference reports "integer" and
+	// "number" as different types.
+	IntNode   struct{ Text string }
+	FloatNode struct{ Text string }
 	// StringNode holds the already-unescaped value.
 	StringNode struct{ Value string }
 	BoolNode   struct{ Value bool }

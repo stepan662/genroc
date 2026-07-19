@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"genroc/internal/numeric"
 	"io"
 	"net/http"
 	"net/url"
@@ -31,7 +32,10 @@ func callGet(url string, out any) error {
 		return fmt.Errorf("server: %s", errResp.Error)
 	}
 	if out != nil {
-		return json.Unmarshal(raw, out)
+		// Exact literals: a plain Unmarshal would round a large id back through
+		// float64 purely for display, making the CLI disagree with the value the
+		// server actually holds.
+		return numeric.Decode(raw, out)
 	}
 	return nil
 }
@@ -129,7 +133,10 @@ func call(url, method string, body any, out any) error {
 		return fmt.Errorf("server: %s", errResp.Error)
 	}
 	if out != nil {
-		return json.Unmarshal(raw, out)
+		// Exact literals: a plain Unmarshal would round a large id back through
+		// float64 purely for display, making the CLI disagree with the value the
+		// server actually holds.
+		return numeric.Decode(raw, out)
 	}
 	return nil
 }

@@ -352,13 +352,17 @@ func jsonTypeName(data any) string {
 
 // cloneJSON deep-copies a JSON value so a schema default can be handed out
 // without sharing mutable state with the schema.
+// cloneJSON deep-copies a value so a filled default is never aliased into two
+// documents. The decode preserves exact numeric literals — a plain Unmarshal here
+// would undo the exactness the schema decode just established, silently rounding
+// a large default back to float64.
 func cloneJSON(v any) any {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return v
 	}
 	var out any
-	if err := json.Unmarshal(b, &out); err != nil {
+	if err := numeric.Decode(b, &out); err != nil {
 		return v
 	}
 	return out

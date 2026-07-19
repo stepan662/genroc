@@ -1,6 +1,7 @@
 package schematest
 
 import (
+	"genroc/internal/numeric"
 	"reflect"
 	"testing"
 )
@@ -62,7 +63,8 @@ func TestValidateAtSubpathResolvesRootDefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ValidateAt input: %v", err)
 	}
-	if gotIn.(map[string]any)["retries"] != float64(3) {
+	// Compare numerically: a filled default carries its exact literal, not a float64.
+	if !numeric.Equal(gotIn.(map[string]any)["retries"], 3) {
 		t.Errorf("expected default retries=3, got %v", gotIn)
 	}
 }
@@ -114,7 +116,7 @@ func TestRedactAndCollectSecretsWholeContext(t *testing.T) {
 		t.Errorf("Redact input wrong: %v", in)
 	}
 	charge := red["outputs"].(map[string]any)["charge"].(map[string]any)
-	if charge["token"] != "***" || charge["amount"] != float64(10) {
+	if charge["token"] != "***" || !numeric.Equal(charge["amount"], 10) {
 		t.Errorf("Redact charge wrong: %v", charge)
 	}
 }

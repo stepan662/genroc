@@ -23,14 +23,14 @@ func TestEdgeRadixPrefixedIntegers(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
-		want int
+		want string
 	}{
-		{"hex", `0x1F`, 31},
-		{"hex_uppercase_prefix", `0X1f`, 31}, // uppercase prefix must take the same branch
-		{"hex_digit_e", `0xE`, 14},           // 'e' inside a hex literal is a digit, not an exponent
-		{"binary", `0b1010`, 10},             // 0b/0o are lexed by expr-lang and must survive
-		{"octal", `0o17`, 15},
-		{"octal_uppercase_prefix", `0O17`, 15},
+		{"hex", `0x1F`, "31"},
+		{"hex_uppercase_prefix", `0X1f`, "31"}, // uppercase prefix must take the same branch
+		{"hex_digit_e", `0xE`, "14"},           // 'e' inside a hex literal is a digit, not an exponent
+		{"binary", `0b1010`, "10"},             // 0b/0o are lexed by expr-lang and must survive
+		{"octal", `0o17`, "15"},
+		{"octal_uppercase_prefix", `0O17`, "15"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { assertIntLiteral(t, c.in, c.want) })
@@ -39,9 +39,9 @@ func TestEdgeRadixPrefixedIntegers(t *testing.T) {
 
 // Digit separators are stripped before conversion, in both branches.
 func TestEdgeDigitSeparators(t *testing.T) {
-	t.Run("thousands", func(t *testing.T) { assertIntLiteral(t, `1_000`, 1000) })
-	t.Run("millions", func(t *testing.T) { assertIntLiteral(t, `1_000_000`, 1000000) })
-	t.Run("in_float", func(t *testing.T) { assertFloatLiteral(t, `1_000.5`, 1000.5) })
+	t.Run("thousands", func(t *testing.T) { assertIntLiteral(t, `1_000`, "1000") })
+	t.Run("millions", func(t *testing.T) { assertIntLiteral(t, `1_000_000`, "1000000") })
+	t.Run("in_float", func(t *testing.T) { assertFloatLiteral(t, `1_000.5`, "1000.5") })
 }
 
 // An exponent makes the literal a float even when the value is integral — this
@@ -50,12 +50,12 @@ func TestEdgeExponentMakesFloat(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
-		want float64
+		want string
 	}{
-		{"lowercase_e", `1e3`, 1000},
-		{"uppercase_e", `1E3`, 1000},
-		{"negative_exponent", `1.5e-2`, 0.015},
-		{"explicit_plus_exponent", `2e+3`, 2000},
+		{"lowercase_e", `1e3`, "1000"},
+		{"uppercase_e", `1E3`, "1000"},
+		{"negative_exponent", `1.5e-2`, "0.015"},
+		{"explicit_plus_exponent", `2e+3`, "2000"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { assertFloatLiteral(t, c.in, c.want) })
@@ -69,37 +69,52 @@ func TestEdgeDecimalPointMakesFloat(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
-		want float64
+		want string
 	}{
-		{"leading_dot", `.5`, 0.5},
-		{"trailing_dot", `1.`, 1},
-		{"integral_value", `3.0`, 3},
+		{"leading_dot", `.5`, "0.5"},   // normalised: ".5" is not valid JSON
+		{"trailing_dot", `1.`, "1"},    // likewise "1."
+		{"integral_value", `3.0`, "3"}, // still a FloatNode, so it types as "number"
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { assertFloatLiteral(t, c.in, c.want) })
 	}
 }
 
-// The int64 boundary is representable; one past it is the error case below.
+// Literals are arbitrary precision, so int64 is not a boundary at all. It used
+// to be: a literal one past int64 was rejected while the identical value arriving
+// as data was exact, which made the language inconsistent with its own pipeline.
 func TestEdgeMaxInt64Literal(t *testing.T) {
-	assertIntLiteral(t, `9223372036854775807`, 9223372036854775807)
+	assertIntLiteral(t, `9223372036854775807`, "9223372036854775807")
 }
 
-// A literal the machine cannot represent must come back as an ordinary parse
-// error. strconv reports these as errors rather than panicking, but the parser
-// has to check: ignoring the error would silently store a clamped value.
-func TestEdgeNumberLiteralOutOfRange(t *testing.T) {
-	cases := []parseCase{
-		{"int64_max_plus_one", `9223372036854775808`, "out of range"},
-		{"far_past_int64", `99999999999999999999999`, "out of range"},
-		{"fits_uint64_not_int64", `0xFFFFFFFFFFFFFFFF`, "out of range"},
-		{"float64_overflow", `1e400`, `invalid number`},
-		{"index_path_converts_too", `a[9223372036854775808]`, "invalid index"},
-		{"nested_in_array_literal", `[9223372036854775808]`, "out of range"},
+func TestEdgeLiteralPastInt64IsExact(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"int64_max_plus_one", `9223372036854775808`, "9223372036854775808"},
+		{"far_past_int64", `99999999999999999999999`, "99999999999999999999999"},
+		{"beyond_float64", `9007199254740993`, "9007199254740993"},
+		{"fits_uint64_not_int64", `0xFFFFFFFFFFFFFFFF`, "18446744073709551615"},
 	}
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) { assertParseError(t, c.in, c.want) })
+		t.Run(c.name, func(t *testing.T) { assertIntLiteral(t, c.in, c.want) })
 	}
+}
+
+// The same value nested inside a literal must survive too — the array element
+// goes through the same number path.
+func TestEdgeLiteralPastInt64InsideArray(t *testing.T) {
+	assertParses(t, `[9223372036854775808]`, `[9223372036854775808]`)
+}
+
+// An index is the one place a Go int is genuinely required, since it indexes a
+// slice; there the range check stays.
+func TestEdgeIndexPastInt64Rejected(t *testing.T) {
+	assertParseError(t, `a[9223372036854775808]`, "invalid index")
+}
+
+// A magnitude no decimal can hold is still an ordinary parse error rather than a
+// silently clamped or non-finite value.
+func TestEdgeNumberLiteralOverflow(t *testing.T) {
+	assertParseError(t, `1e1000000000`, `invalid number`)
 }
 
 // Regression: a zero-padded decimal is base 10, not octal. This test found a

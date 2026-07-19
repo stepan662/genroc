@@ -90,6 +90,55 @@ rather than each carrying their own rules — the same reasoning that keeps
   decimal text. It marshals as a bare JSON number and round-trips through storage
   without ever passing through float64. Trailing zeros left by the division
   precision are trimmed (`6/3` computes as `2.000…000`, presents as `2`).
+- **Four precision policies, no single global one.** Stated authoritatively in
+  the `internal/numeric` package doc; summarised here.
+
+  | | policy |
+  |---|---|
+  | literals | exact, unbounded — normalised to exact decimal text at parse time |
+  | `+ - *` | exact, unlimited precision |
+  | `/` | rounds at 34 significant digits (decimal128) — the only rounding point |
+  | `%` | sized to the operands, floored at the division precision |
+
+  `+ - *` never round, so they are exact. Within a *single expression* growth is
+  linear — result length is bounded by the operands and there is no exponentiation
+  operator (`**` and `^` are rejected) — measured at 200 → 400 → 600 → 800 digits.
+
+  **Across loop iterations it is exponential**, which the linear-growth reasoning
+  above originally missed. A looping task feeds its own output back as
+  `self.previous`, so an output like
+  `{{ (self.previous.n ?? input.n) * (self.previous.n ?? input.n) }}` doubles the
+  digit count every tick: a 54-digit id reaches ~55,000 digits in ten iterations.
+  Unbounded, that ran until apd's own exponent limit tripped with `exponent out of
+  range` — *after* the value had been materialised and externalised to the object
+  store (observed at 54,382 bytes), with a message that explained nothing.
+
+  `numeric.MaxDigits` (1000) now bounds both arithmetic results and literals.
+  Nothing is rounded to fit it: exceeding it is an error naming the cause. 1000 is
+  far past any legitimate payload — a monetary amount needs ~20 digits, a 256-bit
+  hash rendered as decimal 78 — and it trips at iteration 4 rather than 10, before
+  any object-store churn.
+
+  A **single global cap** governing all four was considered and rejected: applied
+  to `+ - *` it would silently round arithmetic on a value longer than the cap, so
+  an id past 34 digits would quietly lose its tail — the exact corruption class
+  this work removed. Applied to literals it would truncate them at parse time,
+  reintroducing the literal/data asymmetry.
+
+  The division precision is a **constant rather than a setting** for a separate
+  reason: genroc retries tasks and re-runs children, so a precision that varied
+  between runs — or between two workers mid-deploy — would make the same
+  expression yield different values on replay. If it ever must vary, it belongs
+  on the versioned definition, not on the server.
+
+  `%` needs its own sizing because `Rem` computes through an integer quotient:
+  sharing the fixed 34-digit context made it fail outright with "division
+  impossible" on any operand longer than that, which large ids reach. Precision 0
+  is not an option either — apd refuses `Rem` without a finite precision, even for
+  `10.5 % 3`.
+
+  Literals are bounded by the same `MaxDigits`, so a definition cannot carry an
+  arbitrarily long number either.
 - **Comparison, enum and bounds** all compare exactly. `enumContains` gained a
   value-based numeric check: enum entries decode from the schema as float64 while
   data now arrives as its literal, so a byte comparison would have silently
@@ -100,6 +149,75 @@ the runtime representation. One consequence is that `%` is now gated statically
 rather than dynamically — `7 % 2.0` is rejected by inference because `2.0` types
 as `number`, while evaluation accepts it because 2.0 is a whole number. The
 runtime being the more permissive of the two is the safe direction.
+
+### The CLI was the last lossy hop
+
+The engine preserved exact literals end to end while `genctl` still corrupted
+them, in both directions:
+
+- **Upload.** `gopkg.in/yaml.v3` decodes a number too large for int64 into a
+  `float64`, tagging it `!!float`. A 54-digit id written as a schema default was
+  therefore sent to the server as `1.2374829758395876e+53` — destroyed by the
+  client before the request left the machine, with the server faithfully storing
+  what it was given. Fixed by decoding into a `yaml.Node` and walking it
+  (`cmd/genctl/yamlnum.go`), since the node tree still carries the original text.
+  The same walker serves `--set` and stdin input.
+- **Display.** Responses were decoded with a plain `json.Unmarshal`, so `genctl
+  get` rendered a large id through float64 even when the server held it exactly —
+  making the CLI disagree with the stored value.
+
+- **`--set`.** A third path, and the one the first fix missed: `--set k=v` does
+  not go through the YAML walker at all. Each value was coerced by `inferScalar`
+  via `ParseInt` then `ParseFloat`, so anything past int64 fell to the float
+  branch and was rounded. It now keeps the literal when the value is valid JSON
+  number syntax, and falls through to a string otherwise.
+
+A YAML spelling JSON cannot express (`0x1F`, `0o17`, `007`) falls back to yaml's
+own decoding, since a `json.Number` holding it would not marshal.
+
+Covered end to end in `tests/cli/genctl_precision_test.ts`, which drives the
+compiled binary through apply → run → get and asserts on raw stdout — parsing it
+would be self-defeating, since JavaScript numbers are float64 too. The fixture
+YAML is written as raw text for the same reason: the shared `writeDefs` helper
+builds YAML from JS objects and would round the values before genctl saw them.
+
+The lesson generalises: exactness is a property of the whole path, not of the
+engine. Every hop that decodes into an `interface{}` is a place to lose it.
+
+### Schema documents carry numbers too
+
+`default` and `enum` are `any`-typed, so they decoded through float64 while
+runtime data did not — a schema could disagree with the values it describes.
+Three separate decode sites had to change: `node.UnmarshalJSON`, `deepClone`
+(schema cloning) and `cloneJSON` (used every time a default is filled). Missing
+any one of them silently undid the others.
+
+The enum case was the worst of the three, because an enum is a whitelist rather
+than a value: declared for `9007199254740993`, it **rejected that value and
+admitted `9007199254740992` instead**. Not a rounding artefact — a permission
+check keyed on the wrong id.
+
+`minimum`/`maximum` remain `*float64`, so a bound is only as precise as float64
+allows; what is now guaranteed is that a value is compared *exactly* against it
+rather than rounded first. No realistic hand-written bound reaches 17 significant
+digits, so this is a documented limit rather than an open bug.
+
+### Literals match the data path
+
+`IntNode`/`FloatNode` carry the literal's exact text rather than a Go
+`int`/`float64`, so writing a value into an expression and receiving it as data
+are equally precise. They used to disagree: a literal past int64 was rejected
+outright while the identical value arriving as data was exact.
+
+The text is normalised at parse time, which is what makes it safe to emit as
+JSON — a radix prefix (`0x1F` → `31`) and the lexer's bare forms (`.5` → `0.5`,
+`1.` → `1`) are all valid input but none is valid JSON. The literal's *spelling*
+still decides its static type: a fraction or exponent makes it a `number`,
+everything else an `integer`. The value is exact either way, so that only
+affects which type inference reports.
+
+Array indices keep the old int range check — an index genuinely has to fit in a
+Go `int` because it indexes a slice.
 
 ## Original plan
 

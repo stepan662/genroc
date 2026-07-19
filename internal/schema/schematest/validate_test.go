@@ -2,6 +2,7 @@ package schematest
 
 import (
 	"encoding/json"
+	"genroc/internal/numeric"
 	"reflect"
 	"testing"
 
@@ -9,10 +10,14 @@ import (
 )
 
 // mustData unmarshals a JSON string into an `any` for use as validator input.
+// It decodes the way runtime data actually does (numbers kept as their exact
+// literal), so fixtures and expectations share the representation production
+// uses — otherwise reflect.DeepEqual compares float64 against json.Number and
+// reports a mismatch between two identical values.
 func mustData(t *testing.T, s string) any {
 	t.Helper()
 	var v any
-	if err := json.Unmarshal([]byte(s), &v); err != nil {
+	if err := numeric.Decode([]byte(s), &v); err != nil {
 		t.Fatalf("bad test JSON %q: %v", s, err)
 	}
 	return v
@@ -209,7 +214,7 @@ func TestValidateDefaultIsCloned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := second.(map[string]any)["xs"].([]any)[0]; !reflect.DeepEqual(got, float64(1)) {
+	if got := second.(map[string]any)["xs"].([]any)[0]; !numeric.Equal(got, 1) {
 		t.Errorf("default leaked between calls: second call sees %v, want 1", got)
 	}
 }

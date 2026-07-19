@@ -40,14 +40,45 @@ var binaryOps = map[string]func(left, right any) (any, error){
 // and monetary amounts, and float64 silently corrupts both: 0.1+0.2 != 0.3, and
 // integers lose precision above 2^53.
 //
-// exactCtx has unlimited precision, which is safe for + - * because their result
-// length is bounded by the operands. It must never be used for division, where an
-// unlimited precision would try to produce infinitely many digits; divCtx caps
-// that at decimal128's 34 significant digits with the spec's default rounding.
+// divisionPrecision is the only place arithmetic rounds: 34 significant digits,
+// IEEE 754-2008 decimal128. The full rationale — why there is no single global
+// precision, and why this one is a constant rather than a setting — is in the
+// numeric package doc, which is the one place that policy is stated.
+const divisionPrecision = 34
+
+// modGuardDigits pads the context Rem is given. Rem computes through an integer
+// quotient, so it needs room for the quotient's digits — at a fixed 34 it failed
+// outright ("division impossible") on operands longer than that, which large ids
+// reach. See modContextFor.
+const modGuardDigits = 4
+
+// exactCtx never rounds, so + - * are exact. Within a single expression growth is
+// linear — result length is bounded by the operands and there is no
+// exponentiation operator — but a looping task re-feeds its own output, which
+// makes repeated multiplication exponential across iterations; numeric.MaxDigits
+// is the bound that catches that (see decimalResult). exactCtx must never be used
+// for division, where an unlimited precision would try to produce infinitely many
+// digits.
 var (
 	exactCtx = apd.BaseContext.WithPrecision(0)
-	divCtx   = apd.BaseContext.WithPrecision(34)
+	divCtx   = apd.BaseContext.WithPrecision(divisionPrecision)
 )
+
+// modContextFor sizes a context to the operands of %. Unlike division, a remainder
+// is always smaller than the divisor, so there is nothing to round — the precision
+// only has to be large enough to carry the intermediate quotient. Precision 0 does
+// not work here: apd refuses Rem outright without a finite precision.
+func modContextFor(x, y *apd.Decimal) *apd.Context {
+	digits := x.NumDigits()
+	if d := y.NumDigits(); d > digits {
+		digits = d
+	}
+	precision := uint32(digits) + modGuardDigits
+	if precision < divisionPrecision {
+		precision = divisionPrecision
+	}
+	return apd.BaseContext.WithPrecision(precision)
+}
 
 func bothDecimal(l, r any) (*apd.Decimal, *apd.Decimal, bool) {
 	x, xok := numeric.ToDecimal(l)
@@ -59,6 +90,15 @@ func bothDecimal(l, r any) (*apd.Decimal, *apd.Decimal, bool) {
 // language's canonical numeric value: it marshals as a bare JSON number and
 // round-trips through storage without ever touching float64.
 func decimalResult(d *apd.Decimal) (any, error) {
+	// A looping task feeds its own output back, so `x * x` doubles the digit count
+	// every tick. Without this bound the growth runs until apd's exponent limit
+	// trips at ~55,000 digits with "exponent out of range" — after the value has
+	// been materialised and pushed to the object store, and with a message that
+	// says nothing about what happened.
+	if numeric.ExceedsMaxDigits(d) {
+		return nil, fmt.Errorf("number has %d digits, over the %d-digit limit; a task that multiplies its own previous output grows exponentially across iterations",
+			d.NumDigits(), numeric.MaxDigits)
+	}
 	n, ok := numeric.Format(d)
 	if !ok {
 		return nil, fmt.Errorf("arithmetic produced a non-finite result (%s)", d.String())
@@ -186,7 +226,7 @@ func evalMod(l, r any) (any, error) {
 		return nil, fmt.Errorf("modulo by zero")
 	}
 	out := new(apd.Decimal)
-	if _, err := divCtx.Rem(out, x, y); err != nil {
+	if _, err := modContextFor(x, y).Rem(out, x, y); err != nil {
 		return nil, fmt.Errorf("%%: %w", err)
 	}
 	return decimalResult(out)

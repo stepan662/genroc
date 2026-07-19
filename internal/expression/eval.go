@@ -16,6 +16,7 @@
 package expression
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"genroc/internal/expression/syntax"
@@ -73,9 +74,11 @@ func (e env) lookup(name string) (any, bool) {
 func evalNode(node syntax.Node, e env) (any, error) {
 	switch n := node.(type) {
 	case *syntax.IntNode:
-		return n.Value, nil
+		// Literals are carried as their exact text, the same representation
+		// decoded data uses, so a literal past int64 is an ordinary value.
+		return json.Number(n.Text), nil
 	case *syntax.FloatNode:
-		return n.Value, nil
+		return json.Number(n.Text), nil
 	case *syntax.StringNode:
 		return n.Value, nil
 	case *syntax.BoolNode:

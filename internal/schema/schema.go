@@ -24,6 +24,7 @@ package schema
 import (
 	"encoding/json"
 	"fmt"
+	"genroc/internal/numeric"
 )
 
 // SchemaType holds one or more JSON Schema type strings.
@@ -128,8 +129,13 @@ func (n *node) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("additionalProperties must be a schema object; the boolean form is not supported")
 		}
 	}
+	// Decode with numbers preserved as their exact literal. `default` and `enum`
+	// are `any`-typed, so a plain Unmarshal collapses them to float64 — which
+	// corrupted a default past 2^53, and inverted an enum: a whitelist declared
+	// for 9007199254740993 rejected that value and admitted its neighbour instead.
+	// Typed fields such as minimum/maximum are unaffected by UseNumber.
 	type alias node
-	return json.Unmarshal(data, (*alias)(n))
+	return numeric.Decode(data, (*alias)(n))
 }
 
 // ─── Raw: the unnormalized document ─────────────────────────────────────────────
@@ -373,10 +379,12 @@ func deepClone(n *node) (*node, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Use alias to avoid the strict UnmarshalJSON on a round-trip of already-valid data.
+	// Use alias to avoid the strict UnmarshalJSON on a round-trip of already-valid
+	// data. The decode still has to preserve exact literals, or cloning a schema
+	// would quietly round its defaults and enum entries back through float64.
 	type alias node
 	var a alias
-	if err := json.Unmarshal(b, &a); err != nil {
+	if err := numeric.Decode(b, &a); err != nil {
 		return nil, err
 	}
 	result := node(a)

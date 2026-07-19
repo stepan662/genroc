@@ -26,9 +26,12 @@ func TestInferScalar(t *testing.T) {
 		{"true", true},
 		{"false", false},
 		{"null", nil},
-		{"3", int64(3)},
-		{"-7", int64(-7)},
-		{"1.5", 1.5},
+		// Numbers keep their literal rather than converting through int64/float64,
+		// so a value past either range survives; see TestSetScalar* in
+		// yamlnum_test.go.
+		{"3", json.Number("3")},
+		{"-7", json.Number("-7")},
+		{"1.5", json.Number("1.5")},
 		{"hello", "hello"},
 		{"007abc", "007abc"},
 		{"", ""},

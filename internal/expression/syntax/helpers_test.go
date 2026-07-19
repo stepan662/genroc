@@ -22,9 +22,9 @@ type parseCase struct{ name, in, want string }
 func dump(n Node) string {
 	switch x := n.(type) {
 	case *IntNode:
-		return fmt.Sprintf("%d", x.Value)
+		return x.Text
 	case *FloatNode:
-		return fmt.Sprintf("%g", x.Value)
+		return x.Text
 	case *StringNode:
 		return fmt.Sprintf("%q", x.Value)
 	case *BoolNode:
@@ -137,27 +137,30 @@ func assertParseError(t *testing.T, src, want string) {
 // reports "integer" and "number" as different types, so the distinction is
 // load-bearing. These helpers assert the node type as well as the value.
 
-func assertIntLiteral(t *testing.T, src string, want int) {
+// assertIntLiteral checks the normalised decimal text of an integer literal.
+// Text rather than a Go int: literals are arbitrary precision, so there is no
+// int to compare against for a value past int64.
+func assertIntLiteral(t *testing.T, src string, want string) {
 	t.Helper()
 	n := parseOK(t, src)
 	x, ok := n.(*IntNode)
 	if !ok {
 		t.Fatalf("Parse(%q): got %T, want *IntNode (dump: %s)", src, n, dump(n))
 	}
-	if x.Value != want {
-		t.Errorf("Parse(%q): IntNode = %d, want %d", src, x.Value, want)
+	if x.Text != want {
+		t.Errorf("Parse(%q): IntNode = %s, want %s", src, x.Text, want)
 	}
 }
 
-func assertFloatLiteral(t *testing.T, src string, want float64) {
+func assertFloatLiteral(t *testing.T, src string, want string) {
 	t.Helper()
 	n := parseOK(t, src)
 	x, ok := n.(*FloatNode)
 	if !ok {
 		t.Fatalf("Parse(%q): got %T, want *FloatNode (dump: %s)", src, n, dump(n))
 	}
-	if x.Value != want {
-		t.Errorf("Parse(%q): FloatNode = %v, want %v", src, x.Value, want)
+	if x.Text != want {
+		t.Errorf("Parse(%q): FloatNode = %s, want %s", src, x.Text, want)
 	}
 }
 

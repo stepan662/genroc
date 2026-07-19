@@ -2,11 +2,15 @@ package syntax
 
 import (
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 
+	"github.com/cockroachdb/apd/v3"
 	"github.com/expr-lang/expr/file"
 	"github.com/expr-lang/expr/parser/lexer"
+
+	"genroc/internal/numeric"
 )
 
 // binaryPrec mirrors expr-lang's precedence for every operator the two share, so
@@ -179,7 +183,7 @@ func (p *parser) parsePostfix(base Node) Node {
 				p.failAt(idx, "an index must be a literal integer; a computed index cannot be type-checked")
 			}
 			p.next()
-			n, err := parseInt(idx.Value)
+			n, err := parseIndex(idx.Value)
 			if err != nil {
 				p.failAt(idx, "invalid index %q", idx.Value)
 			}
@@ -436,18 +440,50 @@ func (p *parser) parseObject() Node {
 }
 
 func numberNode(p *parser, tok lexer.Token) Node {
-	if isIntLiteral(tok.Value) {
-		n, err := parseInt(tok.Value)
-		if err != nil {
-			p.failAt(tok, "integer literal %q is out of range", tok.Value)
-		}
-		return &IntNode{Value: n}
-	}
-	f, err := strconv.ParseFloat(strings.ReplaceAll(tok.Value, "_", ""), 64)
+	text, integral, err := normalizeNumber(tok.Value)
 	if err != nil {
-		p.failAt(tok, "invalid number %q", tok.Value)
+		p.failAt(tok, "%s", err)
 	}
-	return &FloatNode{Value: f}
+	if integral {
+		return &IntNode{Text: text}
+	}
+	return &FloatNode{Text: text}
+}
+
+// normalizeNumber turns a literal into exact decimal text that is also valid JSON
+// number syntax, and reports whether it is integral.
+//
+// There is no size limit: the text is carried through to an arbitrary-precision
+// decimal, so a literal is exactly as precise as the same value arriving as data.
+// Normalisation is what makes the text safe to emit — a radix prefix (0x1F) and
+// the lexer's bare forms (.5, 1.) are all valid input but none is valid JSON.
+func normalizeNumber(lit string) (text string, integral bool, err error) {
+	clean := strings.ReplaceAll(lit, "_", "")
+	if low := strings.ToLower(clean); strings.HasPrefix(low, "0x") || strings.HasPrefix(low, "0b") || strings.HasPrefix(low, "0o") {
+		// Base 0 reads the prefix. Only prefixed literals go through it: for a
+		// plain decimal it would apply C's leading-zero-octal rule, making 017
+		// mean 15 where expr-lang reads 17.
+		n, ok := new(big.Int).SetString(clean, 0)
+		if !ok {
+			return "", false, fmt.Errorf("invalid number %q", lit)
+		}
+		return n.String(), true, nil
+	}
+	d, _, derr := apd.NewFromString(clean)
+	if derr != nil || d.Form != apd.Finite {
+		return "", false, fmt.Errorf("invalid number %q", lit)
+	}
+	if numeric.ExceedsMaxDigits(d) {
+		return "", false, fmt.Errorf("number literal has %d digits, over the %d-digit limit", d.NumDigits(), numeric.MaxDigits)
+	}
+	out, ok := numeric.Format(d)
+	if !ok {
+		return "", false, fmt.Errorf("invalid number %q", lit)
+	}
+	// The literal's spelling decides the static type: a fraction or an exponent
+	// makes it a "number", everything else an "integer". The value is exact either
+	// way, so this is only about which type inference reports.
+	return out.String(), !strings.ContainsAny(strings.ToLower(clean), ".e"), nil
 }
 
 // isIntLiteral reports whether a number literal is integral. Hex and binary
@@ -461,11 +497,11 @@ func isIntLiteral(s string) bool {
 	return !strings.ContainsAny(low, ".e")
 }
 
-// parseInt reads an integer literal. Non-prefixed literals are decimal: base 0
+// parseIndex reads an array index. Unlike a value literal this genuinely must fit
+// in a Go int, since it indexes a slice. Non-prefixed literals are decimal: base 0
 // would apply C's leading-zero-octal rule, making 017 mean 15 and rejecting 08
-// outright, where expr-lang's lexer reads both as plain decimal. A wrong value
-// here is silent, so the bases must match.
-func parseInt(s string) (int, error) {
+// outright, where expr-lang's lexer reads both as plain decimal.
+func parseIndex(s string) (int, error) {
 	clean := strings.ReplaceAll(s, "_", "")
 	base := 10
 	if low := strings.ToLower(clean); strings.HasPrefix(low, "0x") || strings.HasPrefix(low, "0b") || strings.HasPrefix(low, "0o") {

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -77,22 +76,15 @@ func readBase(literal, file string) (any, bool, error) {
 
 // parseRelaxed parses data as YAML — a superset of JSON, so strict JSON works while
 // also allowing the shell-friendly relaxed forms (unquoted keys, single quotes,
-// trailing commas), e.g. {name: Sam, count: 3}. The result is round-tripped through
-// JSON so the value contains only JSON-native types.
+// trailing commas), e.g. {name: Sam, count: 3}. The result contains only
+// JSON-native types, with numeric literals preserved exactly (see yamlToAny) so a
+// long id passed with --set reaches the server as written.
 func parseRelaxed(data []byte) (any, error) {
-	var doc any
-	if err := yaml.Unmarshal(data, &doc); err != nil {
+	var node yaml.Node
+	if err := yaml.Unmarshal(data, &node); err != nil {
 		return nil, err
 	}
-	jsonBytes, err := json.Marshal(doc)
-	if err != nil {
-		return nil, err
-	}
-	var out any
-	if err := json.Unmarshal(jsonBytes, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return yamlToAny(&node)
 }
 
 // applySet applies one "key=value" (or "a.b.c=value") override onto m, inferring
@@ -140,11 +132,14 @@ func inferScalar(s string) any {
 	case "null":
 		return nil
 	}
-	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
-		return i
-	}
-	if f, err := strconv.ParseFloat(s, 64); err == nil {
-		return f
+	// Keep a number as its literal rather than converting through int64/float64:
+	// ParseInt caps at int64 and ParseFloat then rounds, so `--set id=<54 digits>`
+	// was silently sent as 1.2374829758395876e+53. Unmarshalling into a
+	// json.Number accepts exactly JSON's number syntax and nothing else, so any
+	// other word still falls through to a plain string.
+	var num json.Number
+	if err := json.Unmarshal([]byte(s), &num); err == nil {
+		return num
 	}
 	return s
 }

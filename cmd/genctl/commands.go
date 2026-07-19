@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"genroc/internal/numeric"
 	"io"
 	"net/http"
 	"net/url"
@@ -746,7 +747,7 @@ func readFile(path string) ([]any, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	if ext == ".json" {
 		var doc any
-		if err := json.Unmarshal(data, &doc); err != nil {
+		if err := numeric.Decode(data, &doc); err != nil {
 			return nil, fmt.Errorf("parse JSON: %w", err)
 		}
 		if arr, ok := doc.([]any); ok {
@@ -758,23 +759,24 @@ func readFile(path string) ([]any, error) {
 	var docs []any
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	for {
-		var doc any
-		if err := dec.Decode(&doc); err != nil {
+		// Decode into a node rather than an `any`: yaml collapses a number too
+		// large for int64 into a float64, which would corrupt a long id in a
+		// definition before it was ever uploaded. See yamlToAny.
+		var node yaml.Node
+		if err := dec.Decode(&node); err != nil {
 			if err == io.EOF {
 				break
 			}
 			return nil, fmt.Errorf("parse YAML: %w", err)
 		}
+		doc, err := yamlToAny(&node)
+		if err != nil {
+			return nil, fmt.Errorf("parse YAML: %w", err)
+		}
 		if doc == nil {
 			continue
 		}
-		jsonBytes, err := json.Marshal(doc)
-		if err != nil {
-			return nil, fmt.Errorf("convert YAML to JSON: %w", err)
-		}
-		var jsonDoc any
-		json.Unmarshal(jsonBytes, &jsonDoc)
-		docs = append(docs, jsonDoc)
+		docs = append(docs, doc)
 	}
 	return docs, nil
 }
