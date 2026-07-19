@@ -70,12 +70,6 @@ func (e *Engine) runAdvance(ctx context.Context, inst *model.ProcessInstance) er
 	return nil
 }
 
-// advance executes the next task in the instance's queue, returning the outcome to
-// persist (it performs no lease-releasing write itself — runAdvance does).
-// Each task may have a call, a switch, or both.
-// The call runs first; then the switch is evaluated with the call's output
-// available as "self". A matching switch case jumps to the named task; no match
-// advances to the next task in the queue.
 // prepareAdvance runs the once-per-tick setup before the task loop: it loads the
 // definition, resolves config from the environment, locates the instance's current
 // task, handles a lease-takeover reclaim (failing an interrupted only_once task), and
@@ -139,6 +133,11 @@ func (e *Engine) prepareAdvance(inst *model.ProcessInstance) (*model.ProcessDefi
 	return def, idx, nil
 }
 
+// advance executes the next task in the instance's queue, returning the outcome to
+// persist (it performs no lease-releasing write itself — runAdvance does).
+// Each task may have a call, a switch, or both. The call runs first; then the switch
+// is evaluated with the call's output available as "self". A matching switch case
+// jumps to the named task; no match advances to the next task in the queue.
 func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advanceOutcome {
 	if inst.Status == model.StatusFailing {
 		return e.settleFailing(inst)

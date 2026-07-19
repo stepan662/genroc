@@ -224,8 +224,7 @@ type Schema struct {
 }
 
 // fromNode wraps an already-normalized root node as a Schema; its own $defs are
-// the resolution context. A nil node becomes an empty schema. TEMPORARY migration
-// shim — goes away with the SchemaNode alias.
+// the resolution context. A nil node becomes an empty schema.
 func fromNode(n *node) Schema {
 	if n == nil {
 		n = &node{}

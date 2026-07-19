@@ -94,8 +94,8 @@ func canonVariants(vs []*node, kind compositionKind) []*node {
 // "null" — the variants merge into one sorted {type:[...]} array. An allOf is an
 // intersection, so it only unwraps a singleton.
 func collapse(n *node) *node {
-	// Unions (oneOf/anyOf): a singleton unwraps and an all-simple union merges into
-	// a {type:[...]} array; otherwise n already carries the canonical variants.
+	// Unions (oneOf/anyOf) collapse via collapseUnion; otherwise n already carries
+	// its canonical variants.
 	if vs, ok := pureComposition(n, kindOneOf); ok {
 		return collapseUnion(n, vs)
 	}

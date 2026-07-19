@@ -31,9 +31,8 @@ func pgDeadlock(err error) bool {
 //   - FailInstanceAndAncestors locks child first (UpdateInstance has no status filter),
 //     then tries to lock parent — bottom-up.
 //
-// This is the only real deadlock in the codebase; the others tested by barrier tests
-// in deadlock_test.go cannot occur in practice because their WHERE conditions are
-// mutually exclusive.
+// This is the only real deadlock in the codebase; the other lock-ordering pairs cannot
+// occur in practice because their WHERE conditions are mutually exclusive.
 func TestStress_CancelProcess_vs_FailInstanceAndAncestors(t *testing.T) {
 	if sharedPgDB == nil {
 		t.Skip("PostgreSQL not available (set POSTGRES_DSN)")

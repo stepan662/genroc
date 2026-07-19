@@ -6,6 +6,12 @@ Status: agreed and implemented 2026-07-02. The solver lives in
 `schematest/solver_test.go`, `schematest/refcycle_test.go`,
 `validationtest/recursive_structural_test.go`.
 
+> Historical note: the Motivation below names the pre-redesign mechanisms
+> (`inferOutputFixpoint` and `outputorder.go`'s hand-maintained syntactic
+> graph), which no longer exist. The current joint fixpoint is `solveCluster`
+> in `solver.go`, bounded by `maxSolvePasses` (pass cap) and `maxSolvedTypeBytes`
+> (the 64KB widening cap).
+
 ## Motivation
 
 Output-map type inference has two mechanisms that this design unifies and

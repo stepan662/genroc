@@ -101,9 +101,6 @@ func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInsta
 	return nil, stop(advanceOutcome{kind: outcomeNoop})
 }
 
-// buildMapChildren resolves definitions, evaluates inputs, and constructs
-// ProcessInstances for all keyed (child_map) children. Does not persist anything; a
-// non-nil outcome means the parent failed and the caller should stop and persist it.
 // resolveChildVersion picks the version to spawn a child at. A non-zero declared
 // version is used as-is. Otherwise a self-reference (same process name) inherits the
 // parent's version; a cross-process reference resolves the version pinned for this task
@@ -151,6 +148,9 @@ func newChildInstance(parent *model.ProcessInstance, task *model.Task, def *mode
 	}
 }
 
+// buildMapChildren resolves definitions, evaluates inputs, and constructs
+// ProcessInstances for all keyed (child_map) children. Does not persist anything; a
+// non-nil outcome means the parent failed and the caller should stop and persist it.
 func (e *Engine) buildMapChildren(ctx context.Context, inst *model.ProcessInstance, task *model.Task, callStack []string) ([]*model.ProcessInstance, *advanceOutcome) {
 	keys := make([]string, 0, len(task.Action.Children))
 	for key := range task.Action.Children {

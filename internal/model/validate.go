@@ -93,7 +93,7 @@ func validateActionRequiredFields(s *Task) error {
 		}
 	case ActionTypeExternal:
 		// No required action fields: input and result_schema are both optional
-		// (mirroring rest). The wait timeout is the task's timeout_ms (0 = forever).
+		// (mirroring fetch). The wait timeout is the task's timeout_ms (0 = forever).
 	default:
 		return fmt.Errorf("task %q: action.type must be one of: fetch, child_map, child_list, delay, external", s.ID)
 	}

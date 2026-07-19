@@ -415,7 +415,7 @@ func (db *DB) UpdateInstance(inst *model.ProcessInstance) error {
 // counters, wait_state) without touching status or error. Used after a task
 // completes mid-process so that a concurrent CancelProcess or FailAncestors
 // result is preserved in the DB for the next tick. wait_state IS written: it is
-// owned exclusively by the lease-holding worker (SetParentCollecting only fires
+// owned exclusively by the lease-holding worker (WakeParent only fires
 // while the DB row says 'waiting', which is never the case mid-claim), and the
 // post-collect reset to ” must be persisted or the stale 'collecting' would
 // make the next spawn task skip phase 1 entirely.

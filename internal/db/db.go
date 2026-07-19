@@ -188,7 +188,7 @@ func bootstrapPostgres(sqldb *sql.DB) error {
 
 	// process_instances is a high-churn queue table: every instance passes
 	// through status='running' and then completes, leaving a dead tuple in the
-	// runnable range of idx_process_instances_status_wait. The claim query
+	// runnable range of idx_instances_runnable. The claim query
 	// (run every poll by every worker) must skip those dead entries until they
 	// are vacuumed, so under a burst of completions claims slow down until
 	// autovacuum catches up. Make autovacuum aggressive and unthrottled on this

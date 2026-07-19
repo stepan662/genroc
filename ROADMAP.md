@@ -17,6 +17,7 @@
 - [x] filtering
 - [x] env variables
 - [] map function
+- [] think about error handling child -> parent
 - [] think about action extensivity/passability from parent
 
 # docs

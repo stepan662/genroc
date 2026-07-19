@@ -11,8 +11,8 @@
 //	genctl signal   <instance-id> --task <task-id> [--result <json|-> | -f file] [--set k=v ...] [-q]
 //	genctl instances [--status <status>] [--sort updated|created] [--limit <n>] [--all] [--json]
 //	genctl external-tasks [--process <name>] [--version <n>] [--task <id>] [--limit <n>] [--all] [--json]
-//	genctl get      <instance-id> [--json]
-//	genctl logs     [--level <level>] [--since <ms>] [--limit <n>] [--recursive] [--mode basic|detail|json] <instance-id>
+//	genctl get      <instance-id> [--resolve] [--json]
+//	genctl logs     [--level <level>] [--since <ms>] [--limit <n>] [--recursive] [--resolve] [--mode basic|detail|json] <instance-id>
 //	genctl cancel   <instance-id>
 //	genctl retry    [--force] <instance-id>
 //	genctl last
@@ -25,6 +25,8 @@
 //	genctl channel delete <process> <channel>
 //	genctl promote  --from <channel> --to <channel> [--process <name>]
 //	genctl status   --channel <channel>
+//	genctl config   get <key>
+//	genctl config   set <key> <value>
 //
 // Environment:
 //
@@ -164,8 +166,8 @@ func usage() {
   genctl signal   <instance-id> --task <task-id> [--result <json|-> | -f file] [--set k=v ...] [-q]
   genctl instances [--status <status>] [--sort updated|created] [--limit <n>] [--all] [--json]
   genctl external-tasks [--process <name>] [--version <n>] [--task <id>] [--limit <n>] [--all] [--json]
-  genctl get      <instance-id> [--json]
-  genctl logs     [--level <level>] [--since <ms>] [--limit <n>] [--recursive] [--mode basic|detail|json] <instance-id>
+  genctl get      <instance-id> [--resolve] [--json]
+  genctl logs     [--level <level>] [--since <ms>] [--limit <n>] [--recursive] [--resolve] [--mode basic|detail|json] <instance-id>
   genctl cancel   <instance-id>
   genctl retry    [--force] <instance-id>
   genctl last
@@ -187,6 +189,8 @@ Flags:
   --server  genroc server URL (overrides $GENROC_SERVER and config file)
   --json    machine-readable output: a list (instances/external-tasks) prints its
             raw items as a JSON array; get prints the raw instance object
+  --resolve get/logs: inline externalized context values/payloads instead of
+            {ref, size} references
   -q        with run, print only the new instance id (id=$(genctl run NAME -q));
             with resolve/signal, suppress the confirmation line
 

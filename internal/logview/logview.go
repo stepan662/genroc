@@ -118,9 +118,9 @@ func (r Record) Detail(mode Mode) []Field {
 
 // RenderEvent renders an audit event as a fixed-width column line. The id column is
 // shown only when withID (always on the server, where instances interleave; on the
-// CLI only in --tree):
+// CLI only in --recursive):
 //
-//	15:04:05  INFO   2559a9  action_started    first         msg=rest url=… request={…}
+//	15:04:05  INFO   2559a9  action_started    first         msg=fetch url=… request={…}
 func RenderEvent(t time.Time, level, id, event, task string, detail []Field, withID bool) string {
 	line := columnPrefix(t.Format("15:04:05"), strings.ToUpper(level), id, event, task, withID)
 	if d := renderFields(detail); d != "" {
@@ -238,7 +238,7 @@ func valToString(v any) string {
 
 // ShortID is the compact, distinguishing id tag shown in the ID column — the id's
 // random tail, not its timestamp-prefixed head, so a parent and a same-millisecond
-// child differ. The full id is available via the API / genctl logs --json.
+// child differ. The full id is available via the API / genctl logs --mode json.
 func ShortID(id string) string {
 	if len(id) > colID {
 		return id[len(id)-colID:]

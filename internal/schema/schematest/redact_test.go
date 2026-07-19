@@ -58,9 +58,9 @@ func TestCollectSecretsArrayOfObjects(t *testing.T) {
 }
 
 // A secret declared inside a oneOf / anyOf branch must still be found: CollectSecrets
-// descends via LookupProperty, so it gets the same combinator coverage as type
+// descends via lookupProperty, so it gets the same combinator coverage as type
 // inference (which resolves a field across union variants). allOf is intentionally
-// not navigated — consistent with LookupProperty / type inference.
+// not navigated — consistent with lookupProperty / type inference.
 func TestCollectSecretsCombinators(t *testing.T) {
 	cases := map[string]string{
 		"oneOf union": `{"type":"object","properties":{"data":{"oneOf":[

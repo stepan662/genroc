@@ -574,8 +574,7 @@ func runExternalTasksCmd(server string, args []string) {
 		return
 	}
 
-	// TOKEN goes last (it is long) and is what you pass to `genctl resolve`; use --json
-	// to inspect each task's input and result_schema.
+	// TOKEN goes last (it is long) and is what you pass to `genctl resolve`.
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "WAITING\tPROCESS\tTASK\tTOKEN")
 	for _, r := range rows {

@@ -36,7 +36,8 @@ func (p Pagination) page() db.PageReq {
 }
 
 // PageResp is the envelope every list endpoint returns: a page of items plus the
-// page object (total, has-next/prev, and the cursors to move either way).
+// page object (size, the item counts before and after this page, the effective
+// sort/order, and the cursors to page either way).
 type PageResp[T any] struct {
 	Items []T         `json:"items"`
 	Page  db.PageInfo `json:"page"`

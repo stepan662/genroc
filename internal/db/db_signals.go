@@ -25,7 +25,7 @@ import (
 //
 // Popping the signal and writing its result is one commit, so a crash after this returns
 // (but before the engine's progress write) still resumes via runExternal phase 2 — the
-// signal is never lost. Mirrors the two-writer coordination of FinishChild / SpawnChildren.
+// signal is never lost. Mirrors the two-writer coordination of FinishChild / SpawnChildrenAndWait.
 func (db *DB) ArmExternalOrConsumeSignal(ctx context.Context, inst *model.ProcessInstance, taskID, token string, input any, wakeAt *time.Time) (consumed bool, result any, err error) {
 	tx, qtx, raw, err := db.beginTx(ctx, nil)
 	if err != nil {
@@ -46,7 +46,6 @@ func (db *DB) ArmExternalOrConsumeSignal(ctx context.Context, inst *model.Proces
 		return false, nil, fmt.Errorf("lock instance: %w", err)
 	}
 
-	// Pop the oldest buffered signal for this (instance, task), if any.
 	resultStr, popErr := qtx.PopOldestSignal(ctx, dbgen.PopOldestSignalParams{InstanceID: inst.ID, TaskID: taskID})
 	if popErr != nil && popErr != sql.ErrNoRows {
 		return false, nil, fmt.Errorf("pop signal: %w", popErr)
