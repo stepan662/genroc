@@ -163,6 +163,7 @@ func RootRefs(s string) (expression.Roots, error) {
 		out.AllOutputs = out.AllOutputs || r.AllOutputs
 		out.Outputs = append(out.Outputs, r.Outputs...)
 		out.SelfPrevious = out.SelfPrevious || r.SelfPrevious
+		out.SelfResult = out.SelfResult || r.SelfResult
 		return nil
 	}
 	if expr, ok := singleExpr(s); ok {

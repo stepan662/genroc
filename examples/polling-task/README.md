@@ -8,13 +8,13 @@ up to the parent.
 ```
 polling-example (parent)
   └─ run: child_map ──spawn──▶ poll-until-done (child)
-                                 kickstart  POST {jobs_url}/jobs    ─▶ { job_id }
-                                 check      POST {jobs_url}/status  ─▶ { status, result }
+                                 kickstart  POST {url}/jobs    ─▶ { job_id }
+                                 check      POST {url}/status  ─▶ { status, result }
                                    ├─ status == "done"     ─▶ finish ─▶ end
-                                   ├─ attempts exhausted   ─▶ give_up  POST {jobs_url}/cancel ─▶ end
+                                   ├─ attempts exhausted   ─▶ give_up  POST {url}/cancel ─▶ end
                                    └─ else                 ─▶ wait
                                  wait       external (cancel checkpoint)
-                                   ├─ cancel signal ─▶ cancel   POST {jobs_url}/cancel ─▶ end
+                                   ├─ cancel signal ─▶ cancel   POST {url}/cancel ─▶ end
                                    └─ no signal     ─▶ backoff
                                  backoff    delay ({{ poll_interval_ms }}) ─▶ back to check
 ```
@@ -56,7 +56,7 @@ no `?? ` guard.) The parent declares the same defaults and threads the values do
 
 ```sh
 genctl run polling-example \
-  --input '{ "jobs_url": "http://localhost:9000",
+  --input '{ "url": "http://localhost:9000",
              "headers": { "Authorization": "Bearer s3cr3t" },
              "poll_interval_ms": 2000, "max_attempts": 30 }'
 ```
@@ -74,7 +74,7 @@ genctl signal <child-instance-id> --task wait --result '{ "cancel": true }'
 ```
 
 The `wait` task's `switch` routes a `cancel: true` result to the `cancel` task, which hits
-`POST {jobs_url}/cancel` to stop the remote job and then finishes. Signals **buffer**, so a
+`POST {url}/cancel` to stop the remote job and then finishes. Signals **buffer**, so a
 cancel sent mid-poll is honoured on the next loop — within roughly one poll interval rather
 than instantly, which is the trade-off for a runtime-configurable interval (the wait can't be
 both a cancellable `external` *and* a templated-duration `delay`). The signal targets the
@@ -105,7 +105,7 @@ The service base URL and a headers map are passed as input, so point it at any s
 ```sh
 genctl apply -f poller.genroc.yaml -f parent.genroc.yaml
 genctl run polling-example --input '{
-  "jobs_url": "http://localhost:9000",
+  "url": "http://localhost:9000",
   "headers": { "Authorization": "Bearer s3cr3t" }
 }'
 ```

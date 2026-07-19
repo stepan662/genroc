@@ -17,13 +17,13 @@ name: polling-example
 input_schema:
   type: object
   properties:
-    jobs_url: { type: string }
+    url: { type: string }
     headers:
       type: object
       additionalProperties: { type: string }
     poll_interval_ms: { type: integer, default: 500 }
     max_attempts: { type: integer, default: 20 }
-  required: [jobs_url, headers]
+  required: [url, headers]
 tasks:
   - id: run
     action:
@@ -32,7 +32,7 @@ tasks:
         poll:
           name: poll-until-done
           input:
-            jobs_url: "{{ input.jobs_url }}"
+            url: "{{ input.url }}"
             headers: "{{ input.headers }}"
             poll_interval_ms: "{{ input.poll_interval_ms }}"
             max_attempts: "{{ input.max_attempts }}"

@@ -6,6 +6,7 @@ import (
 
 	"genroc/internal/model"
 	"genroc/internal/schema"
+	"genroc/internal/template"
 )
 
 // inferOutputs infers the type of every output-map task's output and writes it
@@ -30,11 +31,22 @@ func inferOutputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proce
 		// The task loops iff it is its own predecessor: computeContextSets then
 		// lists its own output among its available (optional) outputs.
 		loops := slices.Contains(optional[id], id) || slices.Contains(required[id], id)
-		resultType, err := actionResultType(s, defs)
+		resultType, typed, err := actionResultType(s, defs)
 		if err != nil {
 			return fmt.Errorf("task %q: %w", id, err)
 		}
-		ctx := outputMapContext(base, resultType, id, loops).WithDefs(defs)
+		// An untyped result (fetch/external with no result_schema) cannot be exported:
+		// give a clear error up front rather than an opaque navigation failure later.
+		if !typed {
+			refs, rerr := shapeRefsSelfResult(s.Output.Raw)
+			if rerr != nil {
+				return fmt.Errorf("task %q output: %w", id, rerr)
+			}
+			if refs {
+				return fmt.Errorf("task %q: output references self.result, but the action has no result_schema — add a result_schema to type the response", id)
+			}
+		}
+		ctx := outputMapContext(base, resultType, typed, id, loops).WithDefs(defs)
 		node := s.Output.Raw
 		solver.Declare(id+"_output", func() (schema.Schema, error) {
 			return inferShape(node, ctx, "output")
@@ -45,4 +57,28 @@ func inferOutputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proce
 		return nil
 	}
 	return solver.Solve()
+}
+
+// shapeRefsSelfResult reports whether any expression in an output shape (a string leaf
+// or a nested object of them) reads self.result.
+func shapeRefsSelfResult(node any) (bool, error) {
+	switch n := node.(type) {
+	case string:
+		roots, err := template.RootRefs(n)
+		if err != nil {
+			return false, err
+		}
+		return roots.SelfResult, nil
+	case map[string]any:
+		for _, v := range n {
+			ref, err := shapeRefsSelfResult(v)
+			if err != nil {
+				return false, err
+			}
+			if ref {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }

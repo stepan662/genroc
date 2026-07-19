@@ -257,9 +257,15 @@ func contextSchema(preceding []string, optional []string, tasks map[string]TaskS
 //     has a prior iteration). Both output and previous resolve through
 //     $defs[<id>_output].
 func addSelfSchema(ctx schema.Schema, s *model.Task, loops bool, defs schema.Defs) (schema.Schema, error) {
-	resultType, err := actionResultType(s, defs)
+	resultType, typed, err := actionResultType(s, defs)
 	if err != nil {
 		return schema.Schema{}, err
+	}
+	if !typed {
+		// An untyped result (no result_schema) is still routable in the switch as the
+		// raw value; expose it as a bare object so member access without a schema fails
+		// (there are no known properties) while a whole-value reference resolves.
+		resultType = schema.Object()
 	}
 	self := schema.Object().WithProperty("result", resultType, true)
 	if s.Output.Present() {
@@ -271,29 +277,35 @@ func addSelfSchema(ctx schema.Schema, s *model.Task, loops bool, defs schema.Def
 	return ctx.WithProperty("self", self, true), nil
 }
 
-// actionResultType is the type of a task's raw action result — self.result inside
-// an output map (typed by result_schema when present, else permissive; null for
-// delay or a no-action task).
-func actionResultType(s *model.Task, defs schema.Defs) (schema.Schema, error) {
+// actionResultType is the type of a task's raw action result — self.result. The
+// bool return is whether that result is a typed value: true for a result_schema, a
+// child call, delay, or a no-action task (null); false for a fetch/external action
+// with no result_schema, whose response is untyped. An untyped result stays usable in
+// the switch (transient routing) but must not be exported through an output, so the
+// output context drops it and a reference there is an error.
+func actionResultType(s *model.Task, defs schema.Defs) (schema.Schema, bool, error) {
 	if s.Action == nil {
-		return schema.Type("null"), nil
+		return schema.Type("null"), true, nil
 	}
 	switch s.Action.Type {
 	case model.ActionTypeChildMap:
-		return childMapOutputSchema(s, defs)
+		sc, err := childMapOutputSchema(s, defs)
+		return sc, true, err
 	case model.ActionTypeChildList:
-		return childListOutputSchema(s, defs)
+		sc, err := childListOutputSchema(s, defs)
+		return sc, true, err
 	case model.ActionTypeDelay:
-		return schema.Type("null"), nil
+		return schema.Type("null"), true, nil
 	default:
 		if s.Action.ResultSchema != nil {
 			// The result schema is self-contained (shared $defs baked in at
 			// Normalize). Hoist its definitions into the generation pool — reusing
 			// content-equal entries, renaming collisions and rewriting the schema's
 			// $refs — so they resolve in every inference context it is embedded in.
-			return s.Action.ResultSchema.MergeInto(defs)
+			sc, err := s.Action.ResultSchema.MergeInto(defs)
+			return sc, true, err
 		}
-		return schema.Object(), nil
+		return schema.Schema{}, false, nil
 	}
 }
 
@@ -307,8 +319,14 @@ func actionResultType(s *model.Task, defs schema.Defs) (schema.Schema, error) {
 // $defs[<id>_output], the recursive placeholder the fixpoint drives. When the
 // task does not loop, neither is available — referencing one's own output without
 // looping is an error, since the task is not its own predecessor.
-func outputMapContext(base schema.Schema, resultType schema.Schema, taskID string, loops bool) schema.Schema {
-	self := schema.Object().WithProperty("result", resultType, true)
+func outputMapContext(base schema.Schema, resultType schema.Schema, typed bool, taskID string, loops bool) schema.Schema {
+	self := schema.Object()
+	// An untyped result (fetch/external with no result_schema) is omitted here, so an
+	// output that references self.result is a registration error: you cannot export an
+	// untyped value — add a result_schema to type the response.
+	if typed {
+		self = self.WithProperty("result", resultType, true)
+	}
 	if loops {
 		self = self.WithProperty("previous", schema.Ref(taskID+"_output"), false)
 	}

@@ -54,6 +54,7 @@ type Roots struct {
 	AllOutputs   bool     // reads the outputs map in a way we can't pin to static ids
 	SelfPrevious bool     // reads self.previous (this task's own prior output — an alias
 	//                      for outputs[<this task>], so it can be an externalized ref too)
+	SelfResult bool // reads self.result (the task's raw action result)
 }
 
 // RootRefs reports which context roots expr reads.
@@ -77,6 +78,10 @@ func collectRoots(node ast.Node, r *Roots) {
 		if isSelfPrevious(n) {
 			r.SelfPrevious = true
 			return // consumed self.previous; don't descend into the "self" identifier
+		}
+		if isSelfResult(n) {
+			r.SelfResult = true
+			return // consumed self.result; don't descend into the "self" identifier
 		}
 		collectRoots(n.Node, r)
 		collectRoots(n.Property, r)
@@ -111,6 +116,18 @@ func isSelfPrevious(n *ast.MemberNode) bool {
 	}
 	prop, ok := n.Property.(*ast.StringNode)
 	return ok && prop.Value == "previous"
+}
+
+// isSelfResult reports whether n is exactly self.result (base identifier "self",
+// string property "result"). A deeper access like self.result.x is a MemberNode whose
+// .Node is this node, so collectRoots reaches it while descending.
+func isSelfResult(n *ast.MemberNode) bool {
+	base, ok := n.Node.(*ast.IdentifierNode)
+	if !ok || base.Value != "self" {
+		return false
+	}
+	prop, ok := n.Property.(*ast.StringNode)
+	return ok && prop.Value == "result"
 }
 
 // outputRefID returns <id> when n is exactly outputs.<id> (base identifier

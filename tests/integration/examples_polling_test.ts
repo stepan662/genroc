@@ -97,7 +97,7 @@ async function startExample(port: number, extra: Record<string, unknown> = {}): 
     body: {
       process: parent.name,
       input: {
-        jobs_url: `http://localhost:${port}`,
+        url: `http://localhost:${port}`,
         headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
         ...extra,
       },
