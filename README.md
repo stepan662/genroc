@@ -22,6 +22,11 @@ no worker while it waits.
   compatibility checks between parent and child.
 - **External tasks.** A task can hand off to a human or a long-running external
   system (`external`) and resume when the result is signalled back in.
+- **Pause / resume / retry.** A running tree can be suspended and resumed with
+  nothing else changed — timers keep running, so it carries on exactly where it
+  stopped. Retrying is the separate, deliberate act of granting a *failed* tree
+  an attempt its definition did not authorise (see
+  [docs/pause-resume.md](docs/pause-resume.md)).
 - **Typed data flow.** Process input, task outputs, and child results are
   described with a strict JSON-Schema subset, and output types are *inferred* —
   including recursive shapes (see [docs/recursive-type-inference.md](docs/recursive-type-inference.md)).
