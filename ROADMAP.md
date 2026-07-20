@@ -21,10 +21,10 @@
 - [] think about action extensivity/passability from parent
 - [x] look at naming conventions - cancel -> pause, then resume. Retry only for errored processes.
 - [] pause as a debugging tool: start an instance paused, then step it with tick
+- [] look at the templating system the "{{expression}}" is not ideal, would be nice to have some universal simple way
 
 # docs
 
 - [] write docs, plan and motivation
-- rename ideas: "a-genroc", "dura-genroc", "duragent", "genroc-rock", "genrock", "genroc"?
 
 
