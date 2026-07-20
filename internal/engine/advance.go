@@ -26,7 +26,7 @@ type outcomeKind uint8
 const (
 	outcomeProgress outcomeKind = iota // running checkpoint        → UpdateInstanceProgress
 	outcomeUpdate                      // running, status/error set → UpdateInstance
-	outcomeTerminal                    // completed/failed/cancelled → saveAndNotify
+	outcomeTerminal                    // completed/failed/paused → saveAndNotify
 	outcomeNoop                        // advance already persisted (child spawn parked the parent)
 )
 
@@ -139,8 +139,16 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 	if inst.Status == model.StatusFailing {
 		return e.settleFailing(inst)
 	}
-	if inst.Status == model.StatusCancelling {
-		return e.cancelInstance(inst)
+	if inst.Status == model.StatusPausing {
+		// Crash recovery only: a pause normally lands in SQL when the worker holding
+		// the instance writes its finished task, so reaching a claim means that worker
+		// died. The task is looked up solely for settlePausing's only_once check, which
+		// applies only to a reclaimed lease.
+		var task *model.Task
+		if inst.ReclaimedExpired {
+			task = e.lookupTask(inst)
+		}
+		return e.settlePausing(inst, task)
 	}
 
 	def, idx, done := e.prepareAdvance(inst)
@@ -344,6 +352,25 @@ func (e *Engine) evalSwitch(inst *model.ProcessInstance, task *model.Task, selfO
 		}
 	}
 	return "", nil
+}
+
+// lookupTask resolves the instance's current task from its definition, returning nil
+// when the instance has no current task or the definition cannot be read. Callers that
+// need to fail on a missing definition use prepareAdvance instead; this is for the
+// settle paths, which must not turn a transient read error into a failed process.
+func (e *Engine) lookupTask(inst *model.ProcessInstance) *model.Task {
+	if inst.Task == "" {
+		return nil
+	}
+	def, err := e.db.GetDefinition(inst.ProcessName, inst.ProcessVersion)
+	if err != nil {
+		return nil
+	}
+	idx := taskIndex(def.Tasks, inst.Task)
+	if idx < 0 {
+		return nil
+	}
+	return def.Tasks[idx]
 }
 
 // taskIndex returns the position of taskID in tasks, or -1 if absent (the empty id —

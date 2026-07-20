@@ -403,10 +403,13 @@ func (db *DB) UpdateInstance(inst *model.ProcessInstance) error {
 }
 
 // UpdateInstanceProgress writes the mutable task state (context, retry counters,
-// wait_state) without touching status or error, so a concurrent CancelProcess/
-// FailAncestors result survives to the next tick. wait_state IS written: it is owned by
-// the lease-holding worker, and the post-collect reset to ” must persist or a stale
-// 'collecting' would make the next spawn task skip phase 1.
+// wait_state) without overwriting status or error, so a concurrent FailAncestors result
+// survives to the next tick. The one status transition it does make is landing a pending
+// pause ('pausing' → 'paused'), which has to happen on this write: a checkpoint may park
+// the instance on a wait_state that removes it from the claim predicate, after which no
+// later claim could settle it. wait_state IS written: it is owned by the lease-holding
+// worker, and the post-collect reset to ” must persist or a stale 'collecting' would make
+// the next spawn task skip phase 1.
 func (db *DB) UpdateInstanceProgress(inst *model.ProcessInstance) error {
 	ctx := context.Background()
 	now := nowMillis()

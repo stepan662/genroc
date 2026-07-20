@@ -19,12 +19,13 @@ async function getStatus(genroc: GenrocProcess, id: string) {
   return data!;
 }
 
-// Verifies that cancelling between two tasks stops execution cleanly.
+// Verifies that pausing between two tasks stops execution cleanly, and that
+// resuming picks up at exactly the task the pause stopped in front of.
 // Uses manual tick mode (-poll 0) so each engine cycle is explicit, making
 // every intermediate DB state directly observable.
-test("cancel between tasks — status transitions and step2 never executed", async () => {
-  const processName = `cancel_tick_${crypto.randomUUID()}`;
-  const db = join(tmpdir(), `genroc_cancel_${Date.now()}.db`);
+test("pause between tasks — step2 waits for the resume, then runs exactly once", async () => {
+  const processName = `pause_tick_${crypto.randomUUID()}`;
+  const db = join(tmpdir(), `genroc_pause_${Date.now()}.db`);
   const genroc = await startGenroc(genrocBin, TICK_PORT, db, undefined, 0);
 
   const step1Mock = await startMockService(0, { response: { ok: true } });
@@ -76,21 +77,35 @@ test("cancel between tasks — status transitions and step2 never executed", asy
     const s1 = await getStatus(genroc, id);
     expect(s1.status).toBe("running"); // still running, waiting for next tick
 
-    // Cancel between tasks — DB transitions to 'cancelling' immediately.
-    await genroc.client.POST("/instances/{id}/cancel", {
+    // Pause between tasks. The instance holds no lease here (tick 1 released it
+    // when it persisted step1's result), so there is no in-flight task to wait
+    // out and it is suspended outright — no 'pausing' step, no extra tick.
+    await genroc.client.POST("/instances/{id}/pause", {
       params: { path: { id } },
     });
 
     const s2 = await getStatus(genroc, id);
-    expect(s2.status).toBe("cancelling");
+    expect(s2.status).toBe("paused");
 
-    // Tick 2 — engine sees 'cancelling' at the top of advance(), transitions
-    // to 'cancelled' without touching step2.
-    expect(await tick(genroc.client)).toBe(1);
+    // Tick 2 — a paused instance is not claimable, so nothing runs at all and
+    // step2 is left untouched.
+    expect(await tick(genroc.client)).toBe(0);
     expect(step2Mock.requestCount()).toBe(0);
+    expect((await getStatus(genroc, id)).status).toBe("paused");
+
+    // Resume, and the process continues from step2 — the task the pause stopped
+    // in front of, executed once and only now.
+    await genroc.client.POST("/instances/{id}/resume", {
+      params: { path: { id } },
+    });
+    expect((await getStatus(genroc, id)).status).toBe("running");
+
+    expect(await tick(genroc.client)).toBe(1);
+    expect(step2Mock.requestCount()).toBe(1);
+    expect(step1Mock.requestCount()).toBe(1); // completed work never re-run
 
     const s3 = await getStatus(genroc, id);
-    expect(s3.status).toBe("cancelled");
+    expect(s3.status).toBe("completed");
   } finally {
     genroc.stop();
     await step1Mock.stop();

@@ -85,12 +85,36 @@ export class TickEnv {
     return data!.id;
   }
 
-  async cancel(id: string): Promise<void> {
-    const { error } = await this.genroc.client.POST("/instances/{id}/cancel", {
+  async pause(id: string): Promise<void> {
+    const { error } = await this.genroc.client.POST("/instances/{id}/pause", {
+      params: { path: { id } },
+    });
+    if (error) throw new Error(`pause(${id}) failed: ${JSON.stringify(error)}`);
+  }
+
+  async resume(id: string): Promise<void> {
+    const { error } = await this.genroc.client.POST("/instances/{id}/resume", {
+      params: { path: { id } },
+    });
+    if (error) throw new Error(`resume(${id}) failed: ${JSON.stringify(error)}`);
+  }
+
+  async retry(id: string): Promise<void> {
+    const { error } = await this.genroc.client.POST("/instances/{id}/retry", {
+      params: { path: { id } },
+    });
+    if (error) throw new Error(`retry(${id}) failed: ${JSON.stringify(error)}`);
+  }
+
+  // The instance's consumed on_error attempts — how much of the definition's retry
+  // budget has been spent. Pausing must leave this untouched.
+  async retryCount(id: string): Promise<number> {
+    const { data, error } = await this.genroc.client.GET("/instances/{id}", {
       params: { path: { id } },
     });
     if (error)
-      throw new Error(`cancel(${id}) failed: ${JSON.stringify(error)}`);
+      throw new Error(`retryCount(${id}) failed: ${JSON.stringify(error)}`);
+    return data!.retry_count as number;
   }
 
   // Returns the child instance ID recorded under the parent's "_children" key

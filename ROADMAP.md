@@ -19,7 +19,8 @@
 - [x] map function (lambdas + object/array literals; own parser)
 - [] think about error handling child -> parent
 - [] think about action extensivity/passability from parent
-- [] look at naming conventions - cancel -> pause, then resume. Retry only for errored processes.
+- [x] look at naming conventions - cancel -> pause, then resume. Retry only for errored processes.
+- [] pause as a debugging tool: start an instance paused, then step it with tick
 
 # docs
 

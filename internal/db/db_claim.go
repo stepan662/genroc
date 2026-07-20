@@ -53,20 +53,26 @@ func (db *DB) ClaimInstances(workerID string, leaseDur time.Duration, limit int)
 	// Shared claimable predicate. The two `?` are both `now` (retry/delay/timeout timer,
 	// lease expiry).
 	//
-	// A doomed instance ('failing'/'cancelling') is drained immediately, ignoring
-	// wake_at: it will never run its pending task again, so there is no point
-	// waiting out a delay or retry-backoff timer before settling it. Only a healthy
-	// 'running' instance honours its timer. This is what lets a cancel take effect
-	// promptly on an instance parked in a delay, without mutating wake_at.
+	// 'paused' is absent: a paused instance is live work that is simply not advanced
+	// automatically, so it is never claimed until ResumeProcess puts it back to
+	// 'running'. It keeps its wake_at meanwhile — timers run while paused, so a delay
+	// that elapsed during the pause fires on the next tick after resuming.
+	//
+	// A doomed instance ('failing') is drained immediately, ignoring wake_at: it will
+	// never run its pending task again, so there is no point waiting out a delay or
+	// retry-backoff timer before settling it. 'pausing' gets the same treatment, but
+	// only as crash recovery: a pause normally lands when the worker holding the
+	// instance writes its task (the CASE in UpdateInstance), and a claim is reached
+	// only if that worker died first, leaving the row draining with an expired lease.
 	//
 	// wait_state='external' (parked on an external task) is claimable only when its
 	// timeout timer is due (`wake_at <= ?`): a no-timeout external wait has wake_at NULL
 	// and must NOT be claimed (it waits for the resolve API, which un-parks it by setting
 	// wait_state='' + wake_at=NULL — caught by the last branch). Normal runnable rows
 	// (any non-external wait_state) with no timer are always claimable.
-	const where = `status IN ('running', 'failing', 'cancelling')
+	const where = `status IN ('running', 'failing', 'pausing')
 			  AND wait_state <> 'waiting'
-			  AND (status IN ('failing', 'cancelling')
+			  AND (status IN ('failing', 'pausing')
 			       OR wake_at <= ?
 			       OR (wait_state <> 'external' AND wake_at IS NULL))
 			  AND (worker_id IS NULL OR lease_expires_at <= ?)`

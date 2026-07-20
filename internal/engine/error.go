@@ -43,20 +43,13 @@ func matchOnError(task *model.Task, errCode string) *model.ErrorCase {
 // handleCallError evaluates on_error rules, retries if allowed, injects $error
 // context, and routes to the matching goto or fails the instance. It returns the
 // outcome to persist (runAdvance writes it).
+// A pause needs no special case here. The on_error rules run exactly as they would
+// otherwise: a retry is scheduled with its normal backoff, and the write that persists
+// it lands the pending pause (the CASE in UpdateInstance), so the instance settles into
+// 'paused' still holding the attempt the definition granted it. Resuming continues that
+// schedule with nothing spent and nothing skipped — which is the whole difference
+// between resuming a pause and retrying a failure.
 func (e *Engine) handleCallError(inst *model.ProcessInstance, task *model.Task, errMsg, errCode string) advanceOutcome {
-	// If the process is being cancelled, suppress retries and honour the cancellation
-	// unless retries are exhausted / not configured — in that case error takes precedence.
-	if inst.Status == model.StatusCancelling {
-		matched := matchOnError(task, errCode)
-		if matched != nil && inst.RetryCount < matched.Retries && isRetryAllowed(task, errCode, matched) {
-			// Retries remain but we're cancelling — skip the retry and cancel cleanly.
-			e.audit(inst, logEvent{Level: model.LogInfo, Event: model.EventCancelSkipRetry, Task: task.ID, Msg: errMsg, Code: errCode})
-			return e.cancelInstance(inst)
-		}
-		// No retries available — error takes precedence over cancellation.
-		return e.failInstance(inst, fmt.Sprintf("task %q: %s: %s", task.ID, errCode, errMsg))
-	}
-
 	matched := matchOnError(task, errCode)
 
 	if matched != nil && inst.RetryCount < matched.Retries && isRetryAllowed(task, errCode, matched) {
@@ -105,18 +98,27 @@ func (e *Engine) failInstance(inst *model.ProcessInstance, reason string) advanc
 	return advanceOutcome{kind: outcomeTerminal}
 }
 
-// cancelInstance moves the instance to its cancelled state and returns the terminal
-// outcome (persisted by runAdvance via saveAndNotify).
-func (e *Engine) cancelInstance(inst *model.ProcessInstance) advanceOutcome {
-	inst.Status = model.StatusCancelled
-	inst.WaitState = model.WaitStateNone
-	// A retry-backoff parks with RetryCount > 0; clear its timer so a later retry
-	// runs immediately. A delay parks with RetryCount == 0; keep wake_at so the
-	// retry resumes toward the delay's original deadline.
-	if inst.RetryCount > 0 {
-		inst.WakeAt = nil
+// settlePausing lands a 'pausing' instance in 'paused' without touching anything else:
+// wait_state, wake_at, retry_count and context all carry over untouched, so resuming is
+// a status flip and the instance picks up exactly where it stopped. Timers keep running
+// while paused, so a delay or backoff that elapses meanwhile is simply due on resume.
+//
+// This path is reached only when a worker died holding the instance — in the normal case
+// the pause lands in SQL when the owning worker writes its finished task. That makes the
+// reclaim check below load-bearing rather than defensive: the interrupted task may have
+// already executed on the dead worker, and pausing here would launder that into a silent
+// re-execution when the operator resumes.
+func (e *Engine) settlePausing(inst *model.ProcessInstance, task *model.Task) advanceOutcome {
+	if inst.ReclaimedExpired && task != nil && task.Action != nil && task.OnlyOnce != nil && *task.OnlyOnce {
+		return e.failInstance(inst, fmt.Sprintf(
+			"task %q is only_once and was interrupted by a lease takeover; cannot re-execute", task.ID))
 	}
-	e.audit(inst, logEvent{Level: model.LogInfo, Event: model.EventCancelled})
+	inst.Status = model.StatusPaused
+	// The other half of inst_paused: PauseProcess logs the rows it settled directly, and
+	// this covers the leased one it could only mark 'pausing'. Same event and level, so
+	// the trail reads uniformly — every instance that becomes paused says so once.
+	e.audit(inst, logEvent{Level: model.LogDebug, Event: model.EventPaused, Task: inst.Task,
+		Msg: "in-flight task settled; instance paused"})
 	return advanceOutcome{kind: outcomeTerminal}
 }
 

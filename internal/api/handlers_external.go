@@ -106,7 +106,12 @@ func (h *Handlers) signalInstance(id string, raw json.RawMessage) Reply {
 	if err != nil {
 		return errReply(err)
 	}
-	if inst.Status != model.StatusRunning {
+	// Paused instances still accept signals — SignalInstance buffers them FIFO and the
+	// task consumes one when it next arms after a resume. A pause suspends execution,
+	// not delivery; rejecting here would make a pause lose events. The correlation
+	// decision (deliver now vs buffer) is made under the row lock in SignalInstance.
+	if inst.Status != model.StatusRunning &&
+		inst.Status != model.StatusPaused && inst.Status != model.StatusPausing {
 		return errReply(fmt.Errorf("instance is not running (status %s)", inst.Status))
 	}
 	// Resolve the target external task from the pinned definition — it may be a wait point

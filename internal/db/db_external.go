@@ -14,10 +14,14 @@ import (
 // idx_external_queue index (a bound parameter would not); that index's trailing
 // updated_at column also backs the sort. Keys on park time (updated_at) with the
 // UUIDv7 id tiebreaker, oldest first.
+//
+// Paused instances are excluded: ResolveExternalTask rejects anything that is not
+// running, so advertising a suspended task would hand external workers something they
+// cannot submit a result for. They reappear in the queue when the process resumes.
 var externalPaginator = paginator{
 	table:      "process_instances",
 	columns:    instanceColumns,
-	baseWhere:  "wait_state = 'external'",
+	baseWhere:  "wait_state = 'external' AND status = 'running'",
 	filterCols: []string{"process_name", "process_version", "task"},
 	sorts: map[string]sortMode{
 		"updated": {{"updated_at", kindInt}, {"id", kindText}},

@@ -29,7 +29,8 @@ import { createClientTyped, listAllInstances } from "../helpers/client.ts";
 //   • the server is SIGKILL'd at random and restarted on the same DB, so writes are
 //     interrupted mid-flight and leases are reclaimed by the restarted process;
 //   • the action's mock randomly returns 500, driving retries and instance failures;
-//   • roots are randomly cancelled and force-retried throughout (cascading to children).
+//   • roots are randomly paused (and resumed again) and force-retried throughout,
+//     cascading to children.
 //
 // After the chaos settles and every instance is terminal, we open the SQLite file and
 // check, for every process_objects row, that it is reachable — pinned by some live
@@ -55,8 +56,9 @@ const PAD = "P".repeat(12 * 1024);
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const pick = <T,>(xs: T[]): T => xs[Math.floor(Math.random() * xs.length)];
-const isTerminal = (s?: string) =>
-  s === "completed" || s === "failed" || s === "cancelled";
+// `paused`/`pausing` are deliberately absent: a pause is not an outcome, it only
+// says the tree is not being advanced, so it never counts as settled.
+const isTerminal = (s?: string) => s === "completed" || s === "failed";
 
 // ── flaky mock backing the `gen` action ───────────────────────────────────────
 // Returns a large result (pad) plus a monotonic counter `i` and a `done` flag. In
@@ -162,7 +164,7 @@ afterAll(async () => {
 });
 
 test(
-  "every process_objects row stays reachable through crash/error/cancel/retry chaos",
+  "every process_objects row stays reachable through crash/error/pause/retry chaos",
   async () => {
     const suffix = crypto.randomUUID();
     const leaf = `gc_leaf_${suffix}`;
@@ -270,7 +272,7 @@ test(
     }
     mock.setFailRate(0.35);
 
-    // Chaos: randomly crash+restart the server, cancel a root, or force-retry one.
+    // Chaos: randomly crash+restart the server, pause+resume a root, or force-retry one.
     let crashes = 0;
     const chaosDeadline = Date.now() + CHAOS_MS;
     const chaosMid = Date.now() + CHAOS_MS / 2;
@@ -286,10 +288,17 @@ test(
           await sleep(200); // let the OS reap the pid / free the port
           server = await spawn();
         } else if (roll < 0.5) {
-          await api.POST("/instances/{id}/cancel", {
-            params: { path: { id: pick(rootIds) } },
-          });
+          // Pause is not an outcome and never settles by itself, so every pause is
+          // paired with a resume; the short beat in between is what races the worker
+          // (pausing → paused → running while a task is mid-flight). A resume lost to
+          // a crash landing in the gap is picked up by the settle sweep below.
+          const id = pick(rootIds);
+          await api.POST("/instances/{id}/pause", { params: { path: { id } } });
+          await sleep(60);
+          await api.POST("/instances/{id}/resume", { params: { path: { id } } });
         } else {
+          // Retry only takes a `failed` root now; on anything else the server replies
+          // with an error, which is fine — it is part of the contention.
           await api.POST("/instances/{id}/retry", {
             params: { path: { id: pick(rootIds) }, query: { force: true } },
           });
@@ -310,8 +319,18 @@ test(
       server = await spawn();
     }
 
+    // Resume sweep: a root the chaos left paused (or pausing, if a crash swallowed the
+    // resume half of a pair) would never advance again, so nothing below could ever
+    // settle. Unpause every root before the settle loop even starts.
+    for (const id of rootIds) {
+      await api
+        .POST("/instances/{id}/resume", { params: { path: { id } } })
+        .catch(() => {});
+    }
+
     // Settle: mock always succeeds + reports done so every loop terminates; keep
-    // force-retrying non-completed roots until the whole fleet is terminal & green.
+    // resuming paused roots and force-retrying failed ones until the whole fleet is
+    // terminal & green.
     mock.enterSettle();
     let settled = false;
     const settleDeadline = Date.now() + SETTLE_MS;
@@ -323,12 +342,18 @@ test(
         await sleep(200);
         continue;
       }
-      // Recover via the roots only (cancel/retry is root-scoped and cascades to the
-      // subtree); a failed/cancelled leaf is brought back by retrying its root.
+      // Recover via the roots only (pause/resume/retry is root-scoped and cascades to
+      // the subtree); a failed leaf is brought back by retrying its root, a paused one
+      // by resuming it. A `pausing` root is re-swept every iteration until the in-flight
+      // task's write lands it in `paused` and the resume takes.
       const byId = new Map(insts.map((i) => [i.id, i]));
       for (const id of rootIds) {
         const r = byId.get(id);
-        if (r && (r.status === "failed" || r.status === "cancelled")) {
+        if (r && (r.status === "paused" || r.status === "pausing")) {
+          await api
+            .POST("/instances/{id}/resume", { params: { path: { id } } })
+            .catch(() => {});
+        } else if (r && r.status === "failed") {
           await api
             .POST("/instances/{id}/retry", {
               params: { path: { id }, query: { force: true } },

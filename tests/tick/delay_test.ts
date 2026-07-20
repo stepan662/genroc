@@ -25,23 +25,24 @@ test("delay parks the instance until the clock advances past ms", async () => {
   expect(await ctx.env.status(id)).toBe("completed");
 });
 
-test("cancel drains a delayed instance immediately, without waiting out the delay", async () => {
+test("pause takes effect immediately on a delayed instance — no drain tick needed", async () => {
   await ctx.env.client.PUT("/definitions", {
     body: {
-      name: "delay_cancel",
+      name: "delay_pause",
       tasks: [{ id: "wait", action: { type: "delay", ms: "3600000" }, switch: "end" }],
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
   });
-  const id = await ctx.env.start("delay_cancel");
+  const id = await ctx.env.start("delay_pause");
 
   expect(await ctx.env.tick()).toBe(1); // arm a 1-hour delay
   expect(await ctx.env.status(id)).toBe("running");
 
-  await ctx.env.cancel(id);
-  // No clock advance: a cancelling instance is claimed despite its future timer.
-  await ctx.env.tickUntilIdle();
-  expect(await ctx.env.status(id)).toBe("cancelled");
+  // An instance parked on a timer holds no lease, so there is no in-flight task to
+  // wait out: it goes straight to 'paused' rather than through 'pausing'.
+  await ctx.env.pause(id);
+  expect(await ctx.env.status(id)).toBe("paused");
+  expect(await ctx.env.tick()).toBe(0); // and it is not claimable while paused
 });
 
 test("delay does not resume before the full ms has elapsed", async () => {
@@ -61,7 +62,7 @@ test("delay does not resume before the full ms has elapsed", async () => {
   expect(await ctx.env.status(id)).toBe("completed");
 });
 
-test("retry after cancel resumes a delay toward its original deadline", async () => {
+test("resume continues a delay toward its original deadline", async () => {
   await ctx.env.client.PUT("/definitions", {
     body: {
       name: "delay_resume",
@@ -72,12 +73,11 @@ test("retry after cancel resumes a delay toward its original deadline", async ()
   const id = await ctx.env.start("delay_resume");
 
   expect(await ctx.env.tick()).toBe(1); // arm delay (deadline = T + 60s)
-  await ctx.env.cancel(id);
-  await ctx.env.tickUntilIdle(); // drains promptly; cancel preserves the delay timer
-  expect(await ctx.env.status(id)).toBe("cancelled");
+  await ctx.env.pause(id);
+  expect(await ctx.env.status(id)).toBe("paused");
 
-  await ctx.env.client.POST("/instances/{id}/retry", { params: { path: { id } } });
-  // Revived toward the original (still-future) deadline, NOT re-armed: a plain tick
+  await ctx.env.resume(id);
+  // Resumed toward the original (still-future) deadline, NOT re-armed: a plain tick
   // claims nothing because the preserved timer has not elapsed. (A from-scratch
   // re-arm would instead claim it once to re-stamp the timer — i.e. tick() === 1.)
   expect(await ctx.env.tick()).toBe(0);
@@ -88,7 +88,7 @@ test("retry after cancel resumes a delay toward its original deadline", async ()
   expect(await ctx.env.status(id)).toBe("completed");
 });
 
-test("retry after cancel runs immediately if the delay's deadline already passed", async () => {
+test("a delay whose deadline passes while paused is due the moment it resumes", async () => {
   await ctx.env.client.PUT("/definitions", {
     body: {
       name: "delay_passed",
@@ -99,17 +99,19 @@ test("retry after cancel runs immediately if the delay's deadline already passed
   const id = await ctx.env.start("delay_passed");
 
   expect(await ctx.env.tick()).toBe(1); // arm delay (deadline = T + 5s)
-  await ctx.env.cancel(id);
-  await ctx.env.tickUntilIdle();
-  expect(await ctx.env.status(id)).toBe("cancelled");
+  await ctx.env.pause(id);
+  expect(await ctx.env.status(id)).toBe("paused");
 
-  // The deadline elapses while the instance is cancelled.
+  // Pausing suspends execution, not time: the clock keeps running against the
+  // preserved wake_at, so this deadline elapses while the instance sits paused.
+  // Ticking there still does nothing — a paused instance is never claimed.
   await ctx.env.client.POST("/tick", { body: { advance_ms: 10000 } });
+  expect(await ctx.env.status(id)).toBe("paused");
 
-  await ctx.env.client.POST("/instances/{id}/retry", { params: { path: { id } } });
-  // The preserved timer is already in the past, so it runs straight through with
-  // no further clock advance. (A from-scratch re-arm would park it 5s into the
-  // future and never settle here.)
+  // On resume the timer is already in the past, so it runs straight through with no
+  // further clock advance. (Freezing the remaining duration instead would park it
+  // 5s into the future and never settle here.)
+  await ctx.env.resume(id);
   await ctx.env.tickUntilIdle();
   expect(await ctx.env.status(id)).toBe("completed");
 });

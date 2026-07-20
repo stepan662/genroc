@@ -72,6 +72,12 @@ VALUES
 -- name: UpdateInstance :exec
 -- input_data is intentionally NOT written: the process input is immutable after
 -- creation, so re-writing it every update would be pure churn.
+--
+-- The status CASE lands a pause that arrived while this instance was leased. The
+-- worker cannot know about it -- PauseProcess marked the row 'pausing' after the
+-- claim -- so the decision is made in SQL against the row's current value. Guarding
+-- on the incoming status keeps real outcomes winning: a task that completes or fails
+-- the process writes that, and only a still-running instance settles into 'paused'.
 UPDATE process_instances
 SET task             = sqlc.arg(task),
     outputs_data     = sqlc.arg(outputs_data),
@@ -81,7 +87,9 @@ SET task             = sqlc.arg(task),
     engine_state     = sqlc.arg(engine_state),
     retry_count      = sqlc.arg(retry_count),
     wake_at    = sqlc.arg(wake_at),
-    status           = sqlc.arg(status),
+    status           = CASE WHEN status = 'pausing'
+                            AND CAST(sqlc.arg(status) AS TEXT) = 'running'
+                            THEN 'paused' ELSE CAST(sqlc.arg(status) AS TEXT) END,
     wait_state       = sqlc.arg(wait_state),
     error            = sqlc.arg(error),
     updated_at       = sqlc.arg(updated_at),
@@ -92,6 +100,12 @@ WHERE id = sqlc.arg(id);
 -- name: UpdateInstanceProgress :exec
 -- Mid-process write: neither input_data (immutable) nor output_data (only set on
 -- completion, which goes through UpdateInstance with a status change) is touched.
+--
+-- A progress checkpoint always means "still running", so a pending pause lands
+-- unconditionally here (see UpdateInstance for why this is decided in SQL). This is
+-- also the write that parks on a delay or an external task, so a pause requested
+-- while the instance was mid-task settles even though it is about to become
+-- unclaimable on wait_state.
 UPDATE process_instances
 SET task             = sqlc.arg(task),
     outputs_data     = sqlc.arg(outputs_data),
@@ -100,6 +114,7 @@ SET task             = sqlc.arg(task),
     engine_state     = sqlc.arg(engine_state),
     retry_count      = sqlc.arg(retry_count),
     wake_at    = sqlc.arg(wake_at),
+    status           = CASE WHEN status = 'pausing' THEN 'paused' ELSE status END,
     wait_state       = sqlc.arg(wait_state),
     updated_at       = sqlc.arg(updated_at),
     worker_id        = NULL,
@@ -168,17 +183,24 @@ WHERE id IN (
 );
 
 -- name: CountActiveSiblings :one
+-- Only completed/failed are settled. A paused sibling still counts as active, so a
+-- parent never collects a batch while one of its children is suspended.
 SELECT COUNT(*) FROM process_instances
 WHERE parent_id = sqlc.arg(parent_id)
   AND spawn_task_id = sqlc.arg(spawn_task_id)
-  AND status NOT IN ('completed', 'failed', 'cancelled');
+  AND status NOT IN ('completed', 'failed');
 
 -- name: GetWaitState :one
 SELECT wait_state FROM process_instances WHERE id = sqlc.arg(id);
 
 -- name: WakeParent :exec
+-- A healthy parent moves to 'collecting' to merge its children's outputs; a doomed
+-- one ('failing') clears the wait state and just settles. A paused parent is healthy
+-- (it is suspended, not doomed) so it is armed for the collect it will run when
+-- resumed. Its status keeps it unclaimable in the meantime.
 UPDATE process_instances
-SET wait_state = CASE WHEN status = 'running' THEN 'collecting' ELSE '' END,
+SET wait_state = CASE WHEN status IN ('running', 'pausing', 'paused')
+                      THEN 'collecting' ELSE '' END,
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id);
 
@@ -201,10 +223,15 @@ WHERE pd.parent_version = pc.version
   AND pd.child_name IN (SELECT value FROM json_each(sqlc.arg(names)));
 
 -- name: FailAncestors :exec
+-- Paused ancestors are included: a failure is a real outcome and must not be hidden
+-- by a suspension. A child that dies while the tree is paused (its in-flight task was
+-- doomed when the pause landed) propagates 'failing' upward, and those ancestors
+-- settle to 'failed' (retryable) rather than leaving a paused tree with a dead
+-- branch inside it. Pause suppresses advancement, not settlement.
 UPDATE process_instances
 SET status = 'failing', error = sqlc.arg(error), updated_at = sqlc.arg(updated_at)
 WHERE id IN (SELECT value FROM json_each(sqlc.arg(ids)))
-  AND status IN ('running', 'cancelling');
+  AND status IN ('running', 'pausing', 'paused');
 
 -- name: FindStaleRefs :many
 SELECT pd.parent_name, pc.version AS parent_version,

@@ -46,7 +46,9 @@ export async function waitForInstance(
     });
     if (error) throw new Error(`get_instance failed: ${JSON.stringify(error)}`);
     const status = data?.status;
-    if (status === "completed" || status === "failed" || status === "cancelled") return status!;
+    // paused is deliberately absent: it is not an outcome, just work that is not
+    // being advanced, so waiting for a terminal state must not stop on it.
+    if (status === "completed" || status === "failed") return status!;
     await new Promise((r) => setTimeout(r, 100));
   }
   throw new Error(`instance ${id} did not complete within ${timeoutMs}ms`);

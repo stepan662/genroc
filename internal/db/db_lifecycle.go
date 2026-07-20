@@ -11,11 +11,11 @@ import (
 )
 
 // FinishChild atomically saves the child as terminal and, if all siblings are now done,
-// wakes the waiting parent — to 'collecting' if healthy (outputs will be merged), to ”
-// if draining (failing/cancelling; just settles). The parent row is locked first (FOR
-// UPDATE on PostgreSQL; SQLite single-writer) to serialize concurrent sibling
-// completions — the same lock order as CancelProcess/FailInstanceAndAncestors. Root
-// instances (no parent) only save the child; failed children use FailAncestors instead.
+// wakes the waiting parent — to 'collecting' if healthy (outputs will be merged, whether
+// it is running or paused), to ” if draining ('failing'; just settles). The parent row is
+// locked first (FOR UPDATE on PostgreSQL; SQLite single-writer) to serialize concurrent
+// sibling completions — the same lock order as PauseProcess/FailInstanceAndAncestors.
+// Root instances (no parent) only save the child; failed children use FailAncestors instead.
 func (db *DB) FinishChild(child *model.ProcessInstance) error {
 	if child.ParentID == "" {
 		return db.UpdateInstance(child)
@@ -25,7 +25,7 @@ func (db *DB) FinishChild(child *model.ProcessInstance) error {
 	return db.withTx(ctx, func(qtx *dbgen.Queries, raw dbgen.DBTX) error {
 
 		// Acquire row locks (oldest-first) and read the parent's wait_state in one shot.
-		// The locking CTE keeps the same lock order as CancelProcess and
+		// The locking CTE keeps the same lock order as PauseProcess and
 		// FailInstanceAndAncestors, preventing deadlocks; the FOR UPDATE is appended only
 		// on PostgreSQL — SQLite serialises via its single writer and runs the CTE without it.
 		var parentWaitState string
@@ -86,7 +86,7 @@ func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 		now := nowMillis()
 
 		// Lock child and all ancestors oldest-first — consistent with FinishChild and
-		// CancelProcess. This task exists only to take FOR UPDATE locks, so it runs on
+		// PauseProcess. This task exists only to take FOR UPDATE locks, so it runs on
 		// PostgreSQL alone; SQLite serialises via its single writer. Ancestors are read
 		// from the child's call_stack in the DB; no Go-side ID list needed.
 		if db.dialect == "postgres" {
@@ -183,40 +183,218 @@ func (db *DB) forUpdate() string {
 	return ""
 }
 
-// CancelProcess atomically transitions an entire process tree (root + every running
-// descendant) to 'cancelling'. Root-only: cancellation is a decision about the whole
-// tree, so a descendant id is rejected with the root's. The tree is enumerated by a
-// recursive parent_id walk (subtreeCTE), then the locking CTE takes every row lock in
-// id order — the same order as FinishChild/FailInstanceAndAncestors — to avoid
-// PostgreSQL deadlocks (SQLite single-writer, empty lock clause).
-func (db *DB) CancelProcess(ctx context.Context, id string) error {
+// PauseProcess atomically suspends an entire process tree (root + every running
+// descendant). Pausing means only "stop advancing automatically": wait_state, wake_at,
+// retry_count and context are left untouched, which is what lets ResumeProcess be a
+// plain status flip instead of the revival RetryProcess performs.
+//
+// A row lands in 'pausing' only if it is currently leased, i.e. a worker is mid-task on
+// it; the pause becomes 'paused' when that task's write releases the lease (the CASE in
+// UpdateInstance/UpdateInstanceProgress). Everything else -- parked on children, on a
+// delay, on an external task -- has nothing in flight and goes straight to 'paused'.
+// That distinction is load-bearing, not cosmetic: an instance parked with
+// wait_state='waiting' is excluded from ClaimInstances, so if it were marked 'pausing'
+// no claim could ever settle it and it would hang in the draining state forever.
+//
+// Root-only: suspending is a decision about the whole tree, so a descendant id is
+// rejected with the root's. The tree is enumerated by a recursive parent_id walk
+// (subtreeCTE), then the locking CTE takes every row lock in id order -- the same order
+// as FinishChild/FailInstanceAndAncestors -- to avoid PostgreSQL deadlocks (SQLite
+// single-writer, empty lock clause).
+func (db *DB) PauseProcess(ctx context.Context, id string) error {
 	row, err := db.q.GetInstance(ctx, id)
 	if err != nil {
 		return fmt.Errorf("get instance: %w", err)
 	}
-	if err := requireRoot(row, "cancel"); err != nil {
+	if err := requireRoot(row, "pause"); err != nil {
 		return err
 	}
 
-	return db.withTx(ctx, func(_ *dbgen.Queries, exec dbgen.DBTX) error {
+	// settled is the ids that reached 'paused' in this call; leased is those left draining
+	// in 'pausing'. They are logged as different events because they are different facts:
+	// a leased row is not paused yet, it has only been asked to stop.
+	var settled, leased []string
+	if err := db.withTx(ctx, func(_ *dbgen.Queries, exec dbgen.DBTX) error {
+		now := nowMillis()
 
-		// The locked CTE pre-locks the subtree in id order before the UPDATE
-		// (Postgres); on SQLite the ORDER BY is a harmless no-op (single writer, no
-		// FOR UPDATE). One query for both engines — only the lock clause differs.
-		if _, err := exec.ExecContext(ctx, subtreeCTE+`,
-		locked AS (
-			SELECT id FROM process_instances
-			WHERE id IN (SELECT id FROM subtree)
-			ORDER BY id`+db.forUpdate()+`
-		)
-		UPDATE process_instances SET status = 'cancelling', updated_at = ?
-		WHERE id IN (SELECT id FROM locked) AND status = 'running'`,
-			id, nowMillis()); err != nil {
-			return fmt.Errorf("cancel process: %w", err)
+		// Lock the rows this call will mutate, in id order -- the global order shared
+		// with FinishChild/FailInstanceAndAncestors that prevents deadlocks (Postgres;
+		// on SQLite the ORDER BY is a harmless no-op under the single writer). Selecting
+		// rather than blind-updating also yields the exact per-instance outcome, which
+		// the UPDATE's row count alone cannot express and the audit trail needs.
+		rows, err := exec.QueryContext(ctx, subtreeCTE+`
+		SELECT id, CASE WHEN worker_id IS NOT NULL AND lease_expires_at > ?
+		                THEN 1 ELSE 0 END AS held
+		FROM process_instances
+		WHERE id IN (SELECT id FROM subtree) AND status = 'running'
+		ORDER BY id`+db.forUpdate(), id, now)
+		if err != nil {
+			return fmt.Errorf("lock tree: %w", err)
+		}
+		for rows.Next() {
+			var rowID string
+			var held int
+			if err := rows.Scan(&rowID, &held); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan tree row: %w", err)
+			}
+			if held == 1 {
+				leased = append(leased, rowID)
+			} else {
+				settled = append(settled, rowID)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close() // release the cursor before the UPDATE (SQLite single connection)
+
+		// Nothing running anywhere in the tree: the process has already settled (or is
+		// already paused). Report it rather than silently succeeding.
+		if len(settled)+len(leased) == 0 {
+			return fmt.Errorf("process has no running instances to pause (status: %s)", row.Status)
+		}
+
+		// A worker mid-task cannot be stopped, so a leased row only records the request
+		// ('pausing') and lands in 'paused' on the write that finishes its task.
+		if err := updateStatusIn(ctx, exec, settled, string(model.StatusPaused), now); err != nil {
+			return fmt.Errorf("pause process: %w", err)
+		}
+		if err := updateStatusIn(ctx, exec, leased, string(model.StatusPausing), now); err != nil {
+			return fmt.Errorf("pause process: %w", err)
 		}
 
 		return nil
+	}); err != nil {
+		return err
+	}
+
+	db.logTreeAction(id, model.EventPauseRequested, "pause requested",
+		int64(len(settled)+len(leased)), map[string]any{"pausing": len(leased)})
+	db.logInstances(settled, model.EventPaused, "paused")
+	db.logInstances(leased, model.EventPausing, "pause requested while a task was in flight")
+	return nil
+}
+
+// updateStatusIn sets status on an explicit id list (already locked by the caller),
+// binding the ids as a JSON array through json_each -- the same dynamic-IN pattern as
+// FailAncestors, and the reason no dialect branch is needed here.
+func updateStatusIn(ctx context.Context, exec dbgen.DBTX, ids []string, status string, now int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	idsJSON, err := json.Marshal(ids)
+	if err != nil {
+		return err
+	}
+	_, err = exec.ExecContext(ctx,
+		`UPDATE process_instances SET status = ?, updated_at = ?
+		 WHERE id IN (SELECT value FROM json_each(?))`,
+		status, now, string(idsJSON))
+	return err
+}
+
+// logTreeAction records an operator's pause on the tree root, at info level: it is the
+// human-facing line, and the counts are what make it useful — how much of the tree was
+// live, and how much of that could not be stopped mid-task. Written after the transaction
+// commits, so a rejected or rolled-back call leaves no trace. Best-effort like every
+// audit write: a logging failure must not fail the action the user already committed.
+func (db *DB) logTreeAction(rootID, event, msg string, instances int64, extra map[string]any) {
+	meta := map[string]any{"instances": instances}
+	for k, v := range extra {
+		meta[k] = v
+	}
+	_ = db.AppendLog(&model.LogEntry{
+		InstanceID: rootID,
+		Level:      model.LogInfo,
+		Event:      event,
+		Message:    fmt.Sprintf("%s (%d instance(s))", msg, instances),
+		Meta:       meta,
 	})
+}
+
+// logInstances records the per-instance consequence of a tree-wide pause/resume, at debug
+// level: one call fans out over the whole subtree, so this is high-volume detail in the
+// same class as the action_* events, filtered out of the default view.
+func (db *DB) logInstances(ids []string, event, msg string) {
+	for _, instID := range ids {
+		_ = db.AppendLog(&model.LogEntry{
+			InstanceID: instID,
+			Level:      model.LogDebug,
+			Event:      event,
+			Message:    msg,
+		})
+	}
+}
+
+// ResumeProcess atomically un-suspends a paused process tree. Because PauseProcess
+// preserves every other field, this is the whole operation: no revival walk, no
+// wait_state reconstruction, no only_once question -- the instances resume exactly
+// where they were, including any delay or retry-backoff timer, which kept running
+// while they were paused.
+//
+// 'pausing' rows are included so a resume issued before a pause finished landing
+// simply un-requests it. Root-only, same lock order as PauseProcess.
+//
+// The precondition is on the subtree, not on the root's own status, because the two
+// can legitimately disagree: if one branch dies while the tree is paused, its ancestors
+// go 'failing' but cannot settle -- a failing parent waits for every child, and paused
+// children count as active. That leaves a failing root over paused descendants, and
+// resuming is exactly how the operator unblocks it (the branches drain, the tree
+// settles to failed, and it becomes retryable).
+func (db *DB) ResumeProcess(ctx context.Context, id string) error {
+	row, err := db.q.GetInstance(ctx, id)
+	if err != nil {
+		return fmt.Errorf("get instance: %w", err)
+	}
+	if err := requireRoot(row, "resume"); err != nil {
+		return err
+	}
+
+	// Collected under the same lock as PauseProcess, and for the same reason: the ids
+	// are what the per-instance audit entries are keyed on.
+	var resumed []string
+	if err := db.withTx(ctx, func(_ *dbgen.Queries, exec dbgen.DBTX) error {
+		now := nowMillis()
+
+		rows, err := exec.QueryContext(ctx, subtreeCTE+`
+		SELECT id FROM process_instances
+		WHERE id IN (SELECT id FROM subtree) AND status IN ('paused', 'pausing')
+		ORDER BY id`+db.forUpdate(), id)
+		if err != nil {
+			return fmt.Errorf("lock tree: %w", err)
+		}
+		for rows.Next() {
+			var rowID string
+			if err := rows.Scan(&rowID); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan tree row: %w", err)
+			}
+			resumed = append(resumed, rowID)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close() // release the cursor before the UPDATE (SQLite single connection)
+
+		if len(resumed) == 0 {
+			return fmt.Errorf("process is not paused (status: %s)", row.Status)
+		}
+		if err := updateStatusIn(ctx, exec, resumed, string(model.StatusRunning), now); err != nil {
+			return fmt.Errorf("resume process: %w", err)
+		}
+
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	// No root-level entry to match PauseProcess's: a resume is atomic, so the
+	// per-instance events already say everything a tree-level one would.
+	db.logInstances(resumed, model.EventResumed, "resumed")
+	return nil
 }
 
 // requireRoot rejects operations on non-root instances, pointing the caller at
@@ -232,12 +410,17 @@ func requireRoot(row dbgen.ProcessInstance, op string) error {
 	return fmt.Errorf("instance %q is not a root instance; %s root instance %q instead", row.ID, op, stack[0])
 }
 
-// RetryProcess resumes a failed or cancelled root process from where its tree was
-// interrupted: failed/cancelled nodes on the current path are revived in place (leaves
-// re-run their pending task; parents reconstructed as waiting for live children or
-// collecting when all are done), while completed work is never redone. force overrides
-// only_once protection on pending tasks. Root-only — a terminal root implies the whole
-// tree has settled; draining roots are rejected by the status check.
+// RetryProcess revives a failed root process from where its tree died: failed nodes on
+// the current path are revived in place (leaves re-run their pending task; parents
+// reconstructed as waiting for live children or collecting when all are done), while
+// completed work is never redone. force overrides only_once protection on pending tasks.
+// Root-only — a terminal root implies the whole tree has settled; draining roots are
+// rejected by the status check.
+//
+// Failed-only by design. Retrying is an override of the definition: the tree already
+// spent the on_error budget its author configured, and this hands it another attempt
+// (with force, one that skips only_once protection too). Un-suspending a paused process
+// grants nothing and is ResumeProcess, a plain status flip.
 func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 	rootRow, err := db.q.GetInstance(ctx, id)
 	if err != nil {
@@ -246,8 +429,10 @@ func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 	if err := requireRoot(rootRow, "retry"); err != nil {
 		return err
 	}
-	status := model.Status(rootRow.Status)
-	if status != model.StatusFailed && status != model.StatusCancelled {
+	if status := model.Status(rootRow.Status); status != model.StatusFailed {
+		if status == model.StatusPaused || status == model.StatusPausing {
+			return fmt.Errorf("process is paused, not failed (status: %s); resume it instead", status)
+		}
 		return fmt.Errorf("process is not retryable (status: %s)", status)
 	}
 
@@ -258,8 +443,8 @@ func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 	defer tx.Rollback()
 
 	// Lock and load the whole tree (root + descendants) in id order —
-	// the same lock order as CancelProcess/FinishChild/FailInstanceAndAncestors —
-	// so concurrent cancels and child completions serialize against the revival.
+	// the same lock order as PauseProcess/FinishChild/FailInstanceAndAncestors —
+	// so concurrent pauses and child completions serialize against the revival.
 	// The tree is enumerated with a recursive walk over parent_id (subtreeCTE); the
 	// FOR UPDATE on the outer SELECT (Postgres only) locks the rows in that order.
 	rows, err := exec.QueryContext(ctx, subtreeCTE+`
@@ -341,12 +526,14 @@ func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 		switch node.Status {
 		case model.StatusCompleted:
 			return nil // finished work is kept
-		case model.StatusRunning, model.StatusFailing, model.StatusCancelling:
-			// Unreachable under a terminal root (the tree has settled);
-			// kept as defense — a live node belongs to the engine.
+		case model.StatusRunning, model.StatusFailing, model.StatusPausing, model.StatusPaused:
+			// Unreachable under a failed root: it settles only once every child is
+			// terminal, and paused children count as active (CountActiveSiblings), so
+			// a tree holding one stays 'failing'. Kept as defense — a live or
+			// suspended node belongs to the engine, or to ResumeProcess.
 			return nil
 		}
-		// node is failed or cancelled
+		// node is failed
 		newWaitState := model.WaitStateNone
 		if node.Task != "" {
 			kids := children[node.ID][node.Task]
@@ -359,7 +546,7 @@ func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 					if err := revive(k); err != nil {
 						return err
 					}
-					if k.Status != model.StatusCompleted && k.Status != model.StatusFailed && k.Status != model.StatusCancelled {
+					if !k.Status.Terminal() {
 						anyActive = true
 					}
 				}
@@ -435,8 +622,9 @@ func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 
 // SpawnChildrenAndWait atomically inserts child instances and transitions the parent to
 // wait_state='waiting'. Children inherit the parent's current status, so a
-// concurrently-cancelled parent spawns cancelling children (they self-cancel and wake it
-// via FinishChild). Zero children is a no-op (the parent does not enter the wait state).
+// concurrently-paused parent spawns paused children rather than work that would run on
+// behalf of a suspended tree. Zero children is a no-op (the parent does not enter the
+// wait state).
 func (db *DB) SpawnChildrenAndWait(ctx context.Context, parent *model.ProcessInstance, children []*model.ProcessInstance) error {
 	if len(children) == 0 {
 		return nil
@@ -456,7 +644,16 @@ func (db *DB) SpawnChildrenAndWait(ctx context.Context, parent *model.ProcessIns
 			return fmt.Errorf("parent %q is already in wait_state %q", parent.ID, currentWaitState)
 		}
 
-		// Insert children with the parent's current status (propagates cancelling if needed).
+		// A pause that landed while this parent was mid-spawn has to settle here or
+		// never: the write below parks it on wait_state='waiting', which removes it from
+		// the claim predicate, so no later claim could move it out of 'pausing'. The
+		// children inherit the settled status too — a paused tree must not spawn
+		// runnable work.
+		if model.Status(currentStatus) == model.StatusPausing {
+			currentStatus = string(model.StatusPaused)
+		}
+
+		// Insert children with the parent's current status (propagates a pause if needed).
 		// Each child gets created_at = now+i so siblings have a strict ordering by definition
 		// position — ClaimInstances (ORDER BY created_at) always processes them in spawn order.
 		now := nowMillis()

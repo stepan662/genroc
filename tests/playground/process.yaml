@@ -1,25 +1,11 @@
 # yaml-language-server: $schema=http://localhost:8888/process-schema.json
 name: order-pipeline
-input_schema:
-  $ref: "#/$defs/input"
 tasks:
-  - id: parallel
-    output:
-      num: "{{ (self.previous.num ?? input.num) * (self.previous.num ?? input.num) }}"
-      i: "{{ (self.previous.i ?? 0) + 1 }}"
-    switch:
-      - case: "(self.output.i) < input.n"
-        goto: $parallel
-      - goto: end
-output: "{{ outputs.parallel.num }}"
-
-$defs:
-  input:
-    type: object
-    properties:
-      num:
-        type: integer
-        default: 123748297583958759399485776859493938587768583992939858
-      n:
-        type: integer
-        default: 1
+  - id: child
+    action:
+      type: child_map
+      children:
+        a:
+          name: child
+          input: "{{ 10 }}"
+    switch: end

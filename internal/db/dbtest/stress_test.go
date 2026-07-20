@@ -21,19 +21,19 @@ func pgDeadlock(err error) bool {
 	return errors.As(err, &pqErr) && pqErr.Code == "40P01"
 }
 
-// TestStress_CancelProcess_vs_FailInstanceAndAncestors runs CancelProcess and
+// TestStress_PauseProcess_vs_FailInstanceAndAncestors runs PauseProcess and
 // FailInstanceAndAncestors concurrently many times to confirm that the known
 // structural deadlock occurs in practice and that PostgreSQL always resolves it
 // without leaving the DB in an inconsistent state.
 //
 // Each iteration fires both operations against the same parent-child pair:
-//   - CancelProcess locks parent (running) then descends to child (running) — top-down.
+//   - PauseProcess locks parent (running) then descends to child (running) — top-down.
 //   - FailInstanceAndAncestors locks child first (UpdateInstance has no status filter),
 //     then tries to lock parent — bottom-up.
 //
 // This is the only real deadlock in the codebase; the other lock-ordering pairs cannot
 // occur in practice because their WHERE conditions are mutually exclusive.
-func TestStress_CancelProcess_vs_FailInstanceAndAncestors(t *testing.T) {
+func TestStress_PauseProcess_vs_FailInstanceAndAncestors(t *testing.T) {
 	if sharedPgDB == nil {
 		t.Skip("PostgreSQL not available (set POSTGRES_DSN)")
 	}
@@ -41,7 +41,7 @@ func TestStress_CancelProcess_vs_FailInstanceAndAncestors(t *testing.T) {
 	db := sharedPgDB
 
 	const iterations = 30
-	var deadlockCount, successCount int
+	var deadlockCount, successCount, nothingToPause int
 
 	for i := 0; i < iterations; i++ {
 		sharedPgRaw.ExecContext(ctx, "DELETE FROM process_instances")
@@ -59,7 +59,7 @@ func TestStress_CancelProcess_vs_FailInstanceAndAncestors(t *testing.T) {
 		errs := make(chan error, 2)
 
 		wg.Add(2)
-		go func() { defer wg.Done(); errs <- db.CancelProcess(ctx, "parent") }()
+		go func() { defer wg.Done(); errs <- db.PauseProcess(ctx, "parent") }()
 		go func() { defer wg.Done(); errs <- db.FailInstanceAndAncestors(child) }()
 		wg.Wait()
 		close(errs)
@@ -70,6 +70,10 @@ func TestStress_CancelProcess_vs_FailInstanceAndAncestors(t *testing.T) {
 				successCount++
 			case pgDeadlock(err):
 				deadlockCount++
+			// The failure won the race and left nothing running, so the pause had
+			// no rows to touch — a legitimate serial outcome, not an inconsistency.
+			case strings.Contains(err.Error(), "no running instances to pause"):
+				nothingToPause++
 			default:
 				t.Errorf("iteration %d: unexpected error: %v", i, err)
 			}
@@ -89,8 +93,9 @@ func TestStress_CancelProcess_vs_FailInstanceAndAncestors(t *testing.T) {
 
 	total := iterations * 2
 	t.Logf("ran %d iterations (%d total operations)", iterations, total)
-	t.Logf("  success:  %d/%d (%.0f%%)", successCount, total, 100*float64(successCount)/float64(total))
-	t.Logf("  deadlock: %d/%d (%.0f%%)", deadlockCount, total, 100*float64(deadlockCount)/float64(total))
+	t.Logf("  success:   %d/%d (%.0f%%)", successCount, total, 100*float64(successCount)/float64(total))
+	t.Logf("  deadlock:  %d/%d (%.0f%%)", deadlockCount, total, 100*float64(deadlockCount)/float64(total))
+	t.Logf("  no-op pause: %d/%d", nothingToPause, total)
 	if deadlockCount == 0 {
 		t.Log("  note: no deadlocks observed — scheduling may not have produced the exact interleave")
 	}
@@ -245,17 +250,18 @@ func TestStress_ConcurrentFinishChild(t *testing.T) {
 	}
 }
 
-// TestStress_CancelProcess_vs_FinishChild fires CancelProcess on a waiting parent
+// TestStress_PauseProcess_vs_FinishChild fires PauseProcess on a waiting parent
 // while N goroutines concurrently call FinishChild on its children.
 //
-// CancelProcess locks rows top-down via a recursive CTE (parent first, then children).
+// PauseProcess locks rows top-down via a recursive CTE (parent first, then children).
 // FinishChild locks parent first, then updates the child within the same transaction.
 // When the CTE locks a child before the parent row within a single execution plan,
 // the lock order can invert relative to a concurrent FinishChild — producing a deadlock.
 //
 // Invariant: all errors must be nil or a PostgreSQL deadlock; no instance may be
-// left in 'running' after both sides complete.
-func TestStress_CancelProcess_vs_FinishChild(t *testing.T) {
+// left in 'running' after both sides complete. (The parent is running throughout, so
+// the pause always has at least one row to touch and never reports a no-op.)
+func TestStress_PauseProcess_vs_FinishChild(t *testing.T) {
 	if sharedPgDB == nil {
 		t.Skip("PostgreSQL not available (set POSTGRES_DSN)")
 	}
@@ -288,8 +294,8 @@ func TestStress_CancelProcess_vs_FinishChild(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := db.CancelProcess(ctx, "parent"); err != nil && !pgDeadlock(err) {
-				t.Errorf("iteration %d: CancelProcess: %v", i, err)
+			if err := db.PauseProcess(ctx, "parent"); err != nil && !pgDeadlock(err) {
+				t.Errorf("iteration %d: PauseProcess: %v", i, err)
 			}
 		}()
 		for _, child := range children {
@@ -317,23 +323,27 @@ func TestStress_CancelProcess_vs_FinishChild(t *testing.T) {
 				continue
 			}
 			if inst.Status == model.StatusRunning {
-				t.Errorf("iteration %d: %s still 'running' after cancel+finish — inconsistent state", i, id)
+				t.Errorf("iteration %d: %s still 'running' after pause+finish — inconsistent state", i, id)
 			}
 		}
 	}
 }
 
-// TestStress_RetryProcess_vs_CancelProcess fires RetryProcess and CancelProcess
-// concurrently against the same settled failed tree. Both lock tree rows in
-// (created_at, id) order, so they serialize; each iteration must end in one of
-// the two serial outcomes:
+// TestStress_RetryProcess_vs_PauseProcess fires RetryProcess and PauseProcess
+// concurrently against the same settled failed tree. Both lock tree rows in id
+// order, so they serialize; each iteration must end in one of the two serial
+// outcomes:
 //
-//	retry → cancel:  the revived (running) rows were caught by the cancel → cancelling
-//	cancel → retry:  the cancel was a no-op (nothing was running) → revived running
+//	retry → pause:  the revived (running) rows were caught by the pause → paused
+//	pause → retry:  nothing was running, so the pause was a rejected no-op → running
+//
+// The fixture is a failed tree because retry now accepts nothing else, which makes
+// the second ordering the common one: a failed tree has no running row, so the pause
+// reports "no running instances to pause" and changes nothing.
 //
 // Either way the tree stays internally consistent and the completed child is
 // never touched.
-func TestStress_RetryProcess_vs_CancelProcess(t *testing.T) {
+func TestStress_RetryProcess_vs_PauseProcess(t *testing.T) {
 	if sharedPgDB == nil {
 		t.Skip("PostgreSQL not available (set POSTGRES_DSN)")
 	}
@@ -357,8 +367,11 @@ func TestStress_RetryProcess_vs_CancelProcess(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			if err := db.CancelProcess(ctx, "root"); err != nil && !pgDeadlock(err) {
-				t.Errorf("iteration %d: CancelProcess: %v", i, err)
+			err := db.PauseProcess(ctx, "root")
+			// "nothing to pause" is the expected outcome of the pause → retry
+			// ordering: the tree was still failed when the pause ran.
+			if err != nil && !pgDeadlock(err) && !strings.Contains(err.Error(), "no running instances to pause") {
+				t.Errorf("iteration %d: PauseProcess: %v", i, err)
 			}
 		}()
 		wg.Wait()
@@ -367,8 +380,10 @@ func TestStress_RetryProcess_vs_CancelProcess(t *testing.T) {
 		bad := mustStatus(t, db, "c-bad")
 		ok := mustStatus(t, db, "c-ok")
 
-		valid := (root == model.StatusRunning && bad == model.StatusRunning) || // cancel was a no-op
-			(root == model.StatusCancelling && bad == model.StatusCancelling) || // cancel caught the revived rows
+		// The pause never leases anything, so revived rows it catches go straight
+		// to 'paused' (never 'pausing').
+		valid := (root == model.StatusRunning && bad == model.StatusRunning) || // pause was a no-op
+			(root == model.StatusPaused && bad == model.StatusPaused) || // pause caught the revived rows
 			(root == model.StatusFailed && bad == model.StatusFailed) // retry lost to a deadlock
 		if !valid {
 			t.Errorf("iteration %d: inconsistent tree: root=%s c-bad=%s", i, root, bad)
@@ -376,7 +391,9 @@ func TestStress_RetryProcess_vs_CancelProcess(t *testing.T) {
 		if ok != model.StatusCompleted {
 			t.Errorf("iteration %d: completed child touched: %s", i, ok)
 		}
-		if root == model.StatusRunning || root == model.StatusCancelling {
+		// A revived root keeps its reconstructed wait_state through a pause —
+		// pausing writes the status column and nothing else.
+		if root == model.StatusRunning || root == model.StatusPaused {
 			if ws := mustWaitState(t, db, "root"); ws != model.WaitStateWaiting {
 				t.Errorf("iteration %d: revived root wait_state = %q, want waiting", i, ws)
 			}

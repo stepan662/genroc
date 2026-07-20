@@ -24,11 +24,29 @@ const (
 	EventRetryScheduled   = "retry_scheduled"
 	EventErrorRoute       = "error_routed"
 	EventErrorCompleted   = "error_handled"
-	EventCancelSkipRetry  = "cancel_skipped"
 	EventInstanceDone     = "inst_completed"
 	EventInstanceFailed   = "inst_failed"
 	EventInstanceSettled  = "inst_settled"
-	EventCancelled        = "inst_cancelled"
+	// Pausing and resuming fan out over a whole subtree, so their per-instance entries
+	// (inst_paused/inst_pausing/inst_resumed) are debug, in the same high-volume class as
+	// the action_* events.
+	//
+	// Only pause also gets an info-level entry on the tree root, and only because its
+	// outcome is deferred: rows the operator could not stop mid-task stay 'pausing', so
+	// "requested" genuinely differs from "done" and meta.pausing reports how many are
+	// still draining. Resuming is atomic — every row flips in one transaction — so a
+	// root-level entry would say nothing the per-instance ones do not.
+	//
+	// Every instance a pause touches logs exactly one of inst_paused (suspended outright)
+	// or inst_pausing (leased, so only the request could be recorded). The deferred
+	// pausing → paused landing is NOT logged in the normal case: it happens as a CASE
+	// inside the owning worker's write, which cannot report it back without a RETURNING
+	// clause on the hottest query in the system. inst_paused does appear for that
+	// instance if the landing instead goes through the engine's crash-recovery path.
+	EventPauseRequested = "inst_pause_requested"
+	EventPaused         = "inst_paused"
+	EventPausing        = "inst_pausing"
+	EventResumed        = "inst_resumed"
 	EventChildrenSpawned  = "child_spawned"
 	EventChildrenCollect  = "child_collected"
 	EventDelayArmed       = "delay_armed"

@@ -116,7 +116,7 @@ type ListDefinitionsReq struct {
 }
 
 type ListInstancesReq struct {
-	Status string `json:"status"` // optional filter: running, completed, failing, failed, cancelling, cancelled
+	Status string `json:"status"` // optional filter: running, completed, failing, failed, pausing, paused
 	Pagination
 }
 

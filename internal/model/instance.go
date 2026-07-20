@@ -4,20 +4,32 @@ import "time"
 
 // Status represents the lifecycle state of a process instance.
 //
-// failing and cancelling are draining states: the outcome is decided but
-// descendants are still settling. A node only becomes failed/cancelled once
-// all its direct children are terminal, so a terminal root implies the whole
-// tree has settled — which is what makes failed/cancelled roots retryable.
+// failing is a draining state: the outcome is decided but descendants are still
+// settling. A node only becomes failed once all its direct children are terminal,
+// so a failed root implies the whole tree has settled — which is what makes failed
+// roots retryable.
+//
+// paused is not an outcome: it means only "does not continue automatically". The
+// instance keeps its wait_state, wake_at, retry_count and context verbatim, and its
+// timers keep running, so resuming is a status flip rather than a revival. pausing
+// is its draining state — a leased instance that lands in paused once the in-flight
+// task it is holding finishes.
 type Status string
 
 const (
-	StatusRunning    Status = "running"
-	StatusCompleted  Status = "completed"
-	StatusFailing    Status = "failing" // doomed by an error, draining descendants
-	StatusFailed     Status = "failed"
-	StatusCancelling Status = "cancelling" // cancel requested, draining descendants
-	StatusCancelled  Status = "cancelled"
+	StatusRunning   Status = "running"
+	StatusCompleted Status = "completed"
+	StatusFailing   Status = "failing" // doomed by an error, draining descendants
+	StatusFailed    Status = "failed"
+	StatusPausing   Status = "pausing" // pause requested, still holding an in-flight task
+	StatusPaused    Status = "paused"
 )
+
+// Terminal reports whether the status is a settled outcome. paused and pausing are
+// not terminal: a paused instance is live work that simply is not being advanced.
+func (s Status) Terminal() bool {
+	return s == StatusCompleted || s == StatusFailed
+}
 
 // WaitState tracks where a parent instance is in the child-process lifecycle.
 type WaitState string

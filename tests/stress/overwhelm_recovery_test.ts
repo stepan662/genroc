@@ -41,8 +41,10 @@ const OVERWHELM_DEADLINE_MS = 25_000; // wait up to this long for the worker to 
 const SETTLE_MS = 60_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const isTerminal = (s?: string) =>
-  s === "completed" || s === "failed" || s === "cancelled";
+// `paused`/`pausing` are deliberately absent: a pause is not an outcome, only a tree
+// that has stopped being advanced, so it never counts as settled. Nothing here pauses
+// anything, so a paused instance would be a bug, not a state to wait out.
+const isTerminal = (s?: string) => s === "completed" || s === "failed";
 
 let binPromise: Promise<string> | undefined;
 const genrocBin = () => (binPromise ??= buildGenrocBinary());
@@ -172,7 +174,9 @@ describe.runIf(!!DSN)("single-worker overwhelm recovery — postgres", () => {
           const r = byId.get(id);
           if (r?.status === "completed") continue;
           rootsCompleted = false;
-          if (r && (r.status === "failed" || r.status === "cancelled")) {
+          // Retry only takes a `failed` root; the overwhelm churn never pauses
+          // anything, so there is nothing to resume here.
+          if (r?.status === "failed") {
             await api
               .POST("/instances/{id}/retry", {
                 params: { path: { id }, query: { force: true } },

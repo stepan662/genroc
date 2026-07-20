@@ -14,7 +14,7 @@ const countActiveSiblings = `-- name: CountActiveSiblings :one
 SELECT COUNT(*) FROM process_instances
 WHERE parent_id = ?1
   AND spawn_task_id = ?2
-  AND status NOT IN ('completed', 'failed', 'cancelled')
+  AND status NOT IN ('completed', 'failed')
 `
 
 type CountActiveSiblingsParams struct {
@@ -22,6 +22,8 @@ type CountActiveSiblingsParams struct {
 	SpawnTaskID string
 }
 
+// Only completed/failed are settled. A paused sibling still counts as active, so a
+// parent never collects a batch while one of its children is suspended.
 func (q *Queries) CountActiveSiblings(ctx context.Context, arg CountActiveSiblingsParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countActiveSiblings, arg.ParentID, arg.SpawnTaskID)
 	var count int64
@@ -133,7 +135,7 @@ const failAncestors = `-- name: FailAncestors :exec
 UPDATE process_instances
 SET status = 'failing', error = ?1, updated_at = ?2
 WHERE id IN (SELECT value FROM json_each(?3))
-  AND status IN ('running', 'cancelling')
+  AND status IN ('running', 'pausing', 'paused')
 `
 
 type FailAncestorsParams struct {
@@ -142,6 +144,11 @@ type FailAncestorsParams struct {
 	Ids       interface{}
 }
 
+// Paused ancestors are included: a failure is a real outcome and must not be hidden
+// by a suspension. A child that dies while the tree is paused (its in-flight task was
+// doomed when the pause landed) propagates 'failing' upward, and those ancestors
+// settle to 'failed' (retryable) rather than leaving a paused tree with a dead
+// branch inside it. Pause suppresses advancement, not settlement.
 func (q *Queries) FailAncestors(ctx context.Context, arg FailAncestorsParams) error {
 	_, err := q.db.ExecContext(ctx, failAncestors, arg.Error, arg.UpdatedAt, arg.Ids)
 	return err
@@ -878,7 +885,9 @@ SET task             = ?1,
     engine_state     = ?6,
     retry_count      = ?7,
     wake_at    = ?8,
-    status           = ?9,
+    status           = CASE WHEN status = 'pausing'
+                            AND CAST(?9 AS TEXT) = 'running'
+                            THEN 'paused' ELSE CAST(?9 AS TEXT) END,
     wait_state       = ?10,
     error            = ?11,
     updated_at       = ?12,
@@ -905,6 +914,12 @@ type UpdateInstanceParams struct {
 
 // input_data is intentionally NOT written: the process input is immutable after
 // creation, so re-writing it every update would be pure churn.
+//
+// The status CASE lands a pause that arrived while this instance was leased. The
+// worker cannot know about it -- PauseProcess marked the row 'pausing' after the
+// claim -- so the decision is made in SQL against the row's current value. Guarding
+// on the incoming status keeps real outcomes winning: a task that completes or fails
+// the process writes that, and only a still-running instance settles into 'paused'.
 func (q *Queries) UpdateInstance(ctx context.Context, arg UpdateInstanceParams) error {
 	_, err := q.db.ExecContext(ctx, updateInstance,
 		arg.Task,
@@ -933,6 +948,7 @@ SET task             = ?1,
     engine_state     = ?5,
     retry_count      = ?6,
     wake_at    = ?7,
+    status           = CASE WHEN status = 'pausing' THEN 'paused' ELSE status END,
     wait_state       = ?8,
     updated_at       = ?9,
     worker_id        = NULL,
@@ -955,6 +971,12 @@ type UpdateInstanceProgressParams struct {
 
 // Mid-process write: neither input_data (immutable) nor output_data (only set on
 // completion, which goes through UpdateInstance with a status change) is touched.
+//
+// A progress checkpoint always means "still running", so a pending pause lands
+// unconditionally here (see UpdateInstance for why this is decided in SQL). This is
+// also the write that parks on a delay or an external task, so a pause requested
+// while the instance was mid-task settles even though it is about to become
+// unclaimable on wait_state.
 func (q *Queries) UpdateInstanceProgress(ctx context.Context, arg UpdateInstanceProgressParams) error {
 	_, err := q.db.ExecContext(ctx, updateInstanceProgress,
 		arg.Task,
@@ -996,7 +1018,8 @@ func (q *Queries) UpsertChannel(ctx context.Context, arg UpsertChannelParams) er
 
 const wakeParent = `-- name: WakeParent :exec
 UPDATE process_instances
-SET wait_state = CASE WHEN status = 'running' THEN 'collecting' ELSE '' END,
+SET wait_state = CASE WHEN status IN ('running', 'pausing', 'paused')
+                      THEN 'collecting' ELSE '' END,
     updated_at = ?1
 WHERE id = ?2
 `
@@ -1006,6 +1029,10 @@ type WakeParentParams struct {
 	ID        string
 }
 
+// A healthy parent moves to 'collecting' to merge its children's outputs; a doomed
+// one ('failing') clears the wait state and just settles. A paused parent is healthy
+// (it is suspended, not doomed) so it is armed for the collect it will run when
+// resumed. Its status keeps it unclaimable in the meantime.
 func (q *Queries) WakeParent(ctx context.Context, arg WakeParentParams) error {
 	_, err := q.db.ExecContext(ctx, wakeParent, arg.UpdatedAt, arg.ID)
 	return err

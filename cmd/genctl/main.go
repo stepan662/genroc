@@ -13,12 +13,13 @@
 //	genctl external-tasks [--process <name>] [--version <n>] [--task <id>] [--limit <n>] [--all] [--json]
 //	genctl get      <instance-id> [--resolve] [--json]
 //	genctl logs     [--level <level>] [--since <ms>] [--limit <n>] [--recursive] [--resolve] [--mode basic|detail|json] <instance-id>
-//	genctl cancel   <instance-id>
+//	genctl pause    <instance-id>
+//	genctl resume   <instance-id>
 //	genctl retry    [--force] <instance-id>
 //	genctl last
 //
-// get/logs/cancel/retry/signal require an instance id; pass @last for the most recently
-// started instance (recorded by run). `genctl last` prints that id.
+// get/logs/pause/resume/retry/signal require an instance id; pass @last for the most
+// recently started instance (recorded by run). `genctl last` prints that id.
 //
 //	genctl channel list   <process>
 //	genctl channel set    <process> <channel> <version>
@@ -110,8 +111,10 @@ func main() {
 		runExternalTasksCmd(server, args)
 	case "logs":
 		runLogsCmd(server, args)
-	case "cancel":
-		runCancelCmd(server, args)
+	case "pause":
+		runPauseCmd(server, args)
+	case "resume":
+		runResumeCmd(server, args)
 	case "retry":
 		runRetryCmd(server, args)
 	case "last":
@@ -143,7 +146,7 @@ func addServerFlag(fs *flag.FlagSet, def string) *string {
 // instanceIDAndFlags parses an instance subcommand's args, where the instance id
 // may sit before or after the flags. A leading non-flag token is taken as the id
 // (so `get <id> --json` keeps working); otherwise a trailing positional is used (so
-// `cancel --server X <id>` works too). The id must be given explicitly — a concrete
+// `pause --server X <id>` works too). The id must be given explicitly — a concrete
 // id or "@last"; a missing one is an error (see resolveInstanceID).
 func instanceIDAndFlags(fs *flag.FlagSet, args []string) string {
 	var id string
@@ -168,7 +171,8 @@ func usage() {
   genctl external-tasks [--process <name>] [--version <n>] [--task <id>] [--limit <n>] [--all] [--json]
   genctl get      <instance-id> [--resolve] [--json]
   genctl logs     [--level <level>] [--since <ms>] [--limit <n>] [--recursive] [--resolve] [--mode basic|detail|json] <instance-id>
-  genctl cancel   <instance-id>
+  genctl pause    <instance-id>
+  genctl resume   <instance-id>
   genctl retry    [--force] <instance-id>
   genctl last
   genctl channel list   <process>
@@ -195,8 +199,8 @@ Flags:
             with resolve/signal, suppress the confirmation line
 
 Instance id:
-  get/logs/cancel/retry/signal require an instance id; pass @last for the most recently
-  started instance (recorded by run), or run "genctl last" to print it.
+  get/logs/pause/resume/retry/signal require an instance id; pass @last for the most
+  recently started instance (recorded by run), or run "genctl last" to print it.
 
 External tasks:
   external-tasks lists the queue of instances waiting on an external result.

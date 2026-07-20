@@ -166,7 +166,7 @@ var registry = func() []actionDef {
 			Summary: "List process instances",
 			Tags:    []string{"Instances"},
 			PathQuery: struct {
-				Status string `query:"status" enum:"running,completed,failing,failed,cancelling,cancelled" description:"Filter by status"`
+				Status string `query:"status" enum:"running,completed,failing,failed,pausing,paused" description:"Filter by status"`
 				pageQuery
 			}{},
 			Resp: PageResp[InstanceSummaryResp]{},
@@ -376,24 +376,38 @@ var registry = func() []actionDef {
 			},
 		},
 		{
-			Name:    "cancel_instance",
+			Name:    "pause_instance",
 			Method:  http.MethodPost,
-			Path:    "/instances/{id}/cancel",
-			Summary: "Cancel a running root process instance and its entire descendant tree",
+			Path:    "/instances/{id}/pause",
+			Summary: "Pause a running root process instance and its entire descendant tree; takes effect at the next task boundary, so a task already executing runs to completion",
 			Tags:    []string{"Instances"},
 			PathQuery: struct {
 				ID string `path:"id" format:"uuid"`
 			}{},
-			Resp: map[string]any{"cancelled": true},
+			Resp: map[string]any{"paused": true},
 			handle: func(h *Handlers, env Envelope) Reply {
-				return h.cancelInstance(env.ID)
+				return h.pauseInstance(env.ID)
+			},
+		},
+		{
+			Name:    "resume_instance",
+			Method:  http.MethodPost,
+			Path:    "/instances/{id}/resume",
+			Summary: "Resume a paused root process instance and its tree, continuing exactly where it stopped (timers kept running while paused)",
+			Tags:    []string{"Instances"},
+			PathQuery: struct {
+				ID string `path:"id" format:"uuid"`
+			}{},
+			Resp: map[string]any{"resumed": true},
+			handle: func(h *Handlers, env Envelope) Reply {
+				return h.resumeInstance(env.ID)
 			},
 		},
 		{
 			Name:    "retry_instance",
 			Method:  http.MethodPost,
 			Path:    "/instances/{id}/retry",
-			Summary: "Retry a failed or cancelled root process instance, resuming its tree where it was interrupted",
+			Summary: "Retry a failed root process instance, reviving its tree where it died and granting the failing task another attempt beyond its on_error budget",
 			Tags:    []string{"Instances"},
 			PathQuery: struct {
 				ID    string `path:"id" format:"uuid"`

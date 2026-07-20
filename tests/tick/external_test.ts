@@ -136,6 +136,37 @@ test("timeout raises external.timeout, catchable in on_error", async () => {
   expect(await ctx.env.status(id)).toBe("completed");
 });
 
+// The counterpart to the delay case: an external task's timeout is a timer like any
+// other, so it keeps running while the instance is paused and is simply due on resume.
+test("an external timeout that elapses while paused fires on resume", async () => {
+  await ctx.env.define("ext_timeout_paused", [
+    {
+      id: "approval",
+      action: { type: "external", result_schema: approvedSchema },
+      timeout_ms: 60000,
+      on_error: [{ code: ["external.timeout"], goto: "$handler" }],
+      switch: "end",
+    },
+    { id: "handler", switch: "end" },
+  ]);
+  const id = await ctx.env.start("ext_timeout_paused");
+
+  expect(await ctx.env.tick()).toBe(1); // arm (deadline = T + 60s)
+  await ctx.env.pause(id);
+  expect(await ctx.env.status(id)).toBe("paused external");
+
+  // The deadline passes while suspended. A paused instance is never claimed, so the
+  // timeout does not fire here — it is deferred, not cancelled.
+  await ctx.env.client.POST("/tick", { body: { advance_ms: 90000 } });
+  expect(await ctx.env.status(id)).toBe("paused external");
+
+  // On resume the timer is already overdue, so it fires with no further clock advance
+  // and routes through the on_error handler exactly as an un-paused timeout would.
+  await ctx.env.resume(id);
+  await ctx.env.tickUntilIdle();
+  expect(await ctx.env.status(id)).toBe("completed");
+});
+
 test("a no-timeout external wait is never self-claimed", async () => {
   await ctx.env.define("ext_wait", [
     { id: "approval", action: { type: "external", result_schema: approvedSchema }, switch: "end" },
@@ -201,28 +232,42 @@ test("the queue filters by task id in SQL, so filtered pages stay full and count
   expect(page2.page.items_before).toBe(2);
   expect(page2.page.items_after).toBe(0);
 
-  // Drain so these do not bleed into later tests.
-  for (const id of [...betas, ...alphas]) await ctx.env.cancel(id);
+  // Pause so these leave the queue and do not bleed into later tests.
+  for (const id of [...betas, ...alphas]) await ctx.env.pause(id);
   await ctx.env.tickUntilIdle();
 });
 
-test("cancel drains an externally-waiting instance immediately", async () => {
-  await ctx.env.define("ext_cancel", [
+test("pausing an externally-waiting instance takes it out of the queue", async () => {
+  await ctx.env.define("ext_pause", [
     { id: "approval", action: { type: "external", result_schema: approvedSchema }, switch: "end" },
   ]);
-  const id = await ctx.env.start("ext_cancel");
+  const id = await ctx.env.start("ext_pause");
   expect(await ctx.env.tick()).toBe(1);
   expect(await ctx.env.status(id)).toBe("running external");
 
-  await ctx.env.cancel(id);
-  // No clock advance: a cancelling instance is claimed despite waiting on an external result.
-  await ctx.env.tickUntilIdle();
-  expect(await ctx.env.status(id)).toBe("cancelled");
+  // The external wait is preserved — only the status changes — but the task stops
+  // being offered to external workers, because they could not resolve it anyway.
+  await ctx.env.pause(id);
+  expect(await ctx.env.status(id)).toBe("paused external");
 
-  // Resolving a cancelled task is rejected.
+  // The queue identifies tasks by "<instance-id>.<nonce>" resolve token.
+  const queuedIds = async () =>
+    (await ctx.env.client.GET("/external-tasks", {})).data!.items!.map((t) =>
+      t.token.split(".")[0],
+    );
+  expect(await queuedIds()).not.toContain(id);
+
+  // Resolving a paused task is rejected.
   const { data, error } = await ctx.env.client.POST("/external-tasks/resolve", {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     body: { token: `${id}.whatever`, result: { approved: true } } as any,
   });
   expect(error ?? (data as { error?: string })?.error).toBeTruthy();
+
+  // Resuming puts it back in the queue on exactly the same external wait.
+  await ctx.env.resume(id);
+  expect(await ctx.env.status(id)).toBe("running external");
+  expect(await queuedIds()).toContain(id);
+
+  await ctx.env.pause(id);
 });

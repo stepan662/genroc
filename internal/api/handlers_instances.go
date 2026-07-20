@@ -129,14 +129,24 @@ func (h *Handlers) getInstance(id string, resolve bool) Reply {
 	return okReply(resp)
 }
 
-func (h *Handlers) cancelInstance(id string) Reply {
+func (h *Handlers) pauseInstance(id string) Reply {
 	if id == "" {
 		return errReply(fmt.Errorf("id is required"))
 	}
-	if err := h.db.CancelProcess(context.Background(), id); err != nil {
+	if err := h.db.PauseProcess(context.Background(), id); err != nil {
 		return errReply(err)
 	}
-	return okReply(map[string]any{"cancelled": true})
+	return okReply(map[string]any{"paused": true})
+}
+
+func (h *Handlers) resumeInstance(id string) Reply {
+	if id == "" {
+		return errReply(fmt.Errorf("id is required"))
+	}
+	if err := h.db.ResumeProcess(context.Background(), id); err != nil {
+		return errReply(err)
+	}
+	return okReply(map[string]any{"resumed": true})
 }
 
 func (h *Handlers) retryInstance(id string, raw json.RawMessage) Reply {

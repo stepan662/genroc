@@ -16,8 +16,8 @@ import (
 //  2. WaitStateCollecting → all children terminal; merge their outputs into the parent
 //     context and return so advance() continues past this task.
 //
-// A cancelling parent spawns cancelling children: they self-cancel and call FinishChild,
-// which moves the parent to WaitStateCollecting normally.
+// A parent paused mid-spawn spawns paused children, so a suspended tree never puts
+// runnable work in the queue; resuming the tree starts them.
 func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInstance, task *model.Task) (any, *advanceOutcome) {
 	// Phase 2: parent woke up with children done — collect their outputs into the
 	// action result (self.result). It is exported only if the task projects it.

@@ -433,7 +433,7 @@ func runGetCmd(server string, args []string) {
 func runInstancesCmd(server string, args []string) {
 	fs := flag.NewFlagSet("instances", flag.ExitOnError)
 	serverFlag := addServerFlag(fs, server)
-	statusFlag := fs.String("status", "", "filter by status (running, completed, failing, failed, cancelling, cancelled)")
+	statusFlag := fs.String("status", "", "filter by status (running, completed, failing, failed, pausing, paused)")
 	sortFlag := fs.String("sort", "created", "sort key: created (newest first) or updated (most recently active)")
 	limitFlag := fs.Int("limit", 20, "max instances to show (server caps a page at 100; use --all for more)")
 	allFlag := fs.Bool("all", false, "list every instance (follow all pages)")
@@ -692,15 +692,26 @@ func serverErrorDetail(err error, marker string) (string, bool) {
 	return "", false
 }
 
-func runCancelCmd(server string, args []string) {
-	fs := flag.NewFlagSet("cancel", flag.ExitOnError)
+func runPauseCmd(server string, args []string) {
+	fs := flag.NewFlagSet("pause", flag.ExitOnError)
 	serverFlag := addServerFlag(fs, server)
 	id := instanceIDAndFlags(fs, args)
 
-	if err := call(*serverFlag+"/instances/"+url.PathEscape(id)+"/cancel", http.MethodPost, nil, nil); err != nil {
+	if err := call(*serverFlag+"/instances/"+url.PathEscape(id)+"/pause", http.MethodPost, nil, nil); err != nil {
 		fatal("%v", err)
 	}
-	fmt.Printf("cancelled: %s\n", id)
+	fmt.Printf("paused: %s\n", id)
+}
+
+func runResumeCmd(server string, args []string) {
+	fs := flag.NewFlagSet("resume", flag.ExitOnError)
+	serverFlag := addServerFlag(fs, server)
+	id := instanceIDAndFlags(fs, args)
+
+	if err := call(*serverFlag+"/instances/"+url.PathEscape(id)+"/resume", http.MethodPost, nil, nil); err != nil {
+		fatal("%v", err)
+	}
+	fmt.Printf("resumed: %s\n", id)
 }
 
 func runRetryCmd(server string, args []string) {

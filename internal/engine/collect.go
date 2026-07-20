@@ -14,9 +14,10 @@ import (
 // (self.result) — a keyed map for child_map, an ordered array for child_list. Exported to
 // outputs.<id> only if the task projects it via `output`.
 //
-// Collecting is valid only when every child completed — a failed/cancelled child makes the
-// parent failing/cancelling, which exits advance() before this phase. The guard below
-// enforces that rather than silently merging nil outputs.
+// Collecting is valid only when every child completed — a failed child makes the parent
+// failing, which exits advance() before this phase, and a paused child keeps the parent
+// from being woken at all (it still counts as active). The guard below enforces that
+// rather than silently merging nil outputs.
 func (e *Engine) collectChildOutputs(ctx context.Context, inst *model.ProcessInstance, task *model.Task) (any, error) {
 	siblings, err := e.db.ChildrenForTask(ctx, inst.ID, task.ID)
 	if err != nil {

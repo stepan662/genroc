@@ -51,6 +51,75 @@ test("a signal that arrives before the task arms is buffered, then consumed on a
   expect((await contextOf(id)).outputs.approval).toEqual({ approved: true });
 });
 
+// A pause suspends execution, not delivery. A signal to a paused instance whose task is
+// armed is delivered into the task's result slot — that write clears the wait but leaves
+// the status alone, so the instance still does not advance until it is resumed. Buffering
+// it instead would strand it: an already-armed task never re-arms, so nothing would ever
+// pop the buffer.
+test("a signal to a paused instance is delivered but does not advance it until resume", async () => {
+  await ctx.env.define("sig_paused", [
+    {
+      id: "approval",
+      action: { type: "external", result_schema: approvedSchema },
+      output: "{{ self.result }}",
+      switch: "end",
+    },
+  ]);
+  const id = await ctx.env.start("sig_paused");
+
+  expect(await ctx.env.tick()).toBe(1); // arm/park on the external task
+  expect(await ctx.env.status(id)).toBe("running external");
+
+  await ctx.env.pause(id);
+  expect(await ctx.env.status(id)).toBe("paused external");
+
+  // The task is armed, so the result is delivered rather than buffered — the pause does
+  // not block correlation.
+  const { data, error } = await signal(id, "approval", { approved: true });
+  expect(error).toBeUndefined();
+  expect((data as { delivered: boolean }).delivered).toBe(true);
+  expect((data as { buffered: boolean }).buffered).toBe(false);
+
+  // Delivery un-parked the external wait, but the instance is still paused, so it is
+  // not claimed and the process does not move on.
+  expect(await ctx.env.status(id)).toBe("paused");
+  expect(await ctx.env.tick()).toBe(0);
+  expect(await ctx.env.status(id)).toBe("paused");
+
+  // Resuming lets it consume the result that was waiting for it all along.
+  await ctx.env.resume(id);
+  await ctx.env.tickUntilIdle();
+  expect(await ctx.env.status(id)).toBe("completed");
+  expect((await contextOf(id)).outputs.approval).toEqual({ approved: true });
+});
+
+// The buffering path still applies when the paused instance is not sitting on that
+// task: the result waits until the task arms after the resume.
+test("a signal for a not-yet-reached task buffers while paused, and lands on arming", async () => {
+  await ctx.env.define("sig_paused_early", [
+    { id: "step1", switch: [{ goto: "next" }] },
+    {
+      id: "approval",
+      action: { type: "external", result_schema: approvedSchema },
+      output: "{{ self.result }}",
+      switch: "end",
+    },
+  ]);
+  const id = await ctx.env.start("sig_paused_early");
+
+  await ctx.env.pause(id);
+  expect(await ctx.env.status(id)).toBe("paused");
+
+  const { data, error } = await signal(id, "approval", { approved: false });
+  expect(error).toBeUndefined();
+  expect((data as { buffered: boolean }).buffered).toBe(true);
+
+  await ctx.env.resume(id);
+  await ctx.env.tickUntilIdle();
+  expect(await ctx.env.status(id)).toBe("completed");
+  expect((await contextOf(id)).outputs.approval).toEqual({ approved: false });
+});
+
 test("a signal to an already-armed task resolves it immediately", async () => {
   await ctx.env.define("sig_armed", [
     { id: "approval", action: { type: "external", result_schema: approvedSchema }, switch: "end" },

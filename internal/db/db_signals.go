@@ -123,12 +123,23 @@ func (db *DB) DeliverSignal(ctx context.Context, instanceID, taskID, signalID st
 	default:
 		return false, fmt.Errorf("lock instance: %w", err)
 	}
-	if status != string(model.StatusRunning) {
+	// A paused instance still accepts signals. A pause suspends execution, not delivery:
+	// rejecting here would make a pause lose events, which is exactly what a pause is
+	// not supposed to do.
+	if status != string(model.StatusRunning) &&
+		status != string(model.StatusPaused) && status != string(model.StatusPausing) {
 		return false, fmt.Errorf("instance is not running (status %s); cannot signal", status)
 	}
 
 	// The `task` column is the current task id, so the instance is armed for this
 	// signal iff it is parked on an external wait at exactly that task.
+	//
+	// Status is deliberately NOT part of this test. Delivering to a paused instance is
+	// safe and is the only correct option: SetExternalResult stores the result and clears
+	// the wait but leaves status alone, so the instance stays unclaimable and does not
+	// advance until it is resumed. Treating a paused-but-armed task as unarmed would
+	// buffer the signal instead — and a task that is already armed never re-arms, so the
+	// buffered result would sit there unread forever.
 	armed := model.WaitState(waitState) == model.WaitStateExternal && currentTask == taskID
 	// A live lease means a worker is mid-advance on this row (a timeout firing); don't race
 	// it — buffer instead, and the signal is consumed if the task re-arms.

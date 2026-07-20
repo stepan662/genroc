@@ -219,7 +219,7 @@ test("a failing child fails the whole batch — root settles to 'failed'", async
   expect(await ctx.env.status(root)).toBe("failed");
 });
 
-test("cancel the root — its child_list children cancel and the tree settles to 'cancelled'", async () => {
+test("pause the root — its whole child_list fan-out suspends, and resume finishes it", async () => {
   const root = await startWith(fanout, { items: [{ n: 1 }, { n: 2 }, { n: 3 }] });
 
   // tick: spawn 3 children, park root.
@@ -227,22 +227,27 @@ test("cancel the root — its child_list children cancel and the tree settles to
   const kids = await ctx.env.listChildrenOf(root, "spread");
   expect(kids).toHaveLength(3);
 
-  // Cancel is atomic across the whole subtree: root + every child become 'cancelling'.
-  await ctx.env.cancel(root);
-  expect(await ctx.env.status(root)).toBe("cancelling waiting");
+  // Pause is atomic across the whole subtree: root + every child. Nothing is
+  // leased between ticks, so they suspend outright with their wait states intact.
+  await ctx.env.pause(root);
+  expect(await ctx.env.status(root)).toBe("paused waiting");
   expect(
     await ctx.env.statuses({ c0: kids[0], c1: kids[1], c2: kids[2] }),
-  ).toEqual({ c0: "cancelling", c1: "cancelling", c2: "cancelling" });
+  ).toEqual({ c0: "paused", c1: "paused", c2: "paused" });
 
-  // Drain: children cancel, the root is woken (never 'collecting' while cancelling)
-  // and settles to 'cancelled'.
+  // Nothing in the fan-out is claimable while it is suspended.
+  expect(await ctx.env.tick()).toBe(0);
+
+  // Resume, and the batch runs to completion as if it had never stopped —
+  // including the root's collect of all three children's outputs.
+  await ctx.env.resume(root);
   await ctx.env.tickUntilIdle();
   expect(
     await ctx.env.statuses({ root, c0: kids[0], c1: kids[1], c2: kids[2] }),
   ).toEqual({
-    root: "cancelled",
-    c0: "cancelled",
-    c1: "cancelled",
-    c2: "cancelled",
+    root: "completed",
+    c0: "completed",
+    c1: "completed",
+    c2: "completed",
   });
 });

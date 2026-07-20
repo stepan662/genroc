@@ -39,7 +39,7 @@ no worker while it waits.
 | Binary       | Purpose |
 |--------------|---------|
 | `genroc`     | The server: runs the engine and serves the API over HTTP / TCP / Unix socket. |
-| `genctl`     | Command-line client for a running server (apply, run, inspect, logs, cancel/retry), inspired by kubectl. |
+| `genctl`     | Command-line client for a running server (apply, run, inspect, logs, pause/resume/retry), inspired by kubectl. |
 | `genrocspec` | Emits the server's OpenAPI spec (`openapi.json`). |
 
 ## Quickstart

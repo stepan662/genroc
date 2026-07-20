@@ -4,7 +4,7 @@ import { listAllInstances } from "../helpers/client.ts";
 
 // Multi-worker collision stress. Several independent `genroc` processes — each its
 // own OS process and its own connection pool/handle — poll the same database
-// while a chaos loop randomly cancels and retries roots. Unlike the in-process
+// while a chaos loop randomly pauses, resumes and retries roots. Unlike the in-process
 // Go engine stress tests (engines as goroutines sharing one *db.DB), this is the
 // real shape of a worker fleet: correctness rests on the claim/lease/child-finish
 // locks holding across separate processes.
@@ -14,22 +14,28 @@ import { listAllInstances } from "../helpers/client.ts";
 // exactly 2^(D+1)-1 instances, and the root's aggregated `output.processes`
 // re-counts that subtree bottom-up — a built-in exactly-once checksum.
 //
+// Note pause is not an outcome and not terminal: a paused tree just stops being
+// advanced, keeping its wait_state/wake_at/retry_count/context, and only a resume
+// starts it moving again. So the chaos loop always pairs a pause with a resume, and
+// a final sweep resumes anything still paused — otherwise the settle wait below
+// would block forever on a tree nobody is advancing.
+//
 // Collision signals asserted after the chaos settles:
 //   1. every instance is terminal — no instance left stuck running/waiting/
-//      collecting by a lost update or a cancel racing a spawn;
-//   2. every root reaches completed once the chaos stops (driven green by
-//      forced retries) — no tree wedged by cross-worker contention;
+//      collecting by a lost update or a pause racing a spawn;
+//   2. every root reaches completed once the chaos stops (driven green by resumes
+//      and forced retries) — no tree wedged by cross-worker contention;
 //   3. each completed root's output.processes == subtree size — no worker
 //      double-spawned a child or double-counted an output.
 //
 // Postgres only. A worker fleet is a Postgres-only deployment: separate processes
 // rely on FOR UPDATE SKIP LOCKED claims and per-row FOR UPDATE child-finish locks.
 // SQLite is single-writer/single-process — running several genroc processes against
-// one file wedges under chaos (a cancel-cascade transaction lost to
-// SQLITE_BUSY_SNAPSHOT strands a cancelling|waiting parent). The SQLite *supported*
-// multi-worker model is multiple engines in ONE process, with the same random
-// cancel/retry + exactly-once coverage in the Go test
-// TestStress_Chaos_CancelRetryRandomErrors (internal/engine/stress_test.go).
+// one file wedges under chaos (a pause-cascade transaction lost to
+// SQLITE_BUSY_SNAPSHOT strands a pausing|waiting parent, which then never reaches
+// paused and so never takes a resume). The SQLite *supported* multi-worker model is
+// multiple engines in ONE process; the equivalent lifecycle-vs-lifecycle contention
+// is covered in-process by the Go stress suite (internal/db/dbtest/stress_test.go).
 
 const DSN = process.env.POSTGRES_DSN;
 
@@ -67,8 +73,9 @@ const backends: Backend[] = [
 ];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const isTerminal = (s?: string) =>
-  s === "completed" || s === "failed" || s === "cancelled";
+// `paused`/`pausing` are deliberately absent: a pause is not an outcome, only a
+// tree that has stopped being advanced, so it never counts as settled.
+const isTerminal = (s?: string) => s === "completed" || s === "failed";
 
 let binPromise: Promise<string> | undefined;
 const genrocBin = () => (binPromise ??= buildGenrocBinary());
@@ -103,7 +110,7 @@ for (const backend of backends) {
     });
 
     test(
-      "recursive trees survive random cancel/retry across separate processes",
+      "recursive trees survive random pause/resume/retry across separate processes",
       async () => {
         const api = workers[0].client;
         const processName = `stress_chaos_${crypto.randomUUID()}`;
@@ -170,15 +177,25 @@ for (const backend of backends) {
         }
         const randomRoot = () => rootIds[Math.floor(Math.random() * rootIds.length)];
 
-        // Chaos window: hammer random roots with cancels and retries while the
-        // workers race to advance, cancel, and re-spawn the same trees. All
-        // errors (cancel of a completed root, retry of a non-settled one) are
-        // expected and ignored — they are part of the contention.
+        // Chaos window: hammer random roots with pauses, resumes and retries while
+        // the workers race to advance, pause, and re-spawn the same trees. All
+        // errors (pause of a completed root, resume of a running one, retry of a
+        // non-failed one) are expected and ignored — they are part of the contention.
         let chaosOn = true;
-        const canceller = (async () => {
+        // Each pauser tick pauses a root and resumes it again a beat later: a paused
+        // tree is not advanced by anyone, so leaving one behind would strand the
+        // settle loop. The gap is what races the workers mid-task (running → pausing
+        // → paused → running). Losing a resume to a lost update is still possible;
+        // the sweep after the window is the backstop.
+        const pauser = (async () => {
           while (chaosOn) {
+            const id = randomRoot();
             await api
-              .POST("/instances/{id}/cancel", { params: { path: { id: randomRoot() } } })
+              .POST("/instances/{id}/pause", { params: { path: { id } } })
+              .catch(() => {});
+            await sleep(20 + Math.random() * 40);
+            await api
+              .POST("/instances/{id}/resume", { params: { path: { id } } })
               .catch(() => {});
             await sleep(30 + Math.random() * 70);
           }
@@ -196,11 +213,20 @@ for (const backend of backends) {
 
         await sleep(CHAOS_MS);
         chaosOn = false;
-        await Promise.all([canceller, retrier]);
+        await Promise.all([pauser, retrier]);
 
-        // Settlement: service is calm now; force-retry any settled (failed/
-        // cancelled) root until every tree is completed and nothing is left
-        // mid-flight.
+        // Resume sweep: nothing advances a paused tree, so before waiting for
+        // settlement every root gets an unconditional resume (a no-op error on the
+        // ones that are already running or terminal).
+        for (const id of rootIds) {
+          await api
+            .POST("/instances/{id}/resume", { params: { path: { id } } })
+            .catch(() => {});
+        }
+
+        // Settlement: service is calm now; resume any root the chaos left paused and
+        // force-retry any failed one until every tree is completed and nothing is
+        // left mid-flight.
         const byProcess = (i: { process?: string }) => i.process === processName;
         const deadline = Date.now() + SETTLE_MS;
         let allDone = false;
@@ -213,7 +239,13 @@ for (const backend of backends) {
             const r = byId.get(id);
             if (r?.status === "completed") continue;
             rootsCompleted = false;
-            if (r && (r.status === "failed" || r.status === "cancelled")) {
+            // A `pausing` root is re-swept each iteration until the in-flight task's
+            // write lands it in `paused` and the resume actually takes.
+            if (r && (r.status === "paused" || r.status === "pausing")) {
+              await api
+                .POST("/instances/{id}/resume", { params: { path: { id } } })
+                .catch(() => {});
+            } else if (r?.status === "failed") {
               await api
                 .POST("/instances/{id}/retry", {
                   params: { path: { id }, query: { force: true } },

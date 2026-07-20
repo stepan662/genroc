@@ -1,5 +1,5 @@
 /**
- * Tests that observe how errors interact with cancellation in a 3-level process tree:
+ * Tests that observe how errors interact with pausing in a 3-level process tree:
  *
  *   grandparent
  *     └─ parent  (child call)
@@ -7,13 +7,19 @@
  *          └─ b  (child_map)  ← calls successWorker → HTTP 200 → completes
  *
  * Key invariants:
- *   - Errors take precedence over cancellation: FailAncestors marks ancestors
- *     as 'failing' even if they were 'cancelling waiting'.
  *   - Ancestors drain through 'failing' (keeping wait_state) and settle to
  *     'failed' one level per tick, bottom-up — a root is 'failed' only once
  *     its whole tree is inactive, which is what makes it retryable.
+ *   - A failure is an outcome and a pause is not, so failures propagate through
+ *     paused ancestors: FailAncestors marks them 'failing' rather than letting a
+ *     suspension hide a dead branch.
+ *   - But a failing parent still waits for every child, and a paused child counts
+ *     as active, so a tree that loses a branch while suspended sits at 'failing'
+ *     until it is resumed. Resuming is what lets it settle — and only then is it
+ *     retryable. That is why resume keys on the subtree rather than the root's own
+ *     status: here the root is 'failing' while its descendants are paused.
  *
- * Same server/tick/ordering conventions as tree_cancel_test.ts; see that file for details.
+ * Same server/tick/ordering conventions as tree_pause_test.ts; see that file for details.
  *
  * buildTree() leaves the tree at:
  *   gp="running waiting", parent="running waiting", a="running", b="running"
@@ -170,10 +176,10 @@ test("a fails — ancestors drain through 'failing' and settle to 'failed' one l
   }
 });
 
-test("a fails while ancestors are cancelling — FailAncestors overrides 'cancelling'; cancelled sibling leaves parent failed", async () => {
+test("a fails while the tree is paused — failure propagates, and resume unblocks the settle", async () => {
   // A separate tree whose failing worker holds its first request open, so the
-  // root can be cancelled while a's call is still in flight. The failure then
-  // lands on 'cancelling' ancestors and must override them to 'failed'.
+  // root can be paused while a's call is still in flight. The failure then
+  // lands on paused ancestors and must override them to 'failing'.
   const uid = crypto.randomUUID().slice(0, 8);
   const holdMock = await startMockService(0, {
     statusCode: 500,
@@ -225,14 +231,40 @@ test("a fails while ancestors are cancelling — FailAncestors overrides 'cancel
     const tickPromise = ctx.env.tick();
     await holdMock.firstRequestReceived;
 
-    // Cancel the root while a's call is in flight — the whole tree (including
-    // the claimed a, whose DB row is still 'running') becomes 'cancelling'.
-    await ctx.env.cancel(gp);
+    // Pause the root while a's call is in flight. a is leased, so it is the one
+    // node that lands in 'pausing' — it still has a task to finish. Everyone else
+    // has nothing in flight and is suspended outright.
+    await ctx.env.pause(gp);
+    expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
+      gp: "paused waiting",
+      parent: "paused waiting",
+      a: "pausing",
+      b: "paused",
+    });
 
-    // Release the held 500. The engine still holds a as in-memory 'running',
-    // so the failure path runs: failInstance(a) → FailAncestors:
-    // WHERE status IN ('running', 'cancelling') — the cancelling ancestors are
-    // overridden to 'failing' (error wins), keeping wait_state='waiting'.
+    // The audit trail distinguishes the two: the nodes suspended outright say
+    // inst_paused, the in-flight one says only inst_pausing (it is not paused yet),
+    // and the root's request records how many were left draining.
+    const eventsOn = async (id: string) => {
+      const { data } = await ctx.env.client.GET("/instances/{id}/logs", {
+        params: { path: { id }, query: { limit: 100 } },
+      });
+      return (data!.items ?? []).map((l) => l.event);
+    };
+    expect(await eventsOn(a)).toContain("inst_pausing");
+    expect(await eventsOn(a)).not.toContain("inst_paused");
+    expect(await eventsOn(b)).toContain("inst_paused");
+    const { data: rootLogs } = await ctx.env.client.GET("/instances/{id}/logs", {
+      params: { path: { id: gp }, query: { limit: 100 } },
+    });
+    expect(
+      rootLogs!.items!.find((l) => l.event === "inst_pause_requested")!.meta,
+    ).toMatchObject({ instances: 4, pausing: 1 });
+
+    // Release the held 500. The engine still holds a as in-memory 'running', so the
+    // failure path runs: failInstance(a) → FailAncestors, whose predicate includes
+    // paused rows — a failure is a real outcome and must not be hidden by a
+    // suspension. The ancestors become 'failing', keeping wait_state='waiting'.
     holdMock.release();
     await tickPromise;
 
@@ -240,11 +272,13 @@ test("a fails while ancestors are cancelling — FailAncestors overrides 'cancel
       gp: "failing waiting",
       parent: "failing waiting",
       a: "failed",
-      b: "cancelling",
+      b: "paused",
     });
 
-    // The root is draining ('failing') while b settles — a retry is rejected
-    // by the status check alone.
+    // The tree is now wedged, and legitimately so: parent is failing but still
+    // waiting on b, and b is paused, so it will never settle on its own. Ticking
+    // changes nothing, and retry is rejected — the root is draining, not failed.
+    expect(await ctx.env.tick()).toBe(0);
     const { error: earlyRetryErr } = await ctx.env.client.POST(
       "/instances/{id}/retry",
       { params: { path: { id: gp } } },
@@ -252,24 +286,34 @@ test("a fails while ancestors are cancelling — FailAncestors overrides 'cancel
     expect(earlyRetryErr).toBeDefined();
     expect(JSON.stringify(earlyRetryErr)).toContain("not retryable");
 
-    // tick: b (cancelling) is processed → cancelInstance → cancelled.
-    // FinishChild(b): all batch children terminal → parent woken (wait_state '').
+    // Resume is what unblocks it. The root's own status is 'failing', not paused,
+    // so this only works because resume looks for paused rows anywhere in the
+    // subtree — here just b.
+    await ctx.env.resume(gp);
+    expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
+      gp: "failing waiting",
+      parent: "failing waiting",
+      a: "failed",
+      b: "running",
+    });
+
+    // tick: b runs and completes. FinishChild(b): all batch children terminal →
+    // parent woken (wait_state '' — a failing parent must not merge outputs).
     await ctx.env.tick();
     expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
       gp: "failing waiting",
       parent: "failing",
       a: "failed",
-      b: "cancelled",
+      b: "completed",
     });
 
-    // tick: parent settles failing → failed (error wins over the cancel);
-    // its terminal save wakes gp.
+    // tick: parent settles failing → failed; its terminal save wakes gp.
     await ctx.env.tick();
     expect(await ctx.env.statuses({ gp, parent, a, b })).toEqual({
       gp: "failing",
       parent: "failed",
       a: "failed",
-      b: "cancelled",
+      b: "completed",
     });
 
     // tick: gp settles failing → failed — only now is the root retryable.
@@ -278,7 +322,7 @@ test("a fails while ancestors are cancelling — FailAncestors overrides 'cancel
       gp: "failed",
       parent: "failed",
       a: "failed",
-      b: "cancelled",
+      b: "completed",
     });
 
     // The error from 'a' is propagated to ancestors via FailAncestors.
