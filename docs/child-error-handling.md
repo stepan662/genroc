@@ -276,10 +276,12 @@ collect-time output validation — all go straight to `failInstance`
 `on_error` at all. So a child task's `on_error` list is, by construction, a list
 of raised codes.
 
-They were once lexically distinct from engine codes (R1 forbade dots); dots are
-now allowed in raised codes (R1 Delta), so an authored code *may* resemble an
-engine code (`http.500`,
-`pre.timeout`, `external.timeout`, `output.invalid`).
+Authored and engine codes share one namespace: dots are allowed in raised codes
+(R1 Delta), so an authored code *may* be spelled exactly like an engine one
+(`http.500`, `pre.timeout`, `external.timeout`, `output.invalid`). That is
+intentional — a child can catch an engine failure and re-raise it under the same
+code (see below), and a definition is free to adopt the engine's vocabulary rather
+than invent a parallel one.
 
 **Propagation is explicit.** A parent re-raising a child's error is just a `raise`
 in an `on_error` rule — and that is what puts the new code into *this* process's
@@ -309,11 +311,13 @@ that has meaning in a pattern — no escaping is ever needed, in either directio
 
 > **Delta (implemented).** The draft forbade dots, to keep authored codes
 > lexically distinct from engine codes (which always have one). Dots are now
-> **allowed** — a code may read `psp.declined`. The distinction was only an
-> observability nicety (telling authored from engine codes in an `error_code`
-> filter), never a correctness dependency; the author is the authority on how to
-> name their codes. The trade-off: an authored code *can* now look like an engine
-> code, so the two are no longer distinguishable by shape alone.
+> **allowed** — a code may read `psp.declined` — and authored and engine codes
+> share one namespace on purpose. Keeping them separate was only an observability
+> nicety, never a correctness dependency, and merging them is useful: a child can
+> re-raise an engine failure under its own code (e.g. catch `http.503` and
+> `raise: {code: http.503, …}`), turning an uncatchable failure into a catchable
+> raise the parent can branch on, without inventing a parallel code. An author who
+> still wants the at-a-glance separation can simply keep their codes dot-free.
 
 **R2 — faults are static.** Neither `Code` nor `Message` contains `{{ }}`. A
 computed code would make `raises(D)` uncomputable and `error_code` unqueryable;
@@ -756,14 +760,15 @@ uniformly queryable.
 > `engine.expression`, `engine.config`, `engine.definition`, `engine.input`,
 > `engine.spawn`, `engine.collect`, `engine.only_once`
 > ([error.go](internal/engine/error.go)). They carry a dot like every other engine
-> code, so R1's namespace split still holds: a filter never confuses one with an
-> authored code.
+> code.
 
-The two namespaces once stayed legible because R1 forbade dots in authored codes;
-dots are now allowed (R1 Delta), so `psp.declined` (authored) and `http.401`
-(engine) are no longer distinguishable by shape alone. An author who wants the
-old at-a-glance separation can still keep authored codes dot-free — it is now a
-convention, not a rule.
+Authored and engine codes share one `error_code` namespace by design (R1 Delta):
+`psp.declined` (authored) and `http.401` (engine) are spelled the same way, and a
+definition may deliberately reuse an engine code — e.g. re-raising a caught
+`http.503` under the same code. A filter therefore treats all codes uniformly,
+which is the point. An author who wants an at-a-glance authored-vs-engine
+separation can keep their codes dot-free as a convention, but the system does not
+require or rely on it.
 
 **Exactly one status predicate changes.** The engine keeps four separate copies
 of "which statuses are live", and it is worth stating that only one of them has
@@ -887,8 +892,9 @@ far from the change.
 
 - **D1 — no `child.` prefix.** A child task's `on_error` can only ever see raised
   codes, because every other failure path on those actions goes straight to
-  `failInstance` (E6). (Raised codes were once lexically distinct from engine
-  codes; R1 now allows dots, so that distinction is a convention, not a guarantee.)
+  `failInstance` (E6). (Authored and engine codes share one namespace by design —
+  R1 allows dots — so a raised code may reuse an engine spelling on purpose; keeping
+  them apart is an author's convention, not something the system relies on.)
 - **D2 — no `siblings`; `$error` reports one raise.** An earlier draft put an
   aggregate `siblings` list (every raised child in the batch) in `$error`, argued
   as information not data: "6 of 10 failed" is a branching input. **Reversed and
