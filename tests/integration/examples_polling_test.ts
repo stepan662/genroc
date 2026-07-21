@@ -107,13 +107,14 @@ async function startExample(port: number, extra: Record<string, unknown> = {}): 
   return data!.id;
 }
 
-// The parent records its spawned child under context._children.<taskId>.<childKey>; here
-// that's _children.run.poll. Poll until it appears and return the child instance id.
+// The parent records its spawned child under context._children.<taskId>; a single `child`
+// task stores the bare child id there (not a keyed map), so here it's _children.run. Poll
+// until it appears and return the child instance id.
 async function waitForChildId(parentId: string, timeoutMs = 10_000): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const { data } = await client.GET("/instances/{id}", { params: { path: { id: parentId } } });
-    const childId = (data?.context as any)?._children?.run?.poll;
+    const childId = (data?.context as any)?._children?.run;
     if (typeof childId === "string") return childId;
     await new Promise((r) => setTimeout(r, 50));
   }

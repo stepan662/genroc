@@ -7,7 +7,7 @@ job's answer; the two failure modes are **raised** as errors the parent catches.
 
 ```
 polling-example (parent)
-  └─ run: child_map ──spawn──▶ poll-until-done (child)
+  └─ run: child     ──spawn──▶ poll-until-done (child)
        on_error:                 kickstart  POST {url}/jobs    ─▶ { job_id }
          cancelled ─▶ report      check      POST {url}/status  ─▶ { status, result }
          poll_timeout ─▶ report     ├─ status == "done"     ─▶ finish ─▶ output { answer }
@@ -84,7 +84,8 @@ catch. Signals **buffer**, so a
 cancel sent mid-poll is honoured on the next loop — within roughly one poll interval rather
 than instantly, which is the trade-off for a runtime-configurable interval (the wait can't be
 both a cancellable `external` *and* a templated-duration `delay`). The signal targets the
-**child** instance — find it under the parent's `context._children.run.poll`.
+**child** instance — find it under the parent's `context._children.run` (a single `child`
+task records the bare child id there, not a keyed map).
 
 ## Configuring headers (parent → child)
 

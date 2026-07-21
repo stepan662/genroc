@@ -18,24 +18,22 @@ input_schema:
 tasks:
   - id: run
     action:
-      type: child_map
-      children:
-        poll:
-          name: poll-until-done
-          input:
-            url: "{{ input.url }}"
-            headers: "{{ input.headers }}"
-            poll_interval_ms: "{{ input.poll_interval_ms }}"
-            max_attempts: "{{ input.max_attempts }}"
-          result_schema:
-            type: object
-            properties:
-              answer: { type: number }
-            required: [answer]
+      type: child
+      name: poll-until-done
+      input:
+        url: "{{ input.url }}"
+        headers: "{{ input.headers }}"
+        poll_interval_ms: "{{ input.poll_interval_ms }}"
+        max_attempts: "{{ input.max_attempts }}"
+      result_schema:
+        type: object
+        properties:
+          answer: { type: number }
+        required: [answer]
     on_error:
       - code: [cancelled, poll_timeout]
         goto: $report
-    output: "{{ self.result.poll }}"
+    output: "{{ self.result }}"
     switch: end
 
   - id: report
