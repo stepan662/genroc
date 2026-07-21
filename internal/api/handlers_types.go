@@ -116,7 +116,8 @@ type ListDefinitionsReq struct {
 }
 
 type ListInstancesReq struct {
-	Status string `json:"status"` // optional filter: running, completed, failing, failed, pausing, paused
+	Status    string `json:"status"`     // optional filter: running, completed, failing, failed, raised, pausing, paused
+	ErrorCode string `json:"error_code"` // optional filter: exact error code (authored or engine)
 	Pagination
 }
 
@@ -169,6 +170,11 @@ type TickReq struct {
 type DefinitionSummary struct {
 	Name    string `json:"name"`
 	Version int    `json:"version"`
+	// Raises is the set of error codes this definition can raise, derived by scanning
+	// its raise clauses. There is no `errors:` declaration block to read, so this is the
+	// answer to "what can this process raise?" and therefore to "what may a parent write
+	// on_error rules against?". Panic codes are excluded: nothing can catch a panic.
+	Raises []string `json:"raises,omitempty"`
 }
 
 type BatchApplyResult struct {
@@ -188,6 +194,7 @@ type InstanceSummaryResp struct {
 	WaitState  model.WaitState `json:"wait_state,omitempty"`
 	RetryCount int             `json:"retry_count"`
 	Error      string          `json:"error,omitempty"`
+	ErrorCode  string          `json:"error_code,omitempty"` // machine-readable discriminator for every non-success outcome; see model.ProcessInstance.ErrorCode
 	CreatedAt  string          `json:"created_at"`
 	UpdatedAt  string          `json:"updated_at"`
 }

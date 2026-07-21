@@ -55,6 +55,7 @@ type ProcessInstance struct {
 	ExternalData   string
 	EngineState    string
 	Task           string
+	ErrorCode      string
 }
 
 type ProcessLog struct {

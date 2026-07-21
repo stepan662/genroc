@@ -9,6 +9,24 @@ import (
 	"genroc/internal/transport"
 )
 
+// Engine-produced error codes for the failures the engine detects itself, as opposed to
+// the ones a call reports (http.*, pre.*, script.*, output.*) or an author declares with
+// panic. Every terminal failure carries a code so error_code is uniformly queryable --
+// "how many instances died of this, and did it start after Tuesday's deploy" has to work
+// for engine failures too, and the code is otherwise buried in the error prose.
+//
+// All of them contain a dot, which is what keeps them distinguishable from authored
+// codes at a glance and in a filter: R1 forbids dots in a raise or panic code.
+const (
+	codeDefinition = "engine.definition" // definition unusable: missing, or a task/goto it names is not in it
+	codeExpression = "engine.expression" // an expression could not be evaluated against this context
+	codeConfig     = "engine.config"     // config could not be resolved from the environment
+	codeInput      = "engine.input"      // a child's input did not satisfy its input_schema
+	codeSpawn      = "engine.spawn"      // spawning a batch of children failed
+	codeCollect    = "engine.collect"    // collecting a settled batch's outputs failed
+	codeOnlyOnce   = "engine.only_once"  // an only_once task was interrupted and cannot be safely re-run
+)
+
 // isRetryAllowed reports whether a retry is safe for the given task and error.
 // For idempotent tasks (the default) retries are always governed by on_error rules.
 // For non-idempotent tasks, a retry is only allowed when we know the remote call
@@ -25,6 +43,8 @@ func isRetryAllowed(task *model.Task, errCode string, matched *model.ErrorCase) 
 
 // matchOnError returns the first ErrorCase whose Code patterns match errCode,
 // or whose Code list is empty (catch-all). Returns nil when no rule matches.
+// Used for action tasks, where codes are engine codes (http.*, pre.*, …) and LIKE
+// patterns are meaningful.
 func matchOnError(task *model.Task, errCode string) *model.ErrorCase {
 	for i := range task.OnError {
 		c := &task.OnError[i]
@@ -33,6 +53,24 @@ func matchOnError(task *model.Task, errCode string) *model.ErrorCase {
 		}
 		for _, pat := range c.Code {
 			if transport.SQLLikeMatch(pat, errCode) {
+				return c
+			}
+		}
+	}
+	return nil
+}
+
+// matchOnErrorLiteral is matchOnError for a child task (M1): a rule matches iff its code
+// list contains the raised code *literally* — no LIKE evaluation, no empty-list catch-all.
+// This is not the same as matchOnError with a wildcard-free pattern: a raised code
+// contains underscores, which SQLLikeMatch would treat as single-char wildcards, so
+// `card_declined` as a LIKE pattern would spuriously match `cardxdeclined`. R4 rejects
+// everything this skips at registration, so the two never disagree.
+func matchOnErrorLiteral(task *model.Task, code string) *model.ErrorCase {
+	for i := range task.OnError {
+		c := &task.OnError[i]
+		for _, want := range c.Code {
+			if want == code {
 				return c
 			}
 		}
@@ -67,15 +105,22 @@ func (e *Engine) handleCallError(inst *model.ProcessInstance, task *model.Task, 
 		"code":    errCode,
 	}
 
+	// An authored terminal clause outranks routing. Both keep the engine's own code in
+	// $error (above) so the underlying cause stays visible on the instance detail, while
+	// error_code becomes the authored one -- the code an operator filters and alerts on.
+	if matched != nil && matched.Raise != nil {
+		return e.raiseInstance(inst, task, matched.Raise)
+	}
+	if matched != nil && matched.Panic != nil {
+		return e.panicInstance(inst, task, matched.Panic)
+	}
+
 	if matched != nil && matched.Goto != "" {
 		if matched.Goto == model.GotoEnd {
-			inst.Status = model.StatusCompleted
-			inst.WakeAt = nil
-			e.audit(inst, logEvent{Level: model.LogInfo, Event: model.EventErrorCompleted, Task: task.ID, Msg: errMsg, Code: errCode})
-			return advanceOutcome{kind: outcomeTerminal}
+			return e.completeViaErrorHandler(inst, task, errMsg, errCode)
 		}
 		if err := e.resolveGoto(inst, matched.Goto); err != nil {
-			return e.failInstance(inst, err.Error())
+			return e.failInstance(inst, codeDefinition, err.Error())
 		}
 		inst.Task = matched.Goto
 		inst.RetryCount = 0
@@ -84,17 +129,72 @@ func (e *Engine) handleCallError(inst *model.ProcessInstance, task *model.Task, 
 		return advanceOutcome{kind: outcomeUpdate}
 	}
 
-	return e.failInstance(inst, fmt.Sprintf("task %q: %s: %s", task.ID, errCode, errMsg))
+	return e.failInstance(inst, errCode, fmt.Sprintf("task %q: %s: %s", task.ID, errCode, errMsg))
+}
+
+// completeViaErrorHandler finalizes an instance whose on_error handling routed it to
+// `end`: an anticipated error was caught and the process completes normally. Both the
+// action-task path (handleCallError) and the child-batch path (resolveRaisedBatch) go
+// through here, so the two cannot drift — in particular the process output is computed on
+// this path exactly as it is on a normal end. (An earlier version of the action-task path
+// skipped computeOutput here, so a process that completed via on_error → end silently
+// produced no output; that is the divergence this shared helper removes.) A failing
+// output expression fails the instance instead.
+//
+// msg/code are the caught error's — the engine code on the action path, the child's
+// raised code on the batch path — recorded on the EventErrorCompleted audit.
+func (e *Engine) completeViaErrorHandler(inst *model.ProcessInstance, task *model.Task, msg, code string) advanceOutcome {
+	inst.Status = model.StatusCompleted
+	inst.RetryCount = 0
+	inst.WakeAt = nil
+	if err := e.computeOutput(inst); err != nil {
+		return e.failInstance(inst, codeExpression, err.Error())
+	}
+	e.audit(inst, logEvent{Level: model.LogInfo, Event: model.EventErrorCompleted, Task: task.ID, Msg: msg, Code: code})
+	return advanceOutcome{kind: outcomeTerminal}
+}
+
+// raiseInstance concludes the instance as 'raised': an anticipated condition the
+// definition declared, which the parent may react to by naming the code.
+//
+// It needs no draining state and no special plumbing. saveAndNotify branches on
+// StatusFailed, so a raised child falls through to FinishChild -- the right
+// destination, because a raise is a normal outcome and must not mark ancestors
+// 'failing'. And a raise happens at a task boundary where this instance's own children
+// have already collected, so there is nothing left to drain.
+//
+// No process output is computed: a raise is not an `end`, and its context is whatever
+// the instance had reached. That is also why a raise site is not a terminal for the
+// purpose of validating the process `output:` expression.
+func (e *Engine) raiseInstance(inst *model.ProcessInstance, task *model.Task, f *model.Fault) advanceOutcome {
+	inst.Status = model.StatusRaised
+	inst.WaitState = model.WaitStateNone
+	inst.Error = f.Message
+	inst.ErrorCode = f.Code
+	inst.WakeAt = nil
+	e.audit(inst, logEvent{Level: model.LogInfo, Event: model.EventInstanceRaised, Task: task.ID, Msg: f.Message, Code: f.Code})
+	return advanceOutcome{kind: outcomeTerminal}
+}
+
+// panicInstance fails the instance with an authored code and message. It is exactly
+// failInstance with the author's words instead of the engine's: a panic is a defect like
+// any other, and authoring one grants it no special status -- nothing can catch it, and
+// it poisons its ancestors through the same path an engine failure does.
+func (e *Engine) panicInstance(inst *model.ProcessInstance, task *model.Task, f *model.Fault) advanceOutcome {
+	return e.failInstance(inst, f.Code, f.Message)
 }
 
 // failInstance moves the instance to its failed state and returns the terminal
-// outcome (persisted by runAdvance via saveAndNotify).
-func (e *Engine) failInstance(inst *model.ProcessInstance, reason string) advanceOutcome {
+// outcome (persisted by runAdvance via saveAndNotify). code is the machine-readable
+// discriminator stored in error_code; every caller must supply one, so that no failure
+// path can quietly leave the column empty.
+func (e *Engine) failInstance(inst *model.ProcessInstance, code, reason string) advanceOutcome {
 	inst.Status = model.StatusFailed
 	inst.WaitState = model.WaitStateNone
 	inst.Error = reason
+	inst.ErrorCode = code
 	inst.WakeAt = nil
-	e.audit(inst, logEvent{Level: model.LogError, Event: model.EventInstanceFailed, Msg: reason})
+	e.audit(inst, logEvent{Level: model.LogError, Event: model.EventInstanceFailed, Msg: reason, Code: code})
 	return advanceOutcome{kind: outcomeTerminal}
 }
 
@@ -110,7 +210,7 @@ func (e *Engine) failInstance(inst *model.ProcessInstance, reason string) advanc
 // re-execution when the operator resumes.
 func (e *Engine) settlePausing(inst *model.ProcessInstance, task *model.Task) advanceOutcome {
 	if inst.ReclaimedExpired && task != nil && task.Action != nil && task.OnlyOnce != nil && *task.OnlyOnce {
-		return e.failInstance(inst, fmt.Sprintf(
+		return e.failInstance(inst, codeOnlyOnce, fmt.Sprintf(
 			"task %q is only_once and was interrupted by a lease takeover; cannot re-execute", task.ID))
 	}
 	inst.Status = model.StatusPaused

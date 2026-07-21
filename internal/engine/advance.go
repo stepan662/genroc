@@ -80,7 +80,7 @@ func (e *Engine) prepareAdvance(inst *model.ProcessInstance) (*model.ProcessDefi
 	// definition cannot be loaded cannot run, so fail it with a clear reason.
 	def, err := e.db.GetDefinition(inst.ProcessName, inst.ProcessVersion)
 	if err != nil {
-		return nil, 0, stop(e.failInstance(inst, fmt.Sprintf("load definition: %v", err)))
+		return nil, 0, stop(e.failInstance(inst, codeDefinition, fmt.Sprintf("load definition: %v", err)))
 	}
 
 	// Resolve config from the OS environment for this tick. Config is never
@@ -90,7 +90,7 @@ func (e *Engine) prepareAdvance(inst *model.ProcessInstance) (*model.ProcessDefi
 	if def.ConfigSchema != nil {
 		cfg, err := def.ResolveConfig(os.LookupEnv)
 		if err != nil {
-			return nil, 0, stop(e.failInstance(inst, fmt.Sprintf("config: %v", err)))
+			return nil, 0, stop(e.failInstance(inst, codeConfig, fmt.Sprintf("config: %v", err)))
 		}
 		inst.Config = cfg
 	}
@@ -100,7 +100,7 @@ func (e *Engine) prepareAdvance(inst *model.ProcessInstance) (*model.ProcessDefi
 	// isn't in the definition is a corrupt/mismatched row: fail it.
 	idx := taskIndex(def.Tasks, inst.Task)
 	if inst.Task != "" && idx < 0 {
-		return nil, 0, stop(e.failInstance(inst, fmt.Sprintf("current task %q not found in definition", inst.Task)))
+		return nil, 0, stop(e.failInstance(inst, codeDefinition, fmt.Sprintf("current task %q not found in definition", inst.Task)))
 	}
 
 	// Lease takeover: this instance was reclaimed from an expired lease, so its
@@ -115,7 +115,7 @@ func (e *Engine) prepareAdvance(inst *model.ProcessInstance) (*model.ProcessDefi
 		if idx >= 0 {
 			s := def.Tasks[idx]
 			if s.Action != nil && s.OnlyOnce != nil && *s.OnlyOnce {
-				return nil, 0, stop(e.failInstance(inst, fmt.Sprintf(
+				return nil, 0, stop(e.failInstance(inst, codeOnlyOnce, fmt.Sprintf(
 					"task %q is only_once and was interrupted by a lease takeover; cannot re-execute", s.ID)))
 			}
 		}
@@ -177,7 +177,7 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 			inst.Status = model.StatusCompleted
 			inst.WakeAt = nil
 			if err := e.computeOutput(inst); err != nil {
-				return e.failInstance(inst, err.Error())
+				return e.failInstance(inst, codeExpression, err.Error())
 			}
 			e.audit(inst, logEvent{Level: model.LogInfo, Event: model.EventInstanceDone, Data: e.outputData(inst)})
 			return advanceOutcome{kind: outcomeTerminal}
@@ -235,7 +235,7 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 		if hasOutput {
 			remapped, err := e.evalTaskOutput(inst, task, actionResult, priorOutput)
 			if err != nil {
-				return e.failInstance(inst, fmt.Sprintf("task %q output: %v", task.ID, err))
+				return e.failInstance(inst, codeExpression, fmt.Sprintf("task %q output: %v", task.ID, err))
 			}
 			e.setTaskOutput(inst, task.ID, remapped)
 			taskOutput = remapped
@@ -248,22 +248,33 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 		if hasOutput {
 			self["output"] = taskOutput
 		}
-		gotoID, err := e.evalSwitch(inst, task, self)
+		matched, err := e.evalSwitch(inst, task, self)
 		if err != nil {
-			return e.failInstance(inst, fmt.Sprintf("task %q switch: %v", task.ID, err))
+			return e.failInstance(inst, codeExpression, fmt.Sprintf("task %q switch: %v", task.ID, err))
 		}
-		if gotoID == "" {
+		if matched == nil {
 			// Validation requires a catch-all case, but legacy rows in the DB may
 			// predate that rule — fail the instance rather than panic on gotoID[1:].
-			return e.failInstance(inst, fmt.Sprintf("task %q switch: no case matched", task.ID))
+			return e.failInstance(inst, codeDefinition, fmt.Sprintf("task %q switch: no case matched", task.ID))
 		}
+
+		// A terminal clause ends the process here, in place of routing. Neither computes
+		// the process output: only `goto: end` finishes a process, and a raise or panic
+		// is an exit from wherever the instance happens to have got to.
+		if matched.Raise != nil {
+			return e.raiseInstance(inst, task, matched.Raise)
+		}
+		if matched.Panic != nil {
+			return e.panicInstance(inst, task, matched.Panic)
+		}
+		gotoID := matched.Goto
 
 		if gotoID == model.GotoEnd {
 			inst.Status = model.StatusCompleted
 			inst.RetryCount = 0
 			inst.WakeAt = nil
 			if err := e.computeOutput(inst); err != nil {
-				return e.failInstance(inst, err.Error())
+				return e.failInstance(inst, codeExpression, err.Error())
 			}
 			e.audit(inst, logEvent{Level: model.LogInfo, Event: model.EventInstanceDone, Task: task.ID, Data: e.outputData(inst)})
 			return advanceOutcome{kind: outcomeTerminal}
@@ -274,7 +285,7 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 		} else {
 			// gotoID is a task reference like "$ship" — strip the sigil.
 			if idx = taskIndex(def.Tasks, gotoID[1:]); idx < 0 {
-				return e.failInstance(inst, fmt.Sprintf("goto task %q not found in %q v%d", gotoID[1:], inst.ProcessName, inst.ProcessVersion))
+				return e.failInstance(inst, codeDefinition, fmt.Sprintf("goto task %q not found in %q v%d", gotoID[1:], inst.ProcessName, inst.ProcessVersion))
 			}
 		}
 		// Reflect the new position (empty once we run past the last task) so a
@@ -335,23 +346,28 @@ func appendOutputOrder(inst *model.ProcessInstance, id string) {
 	inst.ContextData["output_order"] = append(order, id)
 }
 
-// evalSwitch returns the Goto of the first switch case whose Case expression is true. An
-// empty Case is a catch-all (must be last when present). Returns "" when no case matches
-// (should not happen on validated definitions).
-func (e *Engine) evalSwitch(inst *model.ProcessInstance, task *model.Task, selfOutput any) (string, error) {
-	for _, c := range task.Switch {
+// evalSwitch returns the first switch case whose Case expression is true. An empty Case
+// is a catch-all (must be last when present). Returns nil when no case matches (should
+// not happen on validated definitions).
+//
+// It returns the whole case rather than just its Goto because a case may terminate
+// instead of routing (raise/panic), and "" is not a distinguishable answer for that --
+// it is also what a nil case would yield.
+func (e *Engine) evalSwitch(inst *model.ProcessInstance, task *model.Task, selfOutput any) (*model.SwitchCase, error) {
+	for i := range task.Switch {
+		c := &task.Switch[i]
 		if c.Case == "" {
-			return c.Goto, nil
+			return c, nil
 		}
 		ok, err := e.evalBoolCtx(inst, c.Case, selfOutput)
 		if err != nil {
-			return "", fmt.Errorf("case %q: %w", c.Case, err)
+			return nil, fmt.Errorf("case %q: %w", c.Case, err)
 		}
 		if ok {
-			return c.Goto, nil
+			return c, nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 // lookupTask resolves the instance's current task from its definition, returning nil

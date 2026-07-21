@@ -166,13 +166,15 @@ var registry = func() []actionDef {
 			Summary: "List process instances",
 			Tags:    []string{"Instances"},
 			PathQuery: struct {
-				Status string `query:"status" enum:"running,completed,failing,failed,pausing,paused" description:"Filter by status"`
+				Status    string `query:"status" enum:"running,completed,failing,failed,raised,pausing,paused" description:"Filter by status"`
+				ErrorCode string `query:"error_code" description:"Filter by exact error code. Authored codes (from a raise or panic clause) are lower_snake_case; engine-produced codes contain a dot, e.g. http.500, pre.timeout, engine.spawn."`
 				pageQuery
 			}{},
 			Resp: PageResp[InstanceSummaryResp]{},
 			fromHTTP: func(r *http.Request) (Envelope, error) {
 				b, _ := json.Marshal(ListInstancesReq{
 					Status:     r.URL.Query().Get("status"),
+					ErrorCode:  r.URL.Query().Get("error_code"),
 					Pagination: paginationFrom(r),
 				})
 				return Envelope{Action: "list_instances", Payload: b}, nil

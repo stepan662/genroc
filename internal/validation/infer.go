@@ -251,10 +251,18 @@ func contextSchema(preceding []string, optional []string, tasks map[string]TaskS
 	ctx = ctx.WithProperty("outputs", outputs, true)
 
 	if errRequired || errOptional {
+		// child_key / child_index are populated only when $error came from a child-task
+		// batch resolution (§5.3); an action task's on_error leaves them absent. The
+		// context schema can't tell which on_error produced a given $error, so both are
+		// optional — present and typed where a batch handler reads them, honestly
+		// maybe-absent elsewhere. child_key (child_map) and child_index (child_list) are
+		// separate single-typed fields so a handler reads one without a string|integer union.
 		errSchema := schema.Object().
 			WithProperty("task", schema.Type("string"), true).
 			WithProperty("message", schema.Type("string"), true).
-			WithProperty("code", schema.Type("string"), true)
+			WithProperty("code", schema.Type("string"), true).
+			WithProperty("child_key", schema.Type("string"), false).
+			WithProperty("child_index", schema.Type("integer"), false)
 		if errRequired {
 			ctx = ctx.WithProperty("error", errSchema, true)
 		} else {

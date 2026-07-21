@@ -397,6 +397,7 @@ func runGetCmd(server string, args []string) {
 		WaitState  string         `json:"wait_state"`
 		RetryCount int            `json:"retry_count"`
 		Error      string         `json:"error"`
+		ErrorCode  string         `json:"error_code"`
 		CreatedAt  string         `json:"created_at"`
 		UpdatedAt  string         `json:"updated_at"`
 		Context    map[string]any `json:"context"`
@@ -420,6 +421,9 @@ func runGetCmd(server string, args []string) {
 	if inst.Error != "" {
 		fmt.Fprintf(w, "Error:\t%s\n", inst.Error)
 	}
+	if inst.ErrorCode != "" {
+		fmt.Fprintf(w, "Code:\t%s\n", inst.ErrorCode)
+	}
 	w.Flush()
 
 	if len(inst.Context) > 0 {
@@ -433,7 +437,8 @@ func runGetCmd(server string, args []string) {
 func runInstancesCmd(server string, args []string) {
 	fs := flag.NewFlagSet("instances", flag.ExitOnError)
 	serverFlag := addServerFlag(fs, server)
-	statusFlag := fs.String("status", "", "filter by status (running, completed, failing, failed, pausing, paused)")
+	statusFlag := fs.String("status", "", "filter by status (running, completed, failing, failed, raised, pausing, paused)")
+	codeFlag := fs.String("error-code", "", "filter by exact error code (e.g. card_declined, http.500)")
 	sortFlag := fs.String("sort", "created", "sort key: created (newest first) or updated (most recently active)")
 	limitFlag := fs.Int("limit", 20, "max instances to show (server caps a page at 100; use --all for more)")
 	allFlag := fs.Bool("all", false, "list every instance (follow all pages)")
@@ -441,6 +446,9 @@ func runInstancesCmd(server string, args []string) {
 	fs.Parse(args)
 
 	q := url.Values{}
+	if *codeFlag != "" {
+		q.Set("error_code", *codeFlag)
+	}
 	if *statusFlag != "" {
 		q.Set("status", *statusFlag)
 	}
@@ -462,6 +470,7 @@ func runInstancesCmd(server string, args []string) {
 		Version   int    `json:"version"`
 		Status    string `json:"status"`
 		Error     string `json:"error"`
+		ErrorCode string `json:"error_code"`
 		CreatedAt string `json:"created_at"`
 		UpdatedAt string `json:"updated_at"`
 	}
@@ -485,15 +494,15 @@ func runInstancesCmd(server string, args []string) {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tSTATUS\tPROCESS\tUPDATED\tCREATED\tERROR")
+	fmt.Fprintln(w, "ID\tSTATUS\tPROCESS\tUPDATED\tCREATED\tCODE\tERROR")
 	for _, r := range rows {
 		errMsg := r.Error
 		if len(errMsg) > 50 {
 			errMsg = errMsg[:47] + "..."
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s@v%d\t%s\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s@v%d\t%s\t%s\t%s\t%s\n",
 			r.ID, r.Status, r.Process, r.Version,
-			shortTime(r.UpdatedAt), shortTime(r.CreatedAt), errMsg)
+			shortTime(r.UpdatedAt), shortTime(r.CreatedAt), r.ErrorCode, errMsg)
 	}
 	w.Flush()
 }

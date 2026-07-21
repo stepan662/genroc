@@ -25,6 +25,7 @@ const (
 	EventErrorRoute       = "error_routed"
 	EventErrorCompleted   = "error_handled"
 	EventInstanceDone     = "inst_completed"
+	EventInstanceRaised   = "inst_raised" // concluded by a `raise` clause; the parent may react to the code
 	EventInstanceFailed   = "inst_failed"
 	EventInstanceSettled  = "inst_settled"
 	// Pausing and resuming fan out over a whole subtree, so their per-instance entries

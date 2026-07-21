@@ -60,14 +60,15 @@ INSERT INTO process_instances
     (id, process_name, process_version, task,
      input_data, outputs_data, output_data, error_data, external_data, engine_state,
      parent_id, spawn_task_id,
-     call_stack, retry_count, wake_at, status, wait_state, error, created_at, updated_at)
+     call_stack, retry_count, wake_at, status, wait_state, error, error_code, created_at, updated_at)
 VALUES
     (sqlc.arg(id), sqlc.arg(process_name), sqlc.arg(process_version), sqlc.arg(task),
      sqlc.arg(input_data), sqlc.arg(outputs_data), sqlc.arg(output_data),
      sqlc.arg(error_data), sqlc.arg(external_data), sqlc.arg(engine_state),
      sqlc.arg(parent_id), sqlc.arg(spawn_task_id),
      sqlc.arg(call_stack), sqlc.arg(retry_count), sqlc.arg(wake_at),
-     sqlc.arg(status), sqlc.arg(wait_state), sqlc.arg(error), sqlc.arg(created_at), sqlc.arg(updated_at));
+     sqlc.arg(status), sqlc.arg(wait_state), sqlc.arg(error), sqlc.arg(error_code),
+     sqlc.arg(created_at), sqlc.arg(updated_at));
 
 -- name: UpdateInstance :exec
 -- input_data is intentionally NOT written: the process input is immutable after
@@ -92,6 +93,7 @@ SET task             = sqlc.arg(task),
                             THEN 'paused' ELSE CAST(sqlc.arg(status) AS TEXT) END,
     wait_state       = sqlc.arg(wait_state),
     error            = sqlc.arg(error),
+    error_code       = sqlc.arg(error_code),
     updated_at       = sqlc.arg(updated_at),
     worker_id        = NULL,
     lease_expires_at = NULL
@@ -122,12 +124,15 @@ SET task             = sqlc.arg(task),
 WHERE id = sqlc.arg(id);
 
 -- name: GetInstance :one
--- Column order matches the process_instances row struct (context columns then task,
--- appended by migrations 019 and 020) so sqlc returns dbgen.ProcessInstance directly.
+-- Column order matches the process_instances row struct (context columns then task then
+-- error_code, appended by migrations 019, 020 and 023) so sqlc returns
+-- dbgen.ProcessInstance directly. That is why error_code trails the list instead of
+-- sitting beside `error`: the order is the table's, not a reading order.
 SELECT id, process_name, process_version, parent_id,
        call_stack, retry_count, wake_at, status, error,
        created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_task_id,
-       input_data, outputs_data, output_data, error_data, external_data, engine_state, task
+       input_data, outputs_data, output_data, error_data, external_data, engine_state, task,
+       error_code
 FROM process_instances
 WHERE id = sqlc.arg(id);
 
@@ -183,12 +188,17 @@ WHERE id IN (
 );
 
 -- name: CountActiveSiblings :one
--- Only completed/failed are settled. A paused sibling still counts as active, so a
--- parent never collects a batch while one of its children is suspended.
+-- Only completed/failed/raised are settled. A paused sibling still counts as active, so
+-- a parent never collects a batch while one of its children is suspended.
+--
+-- 'raised' must be here: a raise is a conclusion, so a child that raised is done and
+-- its parent has to be woken to resolve the batch. Omitting it hangs the parent in
+-- 'waiting' forever. This list is the SQL half of model.Status.Terminal() and has to be
+-- kept in step with it by hand.
 SELECT COUNT(*) FROM process_instances
 WHERE parent_id = sqlc.arg(parent_id)
   AND spawn_task_id = sqlc.arg(spawn_task_id)
-  AND status NOT IN ('completed', 'failed');
+  AND status NOT IN ('completed', 'failed', 'raised');
 
 -- name: GetWaitState :one
 SELECT wait_state FROM process_instances WHERE id = sqlc.arg(id);
@@ -208,7 +218,8 @@ WHERE id = sqlc.arg(id);
 SELECT id, process_name, process_version, parent_id,
        call_stack, retry_count, wake_at, status, error,
        created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_task_id,
-       input_data, outputs_data, output_data, error_data, external_data, engine_state, task
+       input_data, outputs_data, output_data, error_data, external_data, engine_state, task,
+       error_code
 FROM process_instances
 WHERE parent_id = sqlc.arg(parent_id)
   AND spawn_task_id = sqlc.arg(spawn_task_id);
@@ -228,8 +239,18 @@ WHERE pd.parent_version = pc.version
 -- doomed when the pause landed) propagates 'failing' upward, and those ancestors
 -- settle to 'failed' (retryable) rather than leaving a paused tree with a dead
 -- branch inside it. Pause suppresses advancement, not settlement.
+--
+-- 'raised' is deliberately absent from the WHERE list alongside completed/failed: a
+-- settled outcome is never reopened into 'failing'. Note the asymmetry with
+-- CountActiveSiblings, which does list it: 'raised' is terminal for "is this batch
+-- done", but it is not a failure, so it neither poisons upward nor is poisoned from
+-- above.
+--
+-- error_code travels with the error text so a whole poisoned tree is filterable by the
+-- code of the failure that started it, not just the one instance that observed it.
 UPDATE process_instances
-SET status = 'failing', error = sqlc.arg(error), updated_at = sqlc.arg(updated_at)
+SET status = 'failing', error = sqlc.arg(error), error_code = sqlc.arg(error_code),
+    updated_at = sqlc.arg(updated_at)
 WHERE id IN (SELECT value FROM json_each(sqlc.arg(ids)))
   AND status IN ('running', 'pausing', 'paused');
 

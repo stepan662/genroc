@@ -59,7 +59,7 @@ func TestListInstances_SortAndSummary(t *testing.T) {
 			}
 
 			// Default: created desc -> newest created first: c, b, a.
-			got, info, err := b.db.ListInstances("", dbpkg.PageReq{})
+			got, info, err := b.db.ListInstances("", "", dbpkg.PageReq{})
 			if err != nil {
 				t.Fatalf("ListInstances: %v", err)
 			}
@@ -80,7 +80,7 @@ func TestListInstances_SortAndSummary(t *testing.T) {
 			}
 
 			// updated desc -> most recently active first: a (just updated), c, b.
-			byUpdated, info, err := b.db.ListInstances("", dbpkg.PageReq{Sort: "updated"})
+			byUpdated, info, err := b.db.ListInstances("", "", dbpkg.PageReq{Sort: "updated"})
 			if err != nil {
 				t.Fatalf("ListInstances updated: %v", err)
 			}
@@ -92,7 +92,7 @@ func TestListInstances_SortAndSummary(t *testing.T) {
 			}
 
 			// Status filter narrows the page.
-			completed, _, err := b.db.ListInstances("completed", dbpkg.PageReq{})
+			completed, _, err := b.db.ListInstances("completed", "", dbpkg.PageReq{})
 			if err != nil {
 				t.Fatalf("ListInstances completed: %v", err)
 			}

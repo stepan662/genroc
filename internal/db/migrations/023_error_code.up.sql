@@ -1,0 +1,22 @@
+-- Add error_code: the machine-readable discriminator for every non-success outcome.
+--
+-- Until now an error's code existed only inside the `error` prose, formatted into
+-- "task %q: %s: %s", so it could not be grouped, filtered or alerted on without
+-- parsing text. The column makes all failures uniformly queryable:
+--
+--   completed        → ''
+--   raised           → the authored code from a `raise` clause
+--   failed (panic)   → the authored code from a `panic` clause
+--   failed (engine)  → the code the engine observed (http.500, pre.timeout, …)
+--
+-- Authored codes are lower_snake_case with no dots and engine codes always contain
+-- one, so the two namespaces stay legible side by side and a filter never has to
+-- disambiguate them.
+--
+-- NOT NULL DEFAULT '' mirrors the `error` column it sits beside, keeping "no code"
+-- one value rather than two (NULL and '') for every filter and scan to handle.
+--
+-- Filterable but not sortable, so no index is needed — only sorts must be
+-- index-backed (see paginate.go). No backfill: '' on an existing row is the honest
+-- answer, since the code was never recorded anywhere the migration could recover it.
+ALTER TABLE process_instances ADD COLUMN error_code TEXT NOT NULL DEFAULT '';

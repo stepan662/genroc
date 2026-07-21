@@ -117,8 +117,12 @@ func (db *DB) FailInstanceAndAncestors(child *model.ProcessInstance) error {
 			if err != nil {
 				return err
 			}
+			// Ancestors inherit the child's code as well as its message: a poisoned tree
+			// then filters by the code of the failure that actually started it, not just
+			// at the single instance that observed it.
 			if err := qtx.FailAncestors(ctx, dbgen.FailAncestorsParams{
 				Error:     child.Error,
+				ErrorCode: child.ErrorCode,
 				UpdatedAt: now,
 				Ids:       string(idsJSON),
 			}); err != nil {
@@ -433,6 +437,18 @@ func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 		if status == model.StatusPaused || status == model.StatusPausing {
 			return fmt.Errorf("process is paused, not failed (status: %s); resume it instead", status)
 		}
+		// A raised root is settled, not interrupted, so retry has nothing to re-attempt:
+		// it can only re-run the task the instance sits on, and that task is the one
+		// whose switch *decided* to raise -- against upstream state a retry cannot have
+		// changed. It would re-raise identically, after possibly re-running a side effect
+		// that already succeeded. Both special cases exist because "not retryable" alone
+		// invites a bug report; the difference is that pause has another verb to point at
+		// and a raise does not.
+		if status == model.StatusRaised {
+			return fmt.Errorf("process concluded with error %q (status: raised); a raised error is "+
+				"a declared outcome, not a fault -- start a new instance, or publish a new version "+
+				"if the outcome should be handled differently", rootRow.ErrorCode)
+		}
 		return fmt.Errorf("process is not retryable (status: %s)", status)
 	}
 
@@ -524,8 +540,17 @@ func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 	var revive func(node *model.ProcessInstance) error
 	revive = func(node *model.ProcessInstance) error {
 		switch node.Status {
-		case model.StatusCompleted:
-			return nil // finished work is kept
+		case model.StatusCompleted, model.StatusRaised:
+			// Settled work is kept. A raised node was not interrupted -- it concluded, by
+			// design, with a declared outcome -- so it belongs here and not below: the
+			// status means the same thing at every depth, root or leaf.
+			//
+			// This does leave one case retry cannot help: a parent that failed at
+			// resolution because no rule matched a child's raised code re-resolves to the
+			// same unmatched code and fails identically. Reviving the child would not have
+			// helped either, since the missing on_error rule lives in a version-pinned
+			// definition a retry does not re-read. The fix is a new parent version.
+			return nil
 		case model.StatusRunning, model.StatusFailing, model.StatusPausing, model.StatusPaused:
 			// Unreachable under a failed root: it settles only once every child is
 			// terminal, and paused children count as active (CountActiveSiblings), so
@@ -599,11 +624,18 @@ func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 		// immutable and not written by UpdateInstance.
 		raw := rawRows[node.ID]
 		if err := qtx.UpdateInstance(ctx, dbgen.UpdateInstanceParams{
-			ID:           node.ID,
-			Task:         raw.Task,
-			OutputsData:  raw.OutputsData,
-			OutputData:   raw.OutputData,
-			ErrorData:    raw.ErrorData,
+			ID:          node.ID,
+			Task:        raw.Task,
+			OutputsData: raw.OutputsData,
+			OutputData:  raw.OutputData,
+			// The three error slots are cleared together, and must stay that way. Leaving
+			// error_code behind fails quietly: a revived instance that then completes
+			// still reports having died of the old code, corrupting exactly the column the
+			// code exists to serve. error_data ($error) is cleared for the same reason --
+			// a batch error route writes it, and a stale one would survive the revival.
+			// Nothing valid can read a cleared $error: the mustErr/mayErr analysis only
+			// admits a read where an error is present on every path reaching it.
+			ErrorData:    "",
 			ExternalData: raw.ExternalData,
 			EngineState:  raw.EngineState,
 			RetryCount:   int64(node.RetryCount),
@@ -611,6 +643,7 @@ func (db *DB) RetryProcess(ctx context.Context, id string, force bool) error {
 			Status:       string(node.Status),
 			WaitState:    string(node.WaitState),
 			Error:        "",
+			ErrorCode:    "",
 			UpdatedAt:    now,
 		}); err != nil {
 			return fmt.Errorf("revive instance %q: %w", node.ID, err)
@@ -690,6 +723,7 @@ func (db *DB) SpawnChildrenAndWait(ctx context.Context, parent *model.ProcessIns
 			Status:       currentStatus,
 			WaitState:    string(model.WaitStateWaiting),
 			Error:        parent.Error,
+			ErrorCode:    parent.ErrorCode,
 			UpdatedAt:    now,
 		}); err != nil {
 			return fmt.Errorf("suspend parent: %w", err)

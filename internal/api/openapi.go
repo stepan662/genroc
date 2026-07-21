@@ -138,11 +138,13 @@ func buildSpec() []byte {
 		}
 
 		b, _ := r.Spec.MarshalJSON()
-		// The hand-written Action schema and the Shape recursion reference the Shape
-		// def by its process-schema JSON-Pointer (#/$defs/ModelShape). In an OpenAPI
-		// 3.1 document, component schemas live under #/components/schemas, so rewrite
-		// those refs to resolve here too.
-		b = bytes.ReplaceAll(b, []byte("#/$defs/ModelShape"), []byte("#/components/schemas/ModelShape"))
+		// The hand-written Action / SwitchMap schemas and the Shape recursion reference
+		// model defs by their process-schema JSON-Pointer (#/$defs/ModelShape,
+		// #/$defs/ModelFault). In an OpenAPI 3.1 document component schemas live under
+		// #/components/schemas, so rewrite the prefix for every such ref. Rewriting the
+		// shared prefix rather than each name means a new hand-written schema that refs
+		// a model type resolves without a matching edit here.
+		b = bytes.ReplaceAll(b, []byte("#/$defs/Model"), []byte("#/components/schemas/Model"))
 		specBytes = b
 	})
 	return specBytes

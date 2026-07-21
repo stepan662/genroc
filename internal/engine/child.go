@@ -19,13 +19,28 @@ import (
 // A parent paused mid-spawn spawns paused children, so a suspended tree never puts
 // runnable work in the queue; resuming the tree starts them.
 func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInstance, task *model.Task) (any, *advanceOutcome) {
-	// Phase 2: parent woke up with children done — collect their outputs into the
-	// action result (self.result). It is exported only if the task projects it.
+	// Phase 2: parent woke up with the batch settled. Read the children once, then either
+	// resolve a raised batch (route via on_error) or, if every child completed, merge
+	// their outputs into the action result (self.result, exported only if the task
+	// projects it). The one read is shared by resolution and collection.
 	if inst.WaitState == model.WaitStateCollecting {
-		output, err := e.collectChildOutputs(ctx, inst, task)
+		siblings, err := e.db.ChildrenForTask(ctx, inst.ID, task.ID)
 		if err != nil {
 			inst.WaitState = model.WaitStateNone
-			return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q collect: %v", task.ID, err)))
+			return nil, stop(e.failInstance(inst, codeCollect, fmt.Sprintf("task %q collect: %v", task.ID, err)))
+		}
+
+		// A batch with any raised child is the parent's to resolve: match on_error rules
+		// against the raised codes and route accordingly. resolveRaisedBatch clears the
+		// wait state and returns the terminal/route outcome itself.
+		if raised := raisedInSlotOrder(siblings, task); len(raised) > 0 {
+			return nil, stop(e.resolveRaisedBatch(inst, task, raised))
+		}
+
+		output, err := e.buildChildOutput(task, siblings)
+		if err != nil {
+			inst.WaitState = model.WaitStateNone
+			return nil, stop(e.failInstance(inst, codeCollect, fmt.Sprintf("task %q collect: %v", task.ID, err)))
 		}
 		inst.WaitState = model.WaitStateNone
 		e.audit(inst, logEvent{Level: model.LogInfo, Event: model.EventChildrenCollect, Task: task.ID})
@@ -89,7 +104,7 @@ func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInsta
 	// it reports outcomeNoop so runAdvance does no further write. On failure it
 	// transitions to the terminal outcome instead.
 	if err := e.db.SpawnChildrenAndWait(ctx, inst, children); err != nil {
-		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q spawn: %v", task.ID, err)))
+		return nil, stop(e.failInstance(inst, codeSpawn, fmt.Sprintf("task %q spawn: %v", task.ID, err)))
 	}
 
 	e.audit(inst, logEvent{Level: model.LogInfo, Event: model.EventChildrenSpawned, Task: task.ID, Msg: fmt.Sprintf("%d children", len(children))})
@@ -167,19 +182,19 @@ func (e *Engine) buildMapChildren(ctx context.Context, inst *model.ProcessInstan
 		entry := task.Action.Children[key]
 		version, err := e.resolveChildVersion(inst, task.ID, entry.Name, entry.Version, key)
 		if err != nil {
-			return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_map[%q]: %v", task.ID, key, err)))
+			return nil, stop(e.failInstance(inst, codeDefinition, fmt.Sprintf("task %q child_map[%q]: %v", task.ID, key, err)))
 		}
 		def, err := e.db.GetDefinition(entry.Name, version)
 		if err != nil {
-			return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_map[%q]: %v", task.ID, key, err)))
+			return nil, stop(e.failInstance(inst, codeDefinition, fmt.Sprintf("task %q child_map[%q]: %v", task.ID, key, err)))
 		}
 		input, err := e.evalChildInput(inst, task.ID, fmt.Sprintf("child_map[%q]", key), entry.Input)
 		if err != nil {
-			return nil, stop(e.failInstance(inst, err.Error()))
+			return nil, stop(e.failInstance(inst, codeExpression, err.Error()))
 		}
 		input, err = def.ValidateInput(input)
 		if err != nil {
-			return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_map[%q] input validation: %v", task.ID, key, err)))
+			return nil, stop(e.failInstance(inst, codeInput, fmt.Sprintf("task %q child_map[%q] input validation: %v", task.ID, key, err)))
 		}
 		spawnCtx := map[string]any{
 			"_spawn_action_type": string(model.ActionTypeChildMap),
@@ -203,25 +218,25 @@ func (e *Engine) buildMapChildren(ctx context.Context, inst *model.ProcessInstan
 func (e *Engine) buildListChildren(ctx context.Context, inst *model.ProcessInstance, task *model.Task, callStack []string) ([]*model.ProcessInstance, *advanceOutcome) {
 	version, err := e.resolveChildVersion(inst, task.ID, task.Action.Name, task.Action.Version, "")
 	if err != nil {
-		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_list: %v", task.ID, err)))
+		return nil, stop(e.failInstance(inst, codeDefinition, fmt.Sprintf("task %q child_list: %v", task.ID, err)))
 	}
 	def, err := e.db.GetDefinition(task.Action.Name, version)
 	if err != nil {
-		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_list: %v", task.ID, err)))
+		return nil, stop(e.failInstance(inst, codeDefinition, fmt.Sprintf("task %q child_list: %v", task.ID, err)))
 	}
 
 	// Evaluate `over` to the input array. Registration guarantees a non-null array
 	// type, but guard defensively: a null evaluates to the empty fan-out.
 	arrVal, err := e.evalAnyCtx(inst, task.Action.Over)
 	if err != nil {
-		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_list over: %v", task.ID, err)))
+		return nil, stop(e.failInstance(inst, codeExpression, fmt.Sprintf("task %q child_list over: %v", task.ID, err)))
 	}
 	if arrVal == nil {
 		return nil, nil
 	}
 	items, ok := arrVal.([]any)
 	if !ok {
-		return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_list: over did not evaluate to an array (got %T)", task.ID, arrVal)))
+		return nil, stop(e.failInstance(inst, codeExpression, fmt.Sprintf("task %q child_list: over did not evaluate to an array (got %T)", task.ID, arrVal)))
 	}
 
 	var resultSchema string
@@ -238,7 +253,7 @@ func (e *Engine) buildListChildren(ctx context.Context, inst *model.ProcessInsta
 	for i, elem := range items {
 		input, err := def.ValidateInput(elem)
 		if err != nil {
-			return nil, stop(e.failInstance(inst, fmt.Sprintf("task %q child_list[%d] input validation: %v", task.ID, i, err)))
+			return nil, stop(e.failInstance(inst, codeInput, fmt.Sprintf("task %q child_list[%d] input validation: %v", task.ID, i, err)))
 		}
 		spawnCtx := map[string]any{
 			"_spawn_action_type": string(model.ActionTypeChildList),

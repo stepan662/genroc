@@ -1,17 +1,10 @@
-# yaml-language-server: $schema=http://localhost:8888/process-schema.json
+# yaml-language-server: $schema=http://localhost:8080/process-schema.json
 name: child
-input_schema:
-  type: number
 tasks:
   - id: fourth
-    action:
-      type: external
-      result_schema:
-        type: object
-        properties:
-          slept:
-            type: number
-        required: [slept]
-    output: "{{ self.result }}"
-    switch: end
-output: "{{outputs.fourth.slept}}"
+    switch:
+      - case: "true"
+        raise:
+          code: "fourth_failed"
+          message: "Fourth task failed"
+      - goto: end

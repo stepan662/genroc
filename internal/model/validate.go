@@ -40,6 +40,55 @@ func (d *ProcessDefinition) Validate() error {
 			return err
 		}
 	}
+	return d.validateFaultCodeKinds()
+}
+
+// validateFaultCodeKinds enforces R6: within one definition a code is a raise code or a
+// panic code, never both. Otherwise error_code would be ambiguous for exactly the
+// observers it exists to serve — the same value would appear on 'raised' and 'failed'
+// instances of the same process and mean two different things, so a dashboard could not
+// tell "the caller may handle this" from "this tree is broken" by the code alone.
+//
+// The check runs after per-task validation, so every Fault here has already passed R1.
+func (d *ProcessDefinition) validateFaultCodeKinds() error {
+	raisedBy := map[string]string{} // code → first task that raises it
+	for _, s := range d.Tasks {
+		for _, c := range s.Switch {
+			if c.Raise != nil {
+				if _, seen := raisedBy[c.Raise.Code]; !seen {
+					raisedBy[c.Raise.Code] = s.ID
+				}
+			}
+		}
+		for _, ec := range s.OnError {
+			if ec.Raise != nil {
+				if _, seen := raisedBy[ec.Raise.Code]; !seen {
+					raisedBy[ec.Raise.Code] = s.ID
+				}
+			}
+		}
+	}
+	check := func(f *Fault, taskID string) error {
+		if f == nil {
+			return nil
+		}
+		if origin, ok := raisedBy[f.Code]; ok {
+			return fmt.Errorf("task %q: panic %q: this code is already raised by task %q; a code cannot be both raised and panicked", taskID, f.Code, origin)
+		}
+		return nil
+	}
+	for _, s := range d.Tasks {
+		for _, c := range s.Switch {
+			if err := check(c.Panic, s.ID); err != nil {
+				return err
+			}
+		}
+		for _, ec := range s.OnError {
+			if err := check(ec.Panic, s.ID); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -98,7 +147,41 @@ func validateActionRequiredFields(s *Task) error {
 	return nil
 }
 
-// validateSwitch checks the task's switch cases: catch-all ordering and goto targets.
+// faultCodeRe is the R1 shape for an authored error code: lower_snake_case, no dots.
+// Excluding dots is what keeps the two code namespaces legible side by side — every
+// engine-produced code has one (http.500, pre.timeout, output.invalid), so a reader
+// (and a filter on error_code) can always tell an authored code from an observed one,
+// and a child task's on_error list is unambiguously a list of raised codes.
+var faultCodeRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// validateFault enforces R1 (code shape, message present) and R2 (both literal) on one
+// raise or panic clause. where locates the case ("switch case 0", "on_error[1]") and
+// clause names it, so the message points at the offending line without the author
+// having to count.
+func validateFault(f *Fault, taskID, where, clause string) error {
+	if f == nil {
+		return nil
+	}
+	if !faultCodeRe.MatchString(f.Code) {
+		return fmt.Errorf("task %q %s: %s: %q is not a valid error code (use lower_snake_case, no dots)", taskID, where, clause, f.Code)
+	}
+	if f.Message == "" {
+		return fmt.Errorf("task %q %s: %s %q: message is required", taskID, where, clause, f.Code)
+	}
+	// R2: a computed code would make the definition's raise set uncomputable and
+	// error_code unqueryable; a computed message would smuggle data across the process
+	// boundary that a payload-free error design exists to keep closed.
+	if strings.Contains(f.Code, "{{") {
+		return fmt.Errorf("task %q %s: %s: code must be a literal, not an expression", taskID, where, clause)
+	}
+	if strings.Contains(f.Message, "{{") {
+		return fmt.Errorf("task %q %s: %s: message must be a literal, not an expression", taskID, where, clause)
+	}
+	return nil
+}
+
+// validateSwitch checks the task's switch cases: catch-all ordering, goto targets, and
+// the raise/panic clauses (R1-R3).
 func validateSwitch(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int) error {
 	if len(s.Switch) == 0 {
 		return fmt.Errorf("task %q: switch is required", s.ID)
@@ -108,6 +191,29 @@ func validateSwitch(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int) 
 		if c.Case == "" && !isLast {
 			return fmt.Errorf("task %q switch: catch-all at index %d must be the last case (unreachable cases after it)", s.ID, i)
 		}
+		where := fmt.Sprintf("switch case %d", i)
+
+		// R3: a case either routes or terminates, never both and never neither. This
+		// is checked here rather than on decode so it can name the task and the index.
+		set := 0
+		for _, on := range []bool{c.Goto != "", c.Raise != nil, c.Panic != nil} {
+			if on {
+				set++
+			}
+		}
+		if set != 1 {
+			return fmt.Errorf("task %q %s: set exactly one of \"goto\", \"raise\", \"panic\"", s.ID, where)
+		}
+		if err := validateFault(c.Raise, s.ID, where, "raise"); err != nil {
+			return err
+		}
+		if err := validateFault(c.Panic, s.ID, where, "panic"); err != nil {
+			return err
+		}
+		if c.Goto == "" {
+			continue // a raise/panic case has no routing target to check
+		}
+
 		switch {
 		case c.Goto == GotoEnd:
 			// always valid
@@ -130,27 +236,90 @@ func validateSwitch(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int) 
 	return nil
 }
 
-// validateOnError checks the task's on_error rules: code patterns, catch-all ordering,
-// goto targets, and the only_once retry restrictions.
+// isChildTask reports whether the task's action spawns child processes, which is what
+// makes its on_error a list of raised codes rather than engine codes (R4/M1).
+func isChildTask(s *Task) bool {
+	return s.Action != nil && (s.Action.Type == ActionTypeChildMap || s.Action.Type == ActionTypeChildList)
+}
+
+// validateOnError checks the task's on_error rules: the terminal-clause arity (R3), goto
+// targets, and then one of two code regimes — literal raised codes on a child task (R4),
+// or LIKE patterns with the only_once retry restrictions on an action task.
 func validateOnError(s *Task, taskIDs map[string]struct{}) error {
 	onlyOnce := s.OnlyOnce != nil && *s.OnlyOnce
+	child := isChildTask(s)
 	for i, ec := range s.OnError {
-		for _, pat := range ec.Code {
-			if !validLikePattern(pat) {
-				return fmt.Errorf("task %q on_error[%d]: code pattern must not be empty", s.ID, i)
-			}
-			if sqlLikeMatch(pat, "child.failed") {
-				return fmt.Errorf("task %q on_error[%d]: catching child.failed is not supported; handle errors inside the child process and communicate them via return data", s.ID, i)
+		where := fmt.Sprintf("on_error[%d]", i)
+
+		// R3, in its at-most-one form. Unlike a switch case, a rule setting none of the
+		// three is meaningful and long-standing: on an action task it exhausts its retries
+		// and then fails the instance with the engine's own code. What must not happen is
+		// two answers to "what does this rule do".
+		set := 0
+		for _, on := range []bool{ec.Goto != "", ec.Raise != nil, ec.Panic != nil} {
+			if on {
+				set++
 			}
 		}
-		isLast := i == len(s.OnError)-1
-		if len(ec.Code) == 0 && !isLast {
-			return fmt.Errorf("task %q on_error[%d]: catch-all must be the last rule (unreachable rules after it)", s.ID, i)
+		if set > 1 {
+			return fmt.Errorf("task %q %s: set at most one of \"goto\", \"raise\", \"panic\"", s.ID, where)
 		}
+		if err := validateFault(ec.Raise, s.ID, where, "raise"); err != nil {
+			return err
+		}
+		if err := validateFault(ec.Panic, s.ID, where, "panic"); err != nil {
+			return err
+		}
+
+		// The code regime is checked before the goto target, so a child task's R4
+		// rejection speaks first: on a child task the codes ARE the rule's subject, and
+		// "these aren't literal raised codes" is more useful than an incidental complaint
+		// about the goto.
+		if child {
+			// R4: on a child task the codes are the literal codes its children can raise,
+			// matched literally (M1) — so there is no catch-all and no LIKE pattern, and
+			// there is no parent-side retry (D7). A code must be a valid raised code:
+			// note this *allows* underscores, unlike the SQL '_' wildcard, because a
+			// literal match treats them as ordinary characters (spec §7.2 Delta). A dotted
+			// code like `child.failed` fails here too — that failure is never catchable
+			// (D5); convert it to a raise inside the child.
+			if len(ec.Code) == 0 {
+				return fmt.Errorf("task %q %s: a child task requires literal error codes — catch-all is not allowed", s.ID, where)
+			}
+			for _, code := range ec.Code {
+				if !faultCodeRe.MatchString(code) {
+					return fmt.Errorf("task %q %s: %q must be a literal raised code (lower_snake_case, no dots or LIKE wildcards) — a child task matches codes literally, so a pattern like child.failed cannot be caught; convert the failure into a raise inside the child", s.ID, where, code)
+				}
+			}
+			if ec.Retries > 0 {
+				return fmt.Errorf("task %q %s: retries is not supported on a child task; retry inside the child, then raise", s.ID, where)
+			}
+			if ec.NotReached != nil {
+				return fmt.Errorf("task %q %s: not_reached has no meaning on a child task", s.ID, where)
+			}
+		} else {
+			// Action task: LIKE patterns against engine codes, plus catch-all ordering.
+			for _, pat := range ec.Code {
+				if !validLikePattern(pat) {
+					return fmt.Errorf("task %q %s: code pattern must not be empty", s.ID, where)
+				}
+				if sqlLikeMatch(pat, "child.failed") {
+					return fmt.Errorf("task %q %s: catching child.failed is not supported; convert the failure into a raise inside the child, then catch the raised code", s.ID, where)
+				}
+			}
+			isLast := i == len(s.OnError)-1
+			if len(ec.Code) == 0 && !isLast {
+				return fmt.Errorf("task %q %s: catch-all must be the last rule (unreachable rules after it)", s.ID, where)
+			}
+		}
+
 		if ec.Goto != "" && ec.Goto != GotoEnd {
 			if _, ok := taskIDs[ec.Goto]; !ok {
-				return fmt.Errorf("task %q on_error[%d]: goto %q is not a known task", s.ID, i, ec.Goto)
+				return fmt.Errorf("task %q %s: goto %q is not a known task", s.ID, where, ec.Goto)
 			}
+		}
+		if child {
+			continue // the only_once retry regime below is action-task only
 		}
 		if onlyOnce && ec.Retries > 0 {
 			// not_reached:true is an explicit user override — allow retries regardless of pattern.
@@ -159,11 +328,11 @@ func validateOnError(s *Task, taskIDs map[string]struct{}) error {
 			}
 			// Catch-all rules (empty Code) would match any error including reached ones.
 			if len(ec.Code) == 0 {
-				return fmt.Errorf("task %q on_error[%d]: catch-all rule cannot have retries on an only_once task; restrict to pre.%% or add not_reached:true", s.ID, i)
+				return fmt.Errorf("task %q %s: catch-all rule cannot have retries on an only_once task; restrict to pre.%% or add not_reached:true", s.ID, where)
 			}
 			for _, pat := range ec.Code {
 				if !patternOnlyMatchesPre(pat) {
-					return fmt.Errorf("task %q on_error[%d]: pattern %q can match errors where the call may have executed; restrict to pre.%% patterns or add not_reached:true to assert the remote was not reached", s.ID, i, pat)
+					return fmt.Errorf("task %q %s: pattern %q can match errors where the call may have executed; restrict to pre.%% patterns or add not_reached:true to assert the remote was not reached", s.ID, where, pat)
 				}
 			}
 		}

@@ -50,7 +50,7 @@ func (h *Handlers) listDefinitions(raw json.RawMessage) Reply {
 	}
 	summaries := make([]DefinitionSummary, len(defs))
 	for i, d := range defs {
-		summaries[i] = DefinitionSummary{Name: d.Def.Name, Version: d.Version}
+		summaries[i] = DefinitionSummary{Name: d.Def.Name, Version: d.Version, Raises: d.Def.Raises()}
 	}
 	return okReply(PageResp[DefinitionSummary]{Items: summaries, Page: info})
 }

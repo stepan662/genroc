@@ -26,7 +26,7 @@ var instancePaginator = paginator{
 		"created": {{"created_at", kindInt}, {"id", kindText}},
 		"updated": {{"updated_at", kindInt}, {"id", kindText}},
 	},
-	filterCols: []string{"status"},
+	filterCols: []string{"status", "error_code"},
 	defSort:    "created",
 	defDesc:    true, // newest first
 	defLimit:   20,
@@ -61,13 +61,18 @@ func instanceSummaryCursorVals(sort string, s *model.InstanceSummary) []any {
 const instanceColumns = `id, process_name, process_version, parent_id,
 	call_stack, retry_count, wake_at, status, error,
 	created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_task_id,
-	input_data, outputs_data, output_data, error_data, external_data, engine_state, task`
+	input_data, outputs_data, output_data, error_data, external_data, engine_state, task,
+	error_code`
 
 // instanceSummaryColumns is the lightweight projection used by ListInstances: no
 // context_data/task/call_stack, so a list never reads or unmarshals a
 // potentially huge context blob. Order matches scanInstanceSummary.
+//
+// error_code is included despite the "lightweight" rule: it is a short bounded string
+// and it is what a list is usually being filtered or scanned for when something has
+// gone wrong, so making callers fetch the detail view to see it would defeat the point.
 const instanceSummaryColumns = `id, process_name, process_version, retry_count,
-	status, wait_state, error, created_at, updated_at`
+	status, wait_state, error, error_code, created_at, updated_at`
 
 // scanInstanceSummary reads one process_instances row (in instanceSummaryColumns
 // order) into a model.InstanceSummary.
@@ -80,7 +85,7 @@ func scanInstanceSummary(s interface{ Scan(...any) error }) (*model.InstanceSumm
 	)
 	if err := s.Scan(
 		&r.ID, &r.ProcessName, &processVersion, &retryCount,
-		&status, &waitState, &r.Error, &createdAt, &updatedAt,
+		&status, &waitState, &r.Error, &r.ErrorCode, &createdAt, &updatedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -102,6 +107,7 @@ func scanInstance(s interface{ Scan(...any) error }) (dbgen.ProcessInstance, err
 		&r.CallStack, &r.RetryCount, &r.WakeAt, &r.Status, &r.Error,
 		&r.CreatedAt, &r.UpdatedAt, &r.WorkerID, &r.LeaseExpiresAt, &r.WaitState, &r.SpawnTaskID,
 		&r.InputData, &r.OutputsData, &r.OutputData, &r.ErrorData, &r.ExternalData, &r.EngineState, &r.Task,
+		&r.ErrorCode,
 	)
 	return r, err
 }
@@ -338,6 +344,7 @@ func updateInstanceParams(inst *model.ProcessInstance, cols contextCols, now int
 		Status:       string(inst.Status),
 		WaitState:    string(inst.WaitState),
 		Error:        inst.Error,
+		ErrorCode:    inst.ErrorCode,
 		UpdatedAt:    now,
 	}
 }
@@ -369,6 +376,7 @@ func insertInstanceParams(inst *model.ProcessInstance, cols contextCols, status 
 		Status:         status,
 		WaitState:      string(inst.WaitState),
 		Error:          inst.Error,
+		ErrorCode:      inst.ErrorCode,
 		CreatedAt:      createdAt,
 		UpdatedAt:      updatedAt,
 	}, nil
@@ -446,8 +454,11 @@ func (db *DB) GetInstance(id string) (*model.ProcessInstance, error) {
 
 // ListInstances returns a page of instance summaries, optionally filtered by status
 // (empty = all). Summaries omit the context blob — use GetInstance for full detail.
-func (db *DB) ListInstances(status string, req PageReq) ([]*model.InstanceSummary, PageInfo, error) {
-	b, err := instancePaginator.query(req).EqIf("status", status, status != "").build()
+func (db *DB) ListInstances(status, errorCode string, req PageReq) ([]*model.InstanceSummary, PageInfo, error) {
+	b, err := instancePaginator.query(req).
+		EqIf("status", status, status != "").
+		EqIf("error_code", errorCode, errorCode != "").
+		build()
 	if err != nil {
 		return nil, PageInfo{}, err
 	}
@@ -499,6 +510,7 @@ func toInstance(r dbgen.ProcessInstance) (*model.ProcessInstance, error) {
 		Status:         model.Status(r.Status),
 		WaitState:      model.WaitState(r.WaitState),
 		Error:          r.Error,
+		ErrorCode:      r.ErrorCode,
 		CreatedAt:      toTime(r.CreatedAt),
 		UpdatedAt:      toTime(r.UpdatedAt),
 		WakeAt:         toTimePtr(r.WakeAt),

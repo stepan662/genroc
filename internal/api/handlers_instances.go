@@ -90,7 +90,7 @@ func (h *Handlers) startInstance(raw json.RawMessage) Reply {
 
 func (h *Handlers) listInstances(raw json.RawMessage) Reply {
 	req := decodeOptionalBody[ListInstancesReq](raw)
-	instances, info, err := h.db.ListInstances(req.Status, req.page())
+	instances, info, err := h.db.ListInstances(req.Status, req.ErrorCode, req.page())
 	if err != nil {
 		return errReply(err)
 	}
@@ -191,6 +191,7 @@ func instanceToResp(inst *model.ProcessInstance) InstanceStatusResp {
 			WaitState:  inst.WaitState,
 			RetryCount: inst.RetryCount,
 			Error:      inst.Error,
+			ErrorCode:  inst.ErrorCode,
 			CreatedAt:  inst.CreatedAt.Format(time.RFC3339),
 			UpdatedAt:  inst.UpdatedAt.Format(time.RFC3339),
 		},
@@ -207,6 +208,7 @@ func instanceSummaryToResp(s *model.InstanceSummary) InstanceSummaryResp {
 		WaitState:  s.WaitState,
 		RetryCount: s.RetryCount,
 		Error:      s.Error,
+		ErrorCode:  s.ErrorCode,
 		CreatedAt:  s.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:  s.UpdatedAt.Format(time.RFC3339),
 	}

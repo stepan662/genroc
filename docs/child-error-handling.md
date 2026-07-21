@@ -1,25 +1,61 @@
 # Child → parent error handling
 
-Status: **draft.** Nothing here is implemented, and the design is not frozen —
-it is written to spec grade so the consequences are visible, not because the
-decisions are final. Addresses `ROADMAP.md` → "think about error handling
-child -> parent".
+Status: **fully implemented 2026-07-20.** Addresses `ROADMAP.md` → "think about
+error handling child -> parent". Revised against the shipped pause/resume design
+([pause-resume.md](pause-resume.md)), which was implemented after the first draft
+and removed the `cancelled`/`cancelling` statuses two of the arguments below
+leaned on.
 
-Settled enough to build on: the `raise` / `panic` / `end` trichotomy (§0), errors
-as codes without payloads, defects never being catchable, and settle-all batch
-resolution.
+All three phases (§10) are built:
 
-Still open, and worth deciding before implementation:
+1. **Raise and panic** — `raise`/`panic`, the `raised` status, `error_code` on
+   every terminal outcome, and all of §11.
+2. **Catch (single child)** — M1 literal matching, R4/R5, and the resolution step
+   in `runChildProcesses`.
+3. **Batch resolution** — §5.2 over a multi-child batch, with `$error.child_key`
+   / `.child_index` naming which child raised.
 
-- **D3** — reachability-only checking, no exhaustiveness. The one decision that
-  is expensive to reverse: adding exhaustiveness later breaks existing
-  definitions, while removing it later breaks nothing.
-- **D7** — no parent-side retry. Cheap to reverse; §10.1 describes the coarse
-  workaround and the signal that would justify building the real thing.
-- **§11.3** — whether revive should clear the `$error` context slot, not just the
-  `error` column. Pre-existing inconsistency, now reachable one more way.
-- **§11.5** — `errored` collides with the roadmap's existing use of the word to
-  mean *faulted*. Worth settling alongside the `cancel → pause` rename.
+A parent now catches a child's raised error through `on_error` rules on the child
+task: a matching rule routes it (goto / raise / panic), and no matching rule
+degrades the raise to a defect that fails the parent — **carrying the child's own
+code and message forward**, so the failure reads as the raise that caused it
+rather than a generic collect error. Where the implementation refined a spec
+detail, a **Delta** note records it inline. Code:
+`internal/model/{instance,wire,definition,validate,logs}.go`,
+`internal/engine/{error,advance,collect,child}.go`,
+`internal/validation/{validate_children,infer}.go`,
+`internal/db/{queries.sql,db_lifecycle.go,db_instances.go,db_claim.go}`,
+migration `023_error_code.up.sql`. Tests: `internal/model/fault_test.go`,
+`internal/validation/validationtest/child_reachability_test.go`,
+`internal/db/dbtest/raise_test.go`, `tests/integration/raise_panic_test.ts`,
+`tests/integration/child_catch_test.ts`.
+
+Every decision is now closed:
+
+- **D3** — reachability-only checking, no exhaustiveness. **Confirmed.** The one
+  decision that is expensive to reverse: adding exhaustiveness later breaks
+  existing definitions, while removing it later breaks nothing.
+- **D7** — no parent-side retry. **Confirmed.** Cheap to reverse; §10.1 describes
+  the coarse workaround and the signal that would justify building the real thing.
+- **§11.3** — revive **does** clear the `$error` context slot, alongside the
+  `error` and `error_code` columns.
+- **§11.5** — the status is **`raised`**, not `errored`. It pairs with the
+  `raise:` clause exactly as `paused` pairs with `pause`, and cannot be misread
+  as a synonym for `failed` in the status column that every dashboard keys on.
+
+### What the pause/resume design changed here
+
+Nothing in §0–§6 was invalidated, but three arguments now rest on different
+mechanics, and one fix moved:
+
+- §5.2's guarantee that a resolving parent sees only settled children used to be
+  argued from `cancelled`. It is now argued from `paused` **not** being terminal:
+  `CountActiveSiblings` counts a paused child as active, so a parent holding one
+  is never woken to `collecting` at all. The guarantee is stronger, not weaker.
+- E1 (child raises under an operator stop) changed from a dead end to a live,
+  correct case: the parent resolves on resume (§8).
+- §11.4's `anyActive` bug is now fixed by `Status.Terminal()` rather than by
+  hand-editing a status list — see there for why that is the better place.
 
 ## 0. Governing principle
 
@@ -48,7 +84,7 @@ and they cover the outcome space exactly once each:
 | clause | status | meaning | caller can react |
 |---|---|---|---|
 | `goto: end` | `completed` | finished; produces `output` | — |
-| `raise: {code, message}` | `errored` | an anticipated condition stopped me | **yes**, by naming the code |
+| `raise: {code, message}` | `raised` | an anticipated condition stopped me | **yes**, by naming the code |
 | `panic: {code, message}` | `failed` | something is wrong that I did not anticipate | **no**, ever |
 
 Both failure clauses carry a code, but for different readers. A raised code is
@@ -72,8 +108,8 @@ coexist for different jobs. "8 of 10 shipped, and here is why 2 didn't" is a
 | term | meaning |
 |---|---|
 | **batch** | all children spawned by one `(parent_id, spawn_task_id)` pair |
-| **slot** | a stable position in a batch: `key` for `child_map`, `index` for `child_list` |
-| **raise** | a child terminating via a `raise` clause → status `errored` |
+| **slot** | the abstract term for a stable position in a batch; surfaced in `$error` as `child_key` (a string, `child_map`) or `child_index` (an integer, `child_list`) |
+| **raise** | a child terminating via a `raise` clause → status `raised` |
 | **panic** | a child terminating via a `panic` clause → status `failed`; an *authored* defect |
 | **defect** | any termination as `failed`, authored or engine-produced — never catchable |
 | **raise set** | `raises(D)`, the codes a definition `D` can raise (§2.3) |
@@ -272,18 +308,40 @@ a computed message would smuggle data across the boundary.
 > `task "charge": raise: code must be a literal, not an expression`
 > `task "submit": panic: message must be a literal, not an expression`
 
-**R3 — exactly one terminal clause.** A `SwitchCase` or `ErrorCase` carries
-exactly one of `goto`, `raise`, `panic`.
+**R3 — one terminal clause.** A `SwitchCase` carries exactly one of `goto`,
+`raise`, `panic`.
 > `task "charge": switch case 0: set exactly one of "goto", "raise", "panic"`
 
+> **Delta (implemented).** On an **`ErrorCase`** the rule is *at most* one, not
+> exactly one. A rule with none of the three is meaningful and predates this
+> design: it exhausts its `retries` and then fails the instance with the engine's
+> own code. Only "two answers to what this rule does" is rejected.
+> `task "pay": on_error[0]: set at most one of "goto", "raise", "panic"`
+>
+> Both checks live in the validator, not in `UnmarshalJSON` — the decoder only
+> checks a `goto`'s *shape* — so the rejection can name the task and the case
+> index instead of surfacing as an opaque decode error.
+
 **R4 — child tasks match literally, and do not retry.** On a task whose action is
-`child_map` or `child_list`, every `on_error` rule has a non-empty `code` list
-containing no `%` or `_` — no catch-all, no patterns. `retries` and `not_reached`
+`child_map` or `child_list`, every `on_error` rule has a non-empty `code` list of
+literal raised codes — no catch-all, no patterns. `retries` and `not_reached`
 are rejected outright: there is no parent-side retry (D7), and accepting a field
 that is silently ignored would be worse than refusing it.
-> `task "pay": on_error[0]: a child task requires literal error codes — catch-all and LIKE patterns are not allowed`
+> `task "pay": on_error[0]: a child task requires literal error codes — catch-all is not allowed`
 > `task "pay": on_error[0]: retries is not supported on a child task; retry inside the child, then raise`
 > `task "pay": on_error[0]: not_reached has no meaning on a child task`
+
+> **Delta (implemented).** The draft said "no `%` or `_`". That is a slip: `_` is
+> a legal — and near-universal — character in a raised code (`card_declined`,
+> `insufficient_funds`), so forbidding it would reject almost every realistic
+> rule. The `_` in the draft was the *SQL LIKE single-char wildcard*, but on a
+> child task matching is literal (M1), so `_` is just a character, not a wildcard.
+> What R4 actually enforces is that each code matches the raised-code shape
+> `^[a-z][a-z0-9_]*$` — the same `faultCodeRe` as R1. That forbids a catch-all
+> (empty), a `%`, a dot (so a dotted engine code or `child.failed` is rejected —
+> D5), and uppercase, while allowing `_`. The code-regime check runs *before* the
+> goto-target check, so on a child task R4 speaks first
+> ([validate.go](internal/model/validate.go), `validateOnError`).
 
 **R5 — rule reachability.** On a child task, every code named by an `on_error`
 rule is in `⋃ raises(D)` over the task's resolved children (the union across
@@ -293,14 +351,23 @@ entries, for `child_map`).
 **R6 — a code is a raise code or a panic code, not both.** Within one definition,
 no code appears on both a `raise` and a `panic`. Otherwise `error_code` would be
 ambiguous for exactly the observers it exists to serve: the same value would
-appear on `errored` and `failed` instances of the same process, meaning two
+appear on `raised` and `failed` instances of the same process, meaning two
 different things.
 > `task "submit": panic "timeout": this code is already raised by task "poll"; a code cannot be both raised and panicked`
 
-R5 lands in `validateChildEntry`
-([validate_children.go:74](internal/validation/validate_children.go#L74)), which
-already resolves the child definition to subset-check its input, so its task list
-is in hand.
+R5 lands next to `validateChildEntry`
+([validate_children.go](internal/validation/validate_children.go)), which already
+resolves the child definitions to subset-check their inputs, so their task lists —
+and hence `Raises()` — are in hand.
+
+> **Delta (implemented).** R5 is its own pass, `validateChildOnErrorReachability`,
+> run per task inside `ValidateChildProcessRefs` rather than folded into the
+> per-entry input check. The reason is scope: reachability is a property of the
+> *task's whole rule set against the union of its children's raise sets*, not of a
+> single `child_map` entry, so it reads more clearly as one check over the task
+> than as something threaded through the per-entry loop. It reuses `resolveChild`
+> and `ProcessDefinition.Raises()`, so it resolves the same versions the input
+> check does.
 
 ### 3.1 What R5 does and does not catch
 
@@ -327,8 +394,7 @@ it would break re-registration for every parent. See D3.
 
 ## 4. Matching
 
-**M1 — literal matching on child tasks.** `matchOnError`
-([error.go:28](internal/engine/error.go#L28)) gains one clause:
+**M1 — literal matching on child tasks.**
 
 > On a child task, a rule matches **iff its `code` list contains the raised code
 > literally.** No LIKE evaluation, no empty-list catch-all.
@@ -340,18 +406,26 @@ for `http.*` / `pre.*` / `external.timeout` / `script.*` / `output.*`.
 This is the mechanical expression of the first corollary in §0: a child error is
 handled by naming it, or not at all.
 
+> **Delta (implemented).** M1 is a *separate* matcher, `matchOnErrorLiteral`
+> ([error.go](internal/engine/error.go)), not a clause bolted onto `matchOnError`.
+> It has to be separate for a concrete reason: a raised code contains underscores,
+> and `SQLLikeMatch` treats `_` as a single-char wildcard — so `card_declined`
+> reused as a LIKE pattern would spuriously match `cardxdeclined`. Literal `==`
+> comparison is the only correct match for a raised code. `matchOnError` keeps its
+> LIKE semantics for action tasks; the resolution path calls `matchOnErrorLiteral`.
+
 ## 5. Operational semantics
 
 ### 5.1 Child: raising
 
 A `raise` clause is a sibling of the `GotoEnd` branch in `advance()`
-([advance.go:253-262](internal/engine/advance.go#L253-L262)), and of the
+([advance.go:261-270](internal/engine/advance.go#L261-L270)), and of the
 `GotoEnd` branch in `handleCallError` for the `on_error` form
-([error.go:78-83](internal/engine/error.go#L78-L83)):
+([error.go:71-76](internal/engine/error.go#L71-L76)):
 
 ```
 raise:                            panic:
-  status     := errored             status     := failed
+  status     := raised              status     := failed
   error_code := fault.Code          error_code := fault.Code
   error      := fault.Message       error      := fault.Message
   wake_at    := nil                 wake_at    := nil
@@ -360,46 +434,79 @@ raise:                            panic:
 The two write identical fields and differ only in status — which is the whole
 difference, since status is what decides whether ancestors are poisoned.
 
-`panic` is `failInstance` ([error.go:99](internal/engine/error.go#L99)) with an
-authored reason and code, so it reaches `FailInstanceAndAncestors` through the
-existing `Status == StatusFailed` branch of `saveAndNotify` with no new plumbing.
+**Neither needs new plumbing in `saveAndNotify`**
+([advance.go:416-424](internal/engine/advance.go#L416-L424)), which already
+branches exactly where this design needs it to:
 
-`raise` is the new path: the terminal write goes through `saveAndNotify`
-([advance.go:389](internal/engine/advance.go#L389)) via **`FinishChild`**, not
-`FailInstanceAndAncestors`, because a raise is a normal outcome and must not mark
-ancestors `failing`.
+- `panic` is `failInstance` ([error.go:92](internal/engine/error.go#L92)) with an
+  authored reason and code, so it takes the existing `Status == StatusFailed`
+  branch to `FailInstanceAndAncestors`.
+- `raise` writes `StatusRaised`, which is not `StatusFailed`, so it falls through
+  to **`FinishChild`** — the correct destination, because a raise is a normal
+  outcome and must not mark ancestors `failing`. Nothing there changes.
 
-`StatusErrored` is directly terminal; no draining state is needed, because a
+> **Delta (implemented).** `raise` and `panic` are `raiseInstance` /
+> `panicInstance` in `error.go`, called from both the switch path (`advance.go`)
+> and the `on_error` path (`handleCallError`). `panicInstance` is literally
+> `failInstance(inst, f.Code, f.Message)` — a panic is a defect like any other, so
+> it *is* the failure path with the author's words substituted, not a parallel to
+> it. To make that substitution total, `failInstance` gained a `code` parameter:
+> every one of its ~30 call sites now passes an `engine.*` code (see §7.1's
+> Delta), so no failure path can leave `error_code` empty by omission.
+
+`StatusRaised` is directly terminal; no draining state is needed, because a
 raise happens at a task boundary where this instance's own children have already
-collected.
+collected. It must be added to `Status.Terminal()`
+([instance.go:30](internal/model/instance.go#L30)) — see §11.4, where that one
+line also closes a live bug in `RetryProcess`.
 
 **Neither computes the process `output`.** This matters at registration as well
-as at runtime: `addTerminal` ([context.go:83](internal/validation/context.go#L83))
-must be called only for `goto: end` cases, never for `raise` or `panic`. A raise
+as at runtime: `addTerminal` ([context.go:63-88](internal/validation/context.go#L63-L88))
+must be reached only for `goto: end` cases, never for `raise` or `panic`. A raise
 site is *not* a terminal for the purpose of validating the process `output:`
 expression — otherwise raising from a task where the outputs `output:` reads are
 not yet available would fail registration, which is precisely the situation
 every early-exit raise is in.
 
+> **Delta (implemented).** No change was needed here. `addTerminal` and its
+> predecessor graph `buildPreds` already branch on `c.Goto == GotoEnd` /
+> `ec.Goto`, and a `raise`/`panic` case has an empty `Goto`. So a terminal clause
+> is invisible to the output-boundary analysis for free — the spec's requirement
+> was already satisfied by keying on `Goto` rather than on "does this case end the
+> process".
+
 ### 5.2 Parent: resolution
 
-**Precondition:** `P.status = running ∧ P.wait_state = collecting`. A `failing`
-or `cancelling` parent short-circuits earlier in `advance()`
-([advance.go:139-144](internal/engine/advance.go#L139-L144)) and never resolves.
+**Precondition:** `P.status = running ∧ P.wait_state = collecting`. Both other
+live statuses short-circuit earlier in `advance()`
+([advance.go:139-152](internal/engine/advance.go#L139-L152)): a `failing` parent
+goes to `settleFailing`, a `pausing` one to `settlePausing`. A `paused` parent is
+not claimable at all. So a suspended parent parked on `collecting` resolves when
+it is resumed, never before.
 
-That precondition has a strong consequence. A `failed` child poisons its
-ancestors before the parent can wake (§5.4), and a `cancelled` child implies a
-cancel that came down from the root, so the parent is `cancelling`. **A parent
-that reaches resolution therefore has a batch of only `completed` and `errored`
-children** — the algorithm never has to reason about defects at all:
+That precondition has a strong consequence — **a parent that reaches resolution
+has a batch of only `completed` and `raised` children**, so the algorithm never
+has to reason about defects or suspensions at all. The three excluded statuses
+are each blocked by a different mechanism:
+
+| child status | why the parent cannot be resolving | mechanism |
+|---|---|---|
+| `failed` | it poisoned its ancestors first, so `P` is `failing` | §5.4 |
+| `paused` / `pausing` | a paused child still counts as active, so `P` was never woken | `CountActiveSiblings` ([queries.sql:201](internal/db/queries.sql#L201)) |
+| `running` | the batch is not settled | `CountActiveSiblings` |
+
+The middle row is what the removal of `cancelled` changed. An earlier draft
+argued it from cancellation coming down from the root; the pause design gives a
+stronger guarantee, because it does not depend on where the stop originated.
+A paused child holds its parent in `waiting` no matter who paused it.
 
 ```
 resolve(parent P, task T):
   B := children of batch(P, T.id), ordered by slot
        -- child_list: by _spawn_index;  child_map: by sorted _spawn_child_key
-  assert ∀c ∈ B : c.status ∈ {completed, errored}
+  assert ∀c ∈ B : c.status ∈ {completed, raised}
 
-  E := [ c ∈ B : c.status = errored ]                   -- keeps slot order
+  E := [ c ∈ B : c.status = raised ]                    -- keeps slot order
 
   ── 0. happy path ────────────────────────────────────────────────────────
   if E = ∅:
@@ -421,39 +528,79 @@ resolve(parent P, task T):
 
 Two steps, no retry, no loop. Ordering is by slot, already established by
 `buildListChildOutput` / `buildMapChildOutput`
-([collect.go:39-71](internal/engine/collect.go#L39-L71)). Nothing reads a clock
+([collect.go:40-72](internal/engine/collect.go#L40-L72)). Nothing reads a clock
 or observes completion order, so resolution is deterministic (**I3**).
+
+**Where it lives.** Resolution is a new step at the head of `runChildProcesses`
+phase 2 ([child.go](internal/engine/child.go)), *before* the collect — not inside
+it. `runChildProcesses` does the one `ChildrenForTask` read and hands the siblings
+to `resolveRaisedBatch` (if any raised) or to `buildChildOutput` (the old
+`collectChildOutputs` body, minus the read). `buildChildOutput` keeps its strict
+every-child-completed guard: by the assertion above, a `raised` child reaching it
+is a bug in resolution, not a case to accommodate.
 
 Step 2's `rule = nil` branch is the **normal** path for an unhandled raised code,
 not an edge case — R5 does not require coverage (§3.1). Its message must name the
 code, the child and the slot, so the omission is readable straight off the
 instance detail:
-> `task "pay": child "charge-card" (slot charge) raised "insufficient_funds"; no on_error rule matches`
+> `task "pay": child "charge-card" (child_key "charge") raised "insufficient_funds": the account has insufficient funds; no on_error rule matches`
 
 Note what this means for composition: **an unhandled raise degrades to a defect.**
 The parent fails, which fails fast up its own tree. An error never propagates a
 level implicitly — propagation is a `raise` in an `on_error` rule and nothing
 else.
 
+> **Delta (implemented).** Two refinements to step 2, both about the failed
+> parent *mirroring* the child that caused it:
+>
+> - **`error_code` is the child's raised code**, not `engine.collect`. The
+>   pseudocode's `fail P` is `failInstance(inst, first.ErrorCode, msg)`, so a
+>   parent that dies on an unhandled `insufficient_funds` reports `error_code =
+>   insufficient_funds` and a message that quotes the child's own message. Before
+>   resolution existed, this same case surfaced as the generic collect-guard
+>   failure (`engine.collect`, "outputs can only be collected when all children
+>   completed"), which read like an internal bug rather than "a child raised and
+>   nobody caught it". Mirroring the child is the whole point of the fix.
+> - **`on_error` may `raise` or `panic`, not only `goto`.** The pseudocode lists
+>   `nil / goto:end / raise / goto:$id`; the implementation also honours a `panic`
+>   clause on the matched rule (fail with the authored panic code), for parity with
+>   the switch/`handleCallError` paths where a rule can carry any terminal clause.
+> - **`goto:end` computes the process output**, like a normal completion. Both
+>   error-completion paths — this one and the action-task `on_error → end` in
+>   `handleCallError` — share `completeViaErrorHandler`
+>   ([error.go](internal/engine/error.go)), so the output is computed identically
+>   and the two cannot drift. (`handleCallError`'s `end` branch previously skipped
+>   `computeOutput`, so a process completing via an action-task `on_error → end`
+>   silently produced no `output`; unifying on the helper fixed that.)
+
 ### 5.3 What the routed task sees
 
-`$error` (the existing `error_data` slot):
+`$error` (the existing `error_data` context slot). A `child_list` fan-out:
 
 ```
-{ task:     "fanout",
-  code:     "out_of_stock",
-  message:  "no stock remaining for this sku",
-  slot:     {index: 3},              -- or {key: "charge"}
-  siblings: [                        -- every error in the batch, slot order
-    {slot: {index: 3}, code: "out_of_stock",    message: "…"},
-    {slot: {index: 8}, code: "address_invalid", message: "…"} ] }
+{ task:        "fanout",
+  code:        "out_of_stock",
+  message:     "no stock remaining for this sku",
+  child_index: 3 }                    -- a child_map child would carry child_key: "charge"
 ```
 
-`slot` costs nothing — the engine already knows which child raised — and it is
-what makes a payload-free design workable for fan-outs: the child never says
-*which one*, because its identity is structural. `siblings` is the difference
-between "something failed" and "6 of 10 failed". Both are identity and code
-only; neither carries child data (**I6**).
+Identifying the child costs nothing — the engine already knows which one raised —
+and it is what makes a payload-free design workable for fan-outs: the child never
+says *which one*, because its identity is structural. It is identity and code
+only; no child data crosses (**I6**).
+
+A `child_map` child is named by a string **`child_key`**, a `child_list` child by
+an integer **`child_index`** — two separate single-typed fields, not one
+`string|integer` value, so a handler reads exactly the one its batch kind produces
+without a type-switch. Exactly one is present.
+
+`$error` reports **one** raise — the first in child-key order — not the whole set
+that raised. When several children in a batch raise, the first drives the parent
+and the rest are not enumerated (see D2 for why an aggregate `siblings` list was
+cut). A fan-out that needs "which of the 10 failed, and why" is describing a
+*result*, not control flow, and belongs in child `output` via the
+`{ok: false, reason}` convention (§0), where every child completes and the parent
+collects all ten.
 
 **The routed task keeps its normal context.** `input`, `config`, and every
 `outputs.<id>` from previously completed tasks are readable as usual. The single
@@ -461,11 +608,26 @@ thing absent is `outputs.<T.id>` — the failed batch never produced one. That i
 the whole of "no partial data": there is no half-populated output, not that the
 handler is blindfolded.
 
-Typing follows in `contextSchema`
-([infer.go:253-263](internal/validation/infer.go#L253-L263)); *presence* of
-`$error` is already computed by the existing mustErr/mayErr dataflow
+Typing follows in `contextSchema` ([infer.go](internal/validation/infer.go)):
+`child_key` and `child_index` are both optional there, since a plain
+action-task `on_error` leaves them absent and the schema can't tell which
+`on_error` produced a given `$error`. *Presence* of `$error` itself is already
+computed by the existing mustErr/mayErr dataflow
 ([context.go:337-400](internal/validation/context.go#L337-L400)) and needs no
 change.
+
+> **Delta (implemented).** Two changes to the `$error` shape from the draft:
+>
+> - **`slot` → `child_key` / `child_index`.** The draft carried a single `slot`
+>   field shaped `{key}` / `{index}`. Renamed to a flat scalar and split by kind:
+>   **`child_key`** (string, `child_map`), **`child_index`** (integer,
+>   `child_list`). "slot" read as internal jargon, and a nested one-field object is
+>   awkward to write an expression against (`error.slot.index`);
+>   `error.child_index` is direct, and two single-typed fields keep each one
+>   monomorphic — a handler never asks "string or int". "slot" survives in this doc
+>   only as the *abstract* term for a batch position (slot order, per-slot).
+> - **`siblings` removed.** The draft's `siblings` array (every raised child in the
+>   batch) was cut — see the revised D2. `$error` now reports only the first raise.
 
 ### 5.4 Defects fail fast, always
 
@@ -504,7 +666,7 @@ fault must not be masked by a business error that happened to occur beside it.
   the batch is `completed`. There is no partially populated batch output.
 - **I2 — single observation.** A parent resolves a batch exactly once, when
   every child is terminal — and every one of them is then `completed` or
-  `errored` (§5.2).
+  `raised` (§5.2).
 - **I3 — determinism.** Resolution is a pure function of `(T, slot-ordered
   children)`. No clock, no completion-order dependence, no race.
 - **I4 — crash safety.** From I3, re-running resolution over the same rows
@@ -514,18 +676,29 @@ fault must not be masked by a business error that happened to occur beside it.
   ancestors*, are fully independent of who spawned it. Nothing about a child's
   termination is parameterised by its parent.
 - **I6 — no data crosses.** After an error route, the only child-derived values
-  in the parent's context are code, message and slot.
+  in the parent's context are code, message and which child (`child_key` / `child_index`).
 
 ## 7. Data model
 
-The footprint is deliberately small — one column, one status, one `NOT IN` list.
+The runtime footprint is deliberately small — one column, one status, one
+predicate. The authoring footprint is larger than it looks, because the switch
+and on_error wire formats are hand-written (§7.2).
 
-**Migration `NNN_child_errors.up.sql`:**
+**Migration `023_error_code.up.sql`:**
 ```sql
-ALTER TABLE process_instances ADD COLUMN error_code TEXT;
+ALTER TABLE process_instances ADD COLUMN error_code TEXT NOT NULL DEFAULT '';
 ```
 Filterable, not sortable — so no index is required (only sorts must be
-index-backed; see `paginate.go`).
+index-backed; see `paginate.go`). No data migration: every existing row takes the
+default, which is exactly what §7.1's table says a pre-existing `completed` row
+should carry, and what an old `failed` row honestly reports — its code was never
+recorded anywhere but the prose in `error`.
+
+> **Delta (implemented).** `NOT NULL DEFAULT ''`, not a nullable `TEXT`. The
+> column sits beside `error`, which is already `NOT NULL DEFAULT ''`, so "no code"
+> is one value (`''`) rather than two (`NULL` and `''`) for every filter, scan and
+> Go zero-value to handle. `ProcessInstance.ErrorCode` is a plain `string`
+> throughout; the §7.1 table's "null" rows read as `''`.
 
 ### 7.1 `error_code` is the discriminator for every non-success outcome
 
@@ -534,18 +707,31 @@ failure, not just authored ones:
 
 | terminal state | `error_code` | source |
 |---|---|---|
-| `completed` | null | — |
-| `errored` | the raised code | `raise` |
+| `completed` | `''` | — |
+| `raised` | the raised code | `raise` |
 | `failed`, authored | the panic code | `panic` |
-| `failed`, engine | the engine code — `http.500`, `pre.timeout`, `output.invalid` … | `handleCallError` |
+| `failed`, engine | the engine code — `http.500`, `pre.timeout`, `output.invalid`, `engine.*` … | `handleCallError` / `failInstance` |
 
 The last row is a small extension beyond `raise`/`panic`, and it is where most of
-the operational value is: today an engine failure's code exists only inside the
+the operational value is: an engine failure's code used to exist only inside the
 `error` text, formatted into `task %q: %s: %s`
-([error.go:57](internal/engine/error.go#L57),
-[error.go:94](internal/engine/error.go#L94)), so it cannot be grouped or alerted
-on without parsing prose. `handleCallError` already holds `errCode` — populating
-the column is a one-line change that makes *all* failures uniformly queryable.
+([error.go:87](internal/engine/error.go#L87)), so it could not be grouped or
+alerted on without parsing prose. Populating the column makes *all* failures
+uniformly queryable.
+
+> **Delta (implemented).** "The engine code" is two families, not one. Failures
+> that flow through a *call* carry the call's own code (`http.500`, `pre.timeout`,
+> `output.invalid`, `script.1` …), which `handleCallError` already had in hand.
+> But the engine also fails an instance for reasons that never touched a call —
+> an unevaluable expression, a bad config, a missing definition, a spawn or
+> collect error, an interrupted `only_once` task. Those went through
+> `failInstance` with a message but no code. So `failInstance` now takes a `code`,
+> and there is a small closed set of `engine.*` codes for exactly these cases:
+> `engine.expression`, `engine.config`, `engine.definition`, `engine.input`,
+> `engine.spawn`, `engine.collect`, `engine.only_once`
+> ([error.go](internal/engine/error.go)). They carry a dot like every other engine
+> code, so R1's namespace split still holds: a filter never confuses one with an
+> authored code.
 
 The two namespaces stay legible side by side because R1 forbids dots in authored
 codes and every engine code has one: `bad_credentials` is something a definition
@@ -553,47 +739,116 @@ decided, `http.401` is something the engine observed. A filter never has to
 disambiguate them, and a reader can tell at a glance which kind of failure they
 are looking at.
 
-**Query changes in `queries.sql`:**
-```sql
--- CountActiveSiblings: 'errored' is terminal. Without this the parent never wakes.
-AND status NOT IN ('completed', 'failed', 'cancelled', 'errored');
+**Exactly one status predicate changes.** The engine keeps four separate copies
+of "which statuses are live", and it is worth stating that only one of them has
+an opinion about `raised`, because the other three are easy to change by reflex
+and wrong to:
 
--- GetChildrenForTask / instanceColumns: add error_code to the projection.
-```
+| predicate | change |
+|---|---|
+| `CountActiveSiblings` ([queries.sql:201](internal/db/queries.sql#L201)) | **`NOT IN ('completed', 'failed', 'raised')`.** Without it the parent never wakes and the batch hangs. |
+| `ClaimInstances` ([db_claim.go:73](internal/db/db_claim.go#L73)) | none — it whitelists `running`/`failing`/`pausing`, so a `raised` row is already unclaimable. |
+| `FailAncestors` ([queries.sql:255](internal/db/queries.sql#L255)) | none — it whitelists `running`/`pausing`/`paused`. A settled `raised` row must not be reopened into `failing`. |
+| `WakeParent` ([queries.sql:212](internal/db/queries.sql#L212)) | none — it tests the *parent's* status, which is never `raised` while a child is live. |
+
+Note the asymmetry between rows 1 and 3: `raised` is terminal for the purpose of
+"is this batch settled" but is not a failure, so it neither poisons upward nor is
+poisoned from above. That is the whole status in one line.
+
+Other query changes: `GetChildrenForTask`, `instanceColumns`,
+`instanceSummaryColumns` and `scanInstance` gain `error_code` in the projection.
 
 **New context keys:** none.
 
 **Go:**
 - `model.Fault`; `SwitchCase.Raise` / `.Panic`; `ErrorCase.Raise` / `.Panic`;
-  `model.StatusErrored`.
+  `model.StatusRaised`.
+- `Status.Terminal()` ([instance.go:30](internal/model/instance.go#L30)) gains
+  `StatusRaised` — see §11.4.
 - `ProcessInstance.ErrorCode`; `InstanceSummary.ErrorCode`.
-- `model.ProcessDefinition.Raises()` — the §2.3 scan, used by R5 and the
+- `model.ProcessDefinition.Raises()` — the §2.3 scan, used by R5 (phase 2) and the
   definition endpoint. Panics are not included.
-- `addTerminal` ([context.go:83](internal/validation/context.go#L83)): fires only
-  for `goto: end`, not for `raise` / `panic` (§5.1).
-- `RetryProcess` ([db_lifecycle.go:241](internal/db/db_lifecycle.go#L241)): four
+- `addTerminal` ([context.go:63-88](internal/validation/context.go#L63-L88)):
+  reached only for `goto: end`, not for `raise` / `panic` (§5.1) — no change
+  needed, it already keys on `Goto`.
+- `RetryProcess` ([db_lifecycle.go:424](internal/db/db_lifecycle.go#L424)): four
   changes, see §11.
-- `collectChildOutputs` ([collect.go:26](internal/engine/collect.go#L26)):
-  accept `errored` siblings instead of hard-erroring.
-- API: `errored` in status filters; instance detail returns `error_code`;
-  definition detail returns the derived raise set.
+- `collectChildOutputs` → split into `buildChildOutput(task, siblings)` +
+  `resolveRaisedBatch` ([collect.go](internal/engine/collect.go)); the strict
+  every-child-completed guard stays (§5.2).
+- `matchOnErrorLiteral` ([error.go](internal/engine/error.go)), M1; `Raises()`
+  reachability pass `validateChildOnErrorReachability`
+  ([validate_children.go](internal/validation/validate_children.go)), R5; the
+  `$error` schema gains `child_key` + `child_index`
+  ([infer.go](internal/validation/infer.go)), §5.3.
+- API and CLI: `raised` in the status enums
+  ([actions.go:169](internal/api/actions.go#L169),
+  [handlers_types.go:119](internal/api/handlers_types.go#L119),
+  [commands.go:436](cmd/genctl/commands.go#L436)); `error_code` added to
+  `instancePaginator.filterCols` ([db_instances.go:29](internal/db/db_instances.go#L29))
+  and to the instance detail + summary responses; the raise set on the definition
+  list.
+
+> **Delta (implemented).** "The definition endpoint" is the definition **list**
+> (`GET /definitions` → `DefinitionSummary.raises`), not a separate detail
+> endpoint — there is no single-definition JSON endpoint; the only per-definition
+> route is the OpenAPI spec (`ProcessSpec`). `error_code` is on **both** the
+> instance detail and the list summary (`InstanceSummaryResp`), against the
+> "listing stays light" rule, because a code is exactly what a list is scanned for
+> when something failed, and it is a short bounded string. The instance list gains
+> an `error_code` filter param alongside the `status` one; `genctl instances` gets
+> a `CODE` column and an `--error-code` flag, and `genctl get` prints `Code:`.
+>
+> One OpenAPI-plumbing change came with `Fault`: the spec builder rewrote only the
+> `#/$defs/ModelShape` ref prefix, so the new `#/$defs/ModelFault` ref would not
+> have resolved. It now rewrites the shared `#/$defs/Model` prefix, so any future
+> hand-written schema that refs a model type resolves with no further edit
+> ([openapi.go](internal/api/openapi.go)).
 
 **Untouched:** `internal/schema`, `internal/expression`, `internal/template`, and
-every sibling query beyond the one `NOT IN` list.
+every sibling query beyond `CountActiveSiblings`.
+
+### 7.2 The wire format is hand-written, and that is where the work is
+
+`SwitchCase` and `ErrorCase` do not use struct tags for their wire form. Each has
+a hand-written companion struct plus a hand-written `JSONSchemaBytes` blob that
+OpenAPI reflects, and the three must be changed in lockstep:
+
+- `switchWireCase` ([wire.go:31-34](internal/model/wire.go#L31-L34)) declares
+  `Goto` as `json:"goto"`, and `SwitchMap.UnmarshalJSON`
+  ([wire.go:68-73](internal/model/wire.go#L68-L73)) **rejects an entry without
+  one**. R3 (exactly one of `goto`/`raise`/`panic`) therefore has to move out of
+  the unmarshaler and into the validator, where it can produce the message §3
+  specifies instead of a decode error.
+- `SwitchMap.JSONSchemaBytes` ([wire.go:81-104](internal/model/wire.go#L81-L104))
+  hardcodes `"required": ["goto"]` and `"additionalProperties": false`. Both must
+  change, or every definition using `raise` fails schema validation at the edge
+  before the validator ever sees it.
+- `errorCaseWire` ([wire.go:211-216](internal/model/wire.go#L211-L216)) needs the
+  same two fields.
+- `ErrorCase.Code`'s description ([wire.go:203](internal/model/wire.go#L203))
+  currently ends *"child.failed cannot be caught here — handle errors inside the
+  child process and communicate them via return data."* Still true (D5), but it
+  now has a name and a mechanism: it should point at `raise`.
+
+None of this is deep, but it is four files' worth of edits that the "one column,
+one status" framing hides, and the OpenAPI blob in particular fails in a place
+far from the change.
 
 ## 8. Edge cases
 
 | # | case | resolution |
 |---|---|---|
-| E1 | child raises while parent is `cancelling` | child is `errored`; parent short-circuits to `cancelInstance` and never resolves. Matches the existing precedent that an error outranks a cancellation once retries are gone ([error.go:49-58](internal/engine/error.go#L49-L58)) |
+| E1 | child raises while the tree is paused | child goes `raised`; `FinishChild` still arms the paused parent for `collecting` ([queries.sql:212](internal/db/queries.sql#L212) includes `paused` deliberately), but the parent is unclaimable, so the routing decision is simply **deferred to the resume**. Nothing is lost and nothing is decided early |
+| E1b | pause arrives while the parent is mid-resolution | the worker holds the row, so `PauseProcess` can only mark it `pausing`; the routing write lands the pause via the `CASE` in `UpdateInstance` (pause-resume §3). The parent settles into `paused` already pointed at the goto target, and continues there on resume |
 | E2 | parent already `failing` | short-circuits to `settleFailing`; resolution never runs |
 | E3 | batch mixes a raise and a defect | defect wins: it poisons ancestors first, so the parent never resolves and the raise is never routed (§5.4) |
 | E3b | child `panic`s | identical to any other defect — `failed`, ancestors poisoned, uncatchable. The authored message replaces the engine's generic reason, which is the only observable difference |
 | E4 | `child_list` over `[]` | unchanged — no children, continues inline ([child.go:64-72](internal/engine/child.go#L64-L72)) |
-| E5 | two slots raise the same code | first in slot order routes; both appear in `siblings` |
+| E5 | two children raise the same code | first in child-key order routes; the rest are not enumerated (D2) |
 | E6 | spawn-time failure (bad input, missing definition) | unchanged — `failInstance`, not routed through `on_error`. This is what makes a child task's `on_error` list purely raised codes (§2.4) |
 | E7 | child raises at its first task | fine; no output is computed either way |
-| E8 | root process raises | no parent; `UpdateInstance`; API reports `errored` + `error_code` |
+| E8 | root process raises | no parent; `UpdateInstance`; API reports `raised` + `error_code` |
 | E9 | grandchild raises, child does not handle it | child fails (§5.2 step 2), which fails fast up its own tree. An error never crosses two levels implicitly |
 | E10 | self-referencing (recursive) child | R5 checks `D`'s rules against `raises(D)` itself. No fixpoint: `raises` is a syntactic scan, so it terminates |
 | E11 | `child_map` where only some children raise | R5 takes the union of `raises` over all entries of the task |
@@ -608,15 +863,27 @@ every sibling query beyond the one `NOT IN` list.
   codes, because every other failure path on those actions goes straight to
   `failInstance` (E6). Raised codes are also lexically distinct from engine codes
   (R1 forbids dots; every engine code has one).
-- **D2 — `siblings` is in scope.** Argued as information, not data: "6 of 10
-  failed" is a branching input, not child state. It is the one place the "signal,
-  not value" line is blurry.
+- **D2 — no `siblings`; `$error` reports one raise.** An earlier draft put an
+  aggregate `siblings` list (every raised child in the batch) in `$error`, argued
+  as information not data: "6 of 10 failed" is a branching input. **Reversed and
+  removed.** Three reasons: (1) the engine never routes on it — resolution always
+  routes on the first child-key-ordered raise (§5.2), so `siblings` was pure
+  reporting with no control-flow role; (2) it is exactly the "signal, not value"
+  line §0 draws — "6 of 10 shipped, and here is why" is a *result*, which §0 says
+  belongs in child `output`, not the error channel; (3) it does not even fit a
+  fan-out cleanly, because a batch is all-or-nothing (I1) — if 3 of 10 raise, the
+  batch produces no output, so you cannot collect the 7 successes either. A
+  fan-out that needs per-item outcomes should have its children *complete* with a
+  `{ok: false, reason}` output and let the parent collect all ten; raise-in-a-batch
+  is for "branch on the first occurrence", which the first-raise `$error` serves.
+  This was the one place the design leaked aggregate reporting into errors, and
+  cutting it makes the boundary clean.
 - **D3 — reachability check only; no exhaustiveness.** R5 verifies that every
   rule *can* fire; nothing verifies that every raisable code *has* a rule.
   Requiring the latter makes a shared child painful to depend on. Accepted cost:
   §3.1's third row. **Note the direction:** adding exhaustiveness later would
   break existing definitions, so this is the harder of the two to reverse.
-- **D4 — `errored` is a distinct status.** Not `completed` (every filter,
+- **D4 — `raised` is a distinct status.** Not `completed` (every filter,
   dashboard and alert keys on `Status`; folding a third outcome in would
   mislabel all of them) and not `failed` (which means defect and poisons
   ancestors). It is **not retryable**, and is treated as settled work at every
@@ -624,6 +891,12 @@ every sibling query beyond the one `NOT IN` list.
   re-run the *deciding* task, never the upstream state that drove the decision —
   has nothing to offer it. `failed` stays retryable whether the fault was
   detected by the engine or authored with `panic`.
+  **The name is `raised`, not `errored`.** It pairs with the clause that produces
+  it exactly as `paused` pairs with `pause` — the convention the lifecycle verbs
+  already follow — and it survives the one place a status name has to work
+  hardest: an operator scanning a column of `failed` and `raised` can tell them
+  apart, where `failed` and `errored` are indistinguishable without the docs.
+  That also retires the collision §11.5 was written about.
 - **D5 — defects are never catchable.** No `child.failed`, no opt-in. Making a
   failure catchable requires converting it to a raise inside the child, at the
   task that understands it (§5.4). An authored `panic` is a defect like any
@@ -655,19 +928,22 @@ every sibling query beyond the one `NOT IN` list.
 
 ## 10. Phasing
 
-1. **Raise and panic.** `Fault` type, `SwitchCase` / `ErrorCase` gaining
-   `.Raise` and `.Panic`, `Raises()`, `StatusErrored`, R1–R3 and R6, the
-   `addTerminal` fix, migration, `error_code` populated on every terminal failure
-   (§7.1), `CountActiveSiblings`. A raising child still fails its parent — but a
-   *root* process can already report a typed failure, and `panic` is complete on
-   its own from day one, since nothing ever reacts to it. Includes all of §11 —
-   `RetryProcess` must understand `errored` from the moment the status exists, or
-   §11.4 parks revived parents in `waiting` forever.
-2. **Catch, single child.** M1, R4/R5, `saveAndNotify` routing,
-   `collectChildOutputs` accepting `errored`. Complete for a one-entry
-   `child_map`.
-3. **Batch resolution.** §5.2 over a multi-child batch, `$error.slot` /
-   `.siblings`. Complete for fan-outs.
+All three phases are implemented (see the status header). They were built and
+tested in this order:
+
+1. **Raise and panic.** ✅ `Fault` type, `SwitchCase` / `ErrorCase` gaining
+   `.Raise` and `.Panic` (including the hand-written wire format and OpenAPI
+   blobs, §7.2), `Raises()`, `StatusRaised` + `Status.Terminal()`, R1–R3 and R6,
+   the `addTerminal` fix, migration 023, `error_code` populated on every terminal
+   failure (§7.1), `CountActiveSiblings`. A raising child still failed its parent
+   at this stage, but a *root* process could already report a typed failure, and
+   `panic` was complete on its own from day one. Includes all of §11.
+2. **Catch, single child.** ✅ M1 (`matchOnErrorLiteral`), R4/R5, and
+   `resolveRaisedBatch` ahead of the collect (§5.2). `saveAndNotify` needed no
+   change (§5.1). Complete for a one-entry `child_map`.
+3. **Batch resolution.** ✅ §5.2 over a multi-child batch, with `$error.child_key`
+   / `.child_index` naming which child raised. Complete for fan-outs. Phases 2 and 3 landed together, since the
+   single-child case is just a one-element batch.
 
 ### 10.1 Re-running a batch without retry
 
@@ -693,12 +969,14 @@ start reaching for this pattern, that is the evidence to build it.
 
 ## 11. The `retry` command
 
-`RetryProcess` ([db_lifecycle.go:241](internal/db/db_lifecycle.go#L241)) revives a
+`RetryProcess` ([db_lifecycle.go:424](internal/db/db_lifecycle.go#L424)) revives a
 settled tree: it locks root + descendants, walks top-down, and restarts the
-interrupted path while keeping finished work.
+interrupted path while keeping finished work. Since the pause/resume split it is
+**failed-only** — resuming a suspended tree is `ResumeProcess`, a plain status
+flip that grants nothing (pause-resume §1).
 
-The net change is small — the root gate is untouched — but two of the four points
-below are correctness fixes, not adjustments.
+The net change is small — the root gate keeps its shape — but two of the four
+points below are correctness fixes, not adjustments.
 
 **The unit of retry, settled.** A question this design could have left open is
 whether retrying a parent whose child raised should re-run the *child* or
@@ -750,27 +1028,37 @@ state.
 So the line is not authored-versus-engine. It is **fault versus outcome** — and
 the status already encodes it exactly:
 
-| terminal state | meaning | retryable |
+| status | meaning | retryable |
 |---|---|---|
 | `completed` | finished | no — nothing to recover |
-| `errored` (raise) | an anticipated condition concluded the process | **no** |
+| `raised` | an anticipated condition concluded the process | **no** |
 | `failed` (panic) | the author detected a fault the engine could not | yes |
 | `failed` (engine) | the engine detected a fault | yes |
-| `cancelled` | stopped by an operator | yes |
+| `paused` / `pausing` | suspended by an operator; not an outcome at all | no — `resume` it |
 
-**So the root gate does not change at all:**
+**So the root gate keeps its shape** — `raised` falls through the failed-only
+check exactly as `paused` already does, and needs no new condition, only its own
+explanation. It slots in beside the existing paused branch
+([db_lifecycle.go:432-451](internal/db/db_lifecycle.go#L432-L451)):
 
 ```go
-if status != model.StatusFailed && status != model.StatusCancelled {
+if status := model.Status(rootRow.Status); status != model.StatusFailed {
+    if status == model.StatusPaused || status == model.StatusPausing {
+        return fmt.Errorf("process is paused, not failed (status: %s); resume it instead", status)
+    }
+    if status == model.StatusRaised {
+        return fmt.Errorf("process concluded with error %q (status: raised); a raised error is "+
+            "a declared outcome, not a fault — start a new instance, or publish a new version "+
+            "if the outcome should be handled differently", rootRow.ErrorCode)
+    }
     return fmt.Errorf("process is not retryable (status: %s)", status)
 }
 ```
 
-An `errored` root falls through it and is rejected — correctly, and with no new
-code. The message should say why, since "not retryable" alone invites a bug
-report:
-
-> `process concluded with error "insufficient_funds" (status: errored); a raised error is a declared outcome, not a fault — start a new instance, or publish a new version if the outcome should be handled differently`
+Both special cases exist for the same reason: "not retryable" alone invites a bug
+report, and in both cases there is a *different verb* that is the right answer.
+The pause branch names it (`resume`); the raise branch has to say that there
+isn't one, which is why its message is longer.
 
 **Panics stay retryable**, and that is not an inconsistency. `panic` chose the
 `failed` status precisely because it means *this is a fault* — the author is
@@ -824,25 +1112,26 @@ operator may not have in front of them. If the concern is worth addressing, the
 proportionate lever is *information* — have the retry response name the task that
 will re-run and whether it has an action — not a refusal.
 
-### 11.2 `errored` is settled work — keep it, do not revive it
+### 11.2 `raised` is settled work — keep it, do not revive it
 
-`revive` switches on status ([db_lifecycle.go:341-348](internal/db/db_lifecycle.go#L341-L348)):
-`completed` returns (finished work is kept); `running`/`failing`/`cancelling`
-return (defensive); **everything else is revived**. So `errored` currently falls
-through to revival by omission — and by §11.1 that is wrong. It belongs with
-`completed`:
+`revive` switches on status ([db_lifecycle.go:526-534](internal/db/db_lifecycle.go#L526-L534)):
+`completed` returns (finished work is kept); `running`/`failing`/`pausing`/`paused`
+return (defensive — a live or suspended node belongs to the engine or to
+`ResumeProcess`); **everything else is revived**. So `raised` would fall through
+to revival by omission — and by §11.1 that is wrong. It belongs with `completed`:
 
 ```go
-case model.StatusCompleted, model.StatusErrored:
+case model.StatusCompleted, model.StatusRaised:
     return nil // settled work is kept — see §11.1
 ```
 
-The comment below the switch, *"node is failed or cancelled"*, is then accurate
-again.
+The comment below the switch, *"node is failed"*, stays accurate.
 
-This keeps the status meaning one thing at every depth: **`errored` is concluded,
-whether it is the root or a leaf.** An errored child was not interrupted; it
-finished, by design, with a declared outcome.
+Note the two `return nil` arms mean different things and must not be merged: the
+first is *settled, keep it*, the second is *not ours to touch*. `raised` joins the
+first. This keeps the status meaning one thing at every depth: **`raised` is
+concluded, whether it is the root or a leaf.** A raised child was not
+interrupted; it finished, by design, with a declared outcome.
 
 **A limitation worth stating rather than hiding.** The only case where this
 matters is a parent that failed *at resolution* because no rule matched a child's
@@ -853,71 +1142,77 @@ since the missing `on_error` rule lives in a **version-pinned definition** that 
 retry does not re-read. The real fix is a new parent version and a new instance.
 Better to say so than to offer a retry that quietly changes nothing.
 
-The scoping question this raises — *"what about an errored child whose error the
+The scoping question this raises — *"what about a raised child whose error the
 parent already handled and routed past?"* — is answered by the existing
 structure either way. `revive` only looks at `children[node.ID][node.Task]`, the
 batch of the node's **current** task; once resolution routes on an error,
 `inst.Task` becomes the goto target and that batch is behind the node. Worth a
 comment, because it is not obvious and a refactor could break it silently.
 
-### 11.3 Clear `error_code` on revive
+### 11.3 Clear `error_code` and `$error` on revive
 
-`revive` clears `Error`, and `UpdateInstance` writes `Error: ""`
-([db_lifecycle.go:426](internal/db/db_lifecycle.go#L426)). `error_code` must be
-cleared alongside it.
+`revive` clears `Error`, and the write loop passes `Error: ""` explicitly
+([db_lifecycle.go:601-614](internal/db/db_lifecycle.go#L601-L614)). `error_code`
+must be cleared in the same params struct.
 
 This is easy to miss and its failure mode is quiet: a revived instance that later
 completes would keep a stale `error_code`, so §7.1's filter would report a
 successful process as having died of `card_declined`. It corrupts precisely the
 column the code exists to serve.
 
-**Open question — the `$error` context slot.** Revive passes `ErrorData:
-raw.ErrorData` through verbatim, so `$error` survives while the `error` column is
-cleared. That inconsistency predates this design and is mostly harmless (the
-mustErr/mayErr dataflow means a stale `$error` is only readable where the
-analysis says one may be present), but it is now reachable one more way: a batch
-error route writes `$error`, and reviving that parent keeps it. Worth deciding
-deliberately rather than inheriting.
+**The `$error` context slot is cleared too** (`ErrorData`, currently passed
+through verbatim as `raw.ErrorData` in the same struct). The inconsistency —
+`error` cleared, `$error` kept — predates this design and was mostly harmless,
+because the mustErr/mayErr dataflow means a stale `$error` is only *readable*
+where the analysis says one may be present. But this design makes it reachable
+one more way: a batch error route writes `$error`, and reviving that parent would
+keep it. Clearing is the consistent choice and cannot break a valid definition —
+if a task can read `$error`, the analysis has already proven an error is present
+on every path reaching it, so the value it reads is the fresh one.
 
-### 11.4 The `anyActive` reconstruction — a real bug if missed
+### 11.4 `Status.Terminal()` must include `raised` — a real bug if missed
 
 ```go
 for _, k := range kids {
     revive(k)
-    if k.Status != Completed && k.Status != Failed && k.Status != Cancelled {
+    if !k.Status.Terminal() {
         anyActive = true
     }
 }
 ```
-([db_lifecycle.go:358-365](internal/db/db_lifecycle.go#L358-L365))
+([db_lifecycle.go:545-552](internal/db/db_lifecycle.go#L545-L552))
 
 `revive(k)` runs *first*, so this asks "after revival, is anything running?" and
 reconstructs `waiting` vs `collecting` from the answer.
 
-**With §11.2 this is a live bug, not a latent one.** Errored children are *not*
-revived, so they stay `errored` — a status absent from all three comparisons.
-The condition is true, `anyActive` is set, and the parent is parked in `waiting`
-forever, waiting on a child that is already terminal. The instance is
+**With §11.2 this is a live bug, not a latent one.** Raised children are *not*
+revived, so they stay `raised` — and if `Terminal()` does not know that status,
+the condition is true, `anyActive` is set, and the parent is parked in `waiting`
+forever, waiting on a child that has already settled. The instance is
 unrecoverable and nothing logs why.
 
-`errored` must be added to the list:
+**The fix belongs in `Status.Terminal()`
+([instance.go:30](internal/model/instance.go#L30)), not here.** An earlier draft
+patched the status list at this call site, back when it was spelled out inline;
+the pause work replaced it with `Terminal()`, which is the better place on the
+merits and not just by accident. `Terminal()` answers "is this a settled
+outcome", D4 says `raised` is exactly that, and the call site is asking that
+question and no other. Patching here would leave `Terminal()` lying.
 
-```go
-if k.Status != Completed && k.Status != Errored &&
-   k.Status != Failed && k.Status != Cancelled {
-    anyActive = true
-}
-```
+The scope is safe to widen: `Terminal()` has exactly one call site today, this
+one. What it does **not** cover is the SQL copies of the same idea — §7 lists all
+four and shows that only `CountActiveSiblings` needs the matching edit. Those two
+changes travel together; either alone hangs a parent.
 
-This is the one change in §11 that is not optional and not cosmetic.
+### 11.5 Naming — resolved
 
-### 11.5 Naming — settle before the `cancel → pause` rename
+`ROADMAP.md` says *"Retry only for errored processes."* Written before either
+design, "errored" there meant *faulted* — what this spec calls `failed`. The
+`cancel` → `pause` rename it was to be settled alongside has since shipped, and
+D4 settles the rest: the new status is **`raised`**, so nothing now competes for
+the word.
 
-`ROADMAP.md` says *"Retry only for errored processes."* Written before this
-design, "errored" there meant *faulted* — what this spec calls `failed`. With
-`errored` now a real status meaning the opposite, that line reads as the
-inverse of its intent, and §11.1 makes it wrong twice over (retry accepts
-`failed`, `cancelled` **and** `errored`).
-
-Worth resolving together with the roadmap's other rename (`cancel` → `pause`,
-then `resume`), since both are about making the lifecycle verbs say what they do.
+The roadmap line should be reworded to *"Retry only for failed processes"*, which
+is what it always meant and what `RetryProcess` now enforces. It is also
+already accurate in a way it was not when written: retry no longer accepts
+`cancelled`, because there is no such status.

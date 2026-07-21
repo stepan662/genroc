@@ -48,7 +48,9 @@ export async function waitForInstance(
     const status = data?.status;
     // paused is deliberately absent: it is not an outcome, just work that is not
     // being advanced, so waiting for a terminal state must not stop on it.
-    if (status === "completed" || status === "failed") return status!;
+    // raised is present: a `raise` clause is a settled conclusion like the other two.
+    if (status === "completed" || status === "failed" || status === "raised")
+      return status!;
     await new Promise((r) => setTimeout(r, 100));
   }
   throw new Error(`instance ${id} did not complete within ${timeoutMs}ms`);

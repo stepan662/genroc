@@ -45,6 +45,61 @@ func ValidateChildProcessRefs(def *model.ProcessDefinition, currentVersion int, 
 				return err
 			}
 		}
+
+		if err := validateChildOnErrorReachability(s, def, currentVersion, getter); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateChildOnErrorReachability enforces R5: every code an on_error rule on a child
+// task names must be raisable by some child of that task. It is a sanity check, not a
+// coverage guarantee (D3) — it runs one direction only, from rule to raise set, so a
+// typo'd or orphaned rule is caught, but a raisable code with no rule is allowed and
+// surfaces at runtime (§3.1).
+//
+// The raise set is the union over the task's children: every entry of a child_map, or
+// the single child of a child_list. Codes come from ProcessDefinition.Raises(), the same
+// syntactic scan the definition endpoint publishes.
+func validateChildOnErrorReachability(s *model.Task, current *model.ProcessDefinition, currentVersion int, getter DefinitionGetter) error {
+	if len(s.OnError) == 0 || s.Action == nil {
+		return nil
+	}
+
+	raisable := map[string]struct{}{}
+	addRaises := func(name string, version int) error {
+		child, _, err := resolveChild(name, version, current, currentVersion, getter)
+		if err != nil {
+			return err // already reported by the input-compat pass; resolve again defensively
+		}
+		for _, code := range child.Raises() {
+			raisable[code] = struct{}{}
+		}
+		return nil
+	}
+
+	switch s.Action.Type {
+	case model.ActionTypeChildMap:
+		for _, entry := range s.Action.Children {
+			if err := addRaises(entry.Name, entry.Version); err != nil {
+				return nil // resolution failed; let the input-compat pass own that error
+			}
+		}
+	case model.ActionTypeChildList:
+		if err := addRaises(s.Action.Name, s.Action.Version); err != nil {
+			return nil
+		}
+	default:
+		return nil // not a child task: on_error codes are engine codes, not raised ones
+	}
+
+	for i, ec := range s.OnError {
+		for _, code := range ec.Code {
+			if _, ok := raisable[code]; !ok {
+				return fmt.Errorf("task %q on_error[%d]: no child of this task can raise %q", s.ID, i, code)
+			}
+		}
 	}
 	return nil
 }

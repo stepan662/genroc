@@ -17,9 +17,9 @@
 - [x] filtering
 - [x] env variables
 - [x] map function (lambdas + object/array literals; own parser)
-- [] think about error handling child -> parent
+- [x] think about error handling child -> parent (see docs/child-error-handling.md; raise/panic, the `raised` status, error_code, and child→parent catch with batch resolution all implemented)
 - [] think about action extensivity/passability from parent
-- [x] look at naming conventions - cancel -> pause, then resume. Retry only for errored processes.
+- [x] look at naming conventions - cancel -> pause, then resume. Retry only for failed processes.
 - [] pause as a debugging tool: start an instance paused, then step it with tick
 - [] look at the templating system the "{{expression}}" is not ideal, would be nice to have some universal simple way
 

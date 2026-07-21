@@ -14,6 +14,12 @@ import "time"
 // timers keep running, so resuming is a status flip rather than a revival. pausing
 // is its draining state — a leased instance that lands in paused once the in-flight
 // task it is holding finishes.
+//
+// raised is the third settled outcome, produced by a `raise` clause: an anticipated
+// condition the definition declared, which its parent may react to by naming the code
+// (see docs/child-error-handling.md). It is deliberately neither completed (it produced
+// no output) nor failed (it is not a defect, so it does not poison ancestors), and it
+// is not retryable — a raise is a conclusion, not an interruption.
 type Status string
 
 const (
@@ -21,14 +27,20 @@ const (
 	StatusCompleted Status = "completed"
 	StatusFailing   Status = "failing" // doomed by an error, draining descendants
 	StatusFailed    Status = "failed"
+	StatusRaised    Status = "raised" // concluded by a `raise` clause; catchable by the parent
 	StatusPausing   Status = "pausing" // pause requested, still holding an in-flight task
 	StatusPaused    Status = "paused"
 )
 
 // Terminal reports whether the status is a settled outcome. paused and pausing are
 // not terminal: a paused instance is live work that simply is not being advanced.
+//
+// raised counts: it is settled work, which is what RetryProcess's wait-state
+// reconstruction asks about. Omitting it parks a revived parent in 'waiting' forever,
+// waiting on a child that has already concluded. The SQL copies of this predicate are
+// separate and must be kept in step by hand — see CountActiveSiblings in queries.sql.
 func (s Status) Terminal() bool {
-	return s == StatusCompleted || s == StatusFailed
+	return s == StatusCompleted || s == StatusFailed || s == StatusRaised
 }
 
 // WaitState tracks where a parent instance is in the child-process lifecycle.
@@ -83,11 +95,21 @@ type ProcessInstance struct {
 	// Used for O(1) ancestor lookup during error cascade.
 	CallStack []string
 
-	RetryCount     int
-	WakeAt         *time.Time
-	Status         Status
-	WaitState      WaitState
-	Error          string
+	RetryCount int
+	WakeAt     *time.Time
+	Status     Status
+	WaitState  WaitState
+	Error      string
+
+	// ErrorCode is the machine-readable discriminator for every non-success outcome:
+	// the authored code for a `raise` or `panic`, and the engine's own code
+	// (http.500, pre.timeout, output.invalid, …) for a failure it detected itself.
+	// Empty on a completed instance. It is what makes failures groupable and
+	// alertable — the same information exists in Error, but only as prose.
+	// Authored codes never contain a dot and engine codes always do, so the two
+	// namespaces stay legible side by side without a discriminator column.
+	ErrorCode string
+
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	WorkerID       *string
@@ -125,10 +147,11 @@ type InstanceSummary struct {
 	ID             string
 	ProcessName    string
 	ProcessVersion int
-	RetryCount     int
-	Status         Status
-	WaitState      WaitState
-	Error          string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	RetryCount int
+	Status     Status
+	WaitState  WaitState
+	Error      string
+	ErrorCode  string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }

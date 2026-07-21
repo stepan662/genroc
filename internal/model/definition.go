@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"sort"
 
 	"genroc/internal/schema"
 )
@@ -188,6 +189,43 @@ type ProcessDefinition struct {
 	ConfigSchema *schema.Schema `json:"config_schema,omitempty"         description:"JSON Schema — a flat object whose properties are primitive values (string/integer/number/boolean) — declaring configuration variables. Each is resolved at runtime from GENROC_<PROCESS>_<NAME> (falling back to GENROC_GLOBAL_<NAME>) in the server environment, coerced to its declared type, and exposed to expressions as config.<NAME>. A property may set secret:true to redact its value from logs."`
 	Defs         schema.Defs    `json:"$defs,omitempty,omitzero"        description:"Shared schema definitions, referenced from input_schema and result_schemas as \"#/$defs/<name>\". Definitions may reference each other. Generated schema names (input, output, <taskID>_input, <taskID>_output) take precedence: a definition reusing one is kept but renamed with a unique suffix in the generated schemas."`
 	Output       *Shape         `json:"output,omitempty"                description:"Templated value (a string expression or nested object of expressions) evaluated at completion to produce the process output."`
+}
+
+// Raises returns the set of error codes this definition can raise, sorted. It is a
+// purely syntactic scan over every raise clause on every switch case and on_error rule
+// — Fault.Code is a literal (R2), so there is no dataflow and no fixpoint, and a
+// self-referencing (recursive) process terminates like any other.
+//
+// The set is statically exact, and where imprecise it errs safe: a raise on an
+// unreachable task inflates it, never the reverse. Callers use it two ways — R5 checks
+// a parent's on_error rules against the union over its children's raise sets, and the
+// definition endpoint publishes it, since with no `errors:` declaration block it is the
+// only answer to "what can this process raise?".
+//
+// Panic codes are deliberately excluded even though panics carry codes. This set is
+// what a parent may write rules against, and no rule can ever match a panic: a
+// panicking child is 'failed', so it poisons its ancestors and the parent never reaches
+// resolution. Including them would let R5 bless rules that can never fire.
+func (d *ProcessDefinition) Raises() []string {
+	seen := map[string]struct{}{}
+	for _, t := range d.Tasks {
+		for _, c := range t.Switch {
+			if c.Raise != nil {
+				seen[c.Raise.Code] = struct{}{}
+			}
+		}
+		for _, ec := range t.OnError {
+			if ec.Raise != nil {
+				seen[ec.Raise.Code] = struct{}{}
+			}
+		}
+	}
+	codes := make([]string, 0, len(seen))
+	for code := range seen {
+		codes = append(codes, code)
+	}
+	sort.Strings(codes)
+	return codes
 }
 
 // Normalize normalizes InputSchema and all task result schemas in-place (flatten $defs,

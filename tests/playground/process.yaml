@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=http://localhost:8888/process-schema.json
+# yaml-language-server: $schema=http://localhost:8080/process-schema.json
 name: order-pipeline
 tasks:
   - id: child
@@ -7,5 +7,4 @@ tasks:
       children:
         a:
           name: child
-          input: "{{ 10 }}"
     switch: end

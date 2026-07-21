@@ -14,7 +14,7 @@ const countActiveSiblings = `-- name: CountActiveSiblings :one
 SELECT COUNT(*) FROM process_instances
 WHERE parent_id = ?1
   AND spawn_task_id = ?2
-  AND status NOT IN ('completed', 'failed')
+  AND status NOT IN ('completed', 'failed', 'raised')
 `
 
 type CountActiveSiblingsParams struct {
@@ -22,8 +22,13 @@ type CountActiveSiblingsParams struct {
 	SpawnTaskID string
 }
 
-// Only completed/failed are settled. A paused sibling still counts as active, so a
-// parent never collects a batch while one of its children is suspended.
+// Only completed/failed/raised are settled. A paused sibling still counts as active, so
+// a parent never collects a batch while one of its children is suspended.
+//
+// 'raised' must be here: a raise is a conclusion, so a child that raised is done and
+// its parent has to be woken to resolve the batch. Omitting it hangs the parent in
+// 'waiting' forever. This list is the SQL half of model.Status.Terminal() and has to be
+// kept in step with it by hand.
 func (q *Queries) CountActiveSiblings(ctx context.Context, arg CountActiveSiblingsParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countActiveSiblings, arg.ParentID, arg.SpawnTaskID)
 	var count int64
@@ -133,13 +138,15 @@ func (q *Queries) DeleteLogsBefore(ctx context.Context, before int64) (int64, er
 
 const failAncestors = `-- name: FailAncestors :exec
 UPDATE process_instances
-SET status = 'failing', error = ?1, updated_at = ?2
-WHERE id IN (SELECT value FROM json_each(?3))
+SET status = 'failing', error = ?1, error_code = ?2,
+    updated_at = ?3
+WHERE id IN (SELECT value FROM json_each(?4))
   AND status IN ('running', 'pausing', 'paused')
 `
 
 type FailAncestorsParams struct {
 	Error     string
+	ErrorCode string
 	UpdatedAt int64
 	Ids       interface{}
 }
@@ -149,8 +156,22 @@ type FailAncestorsParams struct {
 // doomed when the pause landed) propagates 'failing' upward, and those ancestors
 // settle to 'failed' (retryable) rather than leaving a paused tree with a dead
 // branch inside it. Pause suppresses advancement, not settlement.
+//
+// 'raised' is deliberately absent from the WHERE list alongside completed/failed: a
+// settled outcome is never reopened into 'failing'. Note the asymmetry with
+// CountActiveSiblings, which does list it: 'raised' is terminal for "is this batch
+// done", but it is not a failure, so it neither poisons upward nor is poisoned from
+// above.
+//
+// error_code travels with the error text so a whole poisoned tree is filterable by the
+// code of the failure that started it, not just the one instance that observed it.
 func (q *Queries) FailAncestors(ctx context.Context, arg FailAncestorsParams) error {
-	_, err := q.db.ExecContext(ctx, failAncestors, arg.Error, arg.UpdatedAt, arg.Ids)
+	_, err := q.db.ExecContext(ctx, failAncestors,
+		arg.Error,
+		arg.ErrorCode,
+		arg.UpdatedAt,
+		arg.Ids,
+	)
 	return err
 }
 
@@ -294,7 +315,8 @@ const getChildrenForTask = `-- name: GetChildrenForTask :many
 SELECT id, process_name, process_version, parent_id,
        call_stack, retry_count, wake_at, status, error,
        created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_task_id,
-       input_data, outputs_data, output_data, error_data, external_data, engine_state, task
+       input_data, outputs_data, output_data, error_data, external_data, engine_state, task,
+       error_code
 FROM process_instances
 WHERE parent_id = ?1
   AND spawn_task_id = ?2
@@ -337,6 +359,7 @@ func (q *Queries) GetChildrenForTask(ctx context.Context, arg GetChildrenForTask
 			&i.ExternalData,
 			&i.EngineState,
 			&i.Task,
+			&i.ErrorCode,
 		); err != nil {
 			return nil, err
 		}
@@ -406,13 +429,16 @@ const getInstance = `-- name: GetInstance :one
 SELECT id, process_name, process_version, parent_id,
        call_stack, retry_count, wake_at, status, error,
        created_at, updated_at, worker_id, lease_expires_at, wait_state, spawn_task_id,
-       input_data, outputs_data, output_data, error_data, external_data, engine_state, task
+       input_data, outputs_data, output_data, error_data, external_data, engine_state, task,
+       error_code
 FROM process_instances
 WHERE id = ?1
 `
 
-// Column order matches the process_instances row struct (context columns then task,
-// appended by migrations 019 and 020) so sqlc returns dbgen.ProcessInstance directly.
+// Column order matches the process_instances row struct (context columns then task then
+// error_code, appended by migrations 019, 020 and 023) so sqlc returns
+// dbgen.ProcessInstance directly. That is why error_code trails the list instead of
+// sitting beside `error`: the order is the table's, not a reading order.
 func (q *Queries) GetInstance(ctx context.Context, id string) (ProcessInstance, error) {
 	row := q.db.QueryRowContext(ctx, getInstance, id)
 	var i ProcessInstance
@@ -439,6 +465,7 @@ func (q *Queries) GetInstance(ctx context.Context, id string) (ProcessInstance, 
 		&i.ExternalData,
 		&i.EngineState,
 		&i.Task,
+		&i.ErrorCode,
 	)
 	return i, err
 }
@@ -546,14 +573,15 @@ INSERT INTO process_instances
     (id, process_name, process_version, task,
      input_data, outputs_data, output_data, error_data, external_data, engine_state,
      parent_id, spawn_task_id,
-     call_stack, retry_count, wake_at, status, wait_state, error, created_at, updated_at)
+     call_stack, retry_count, wake_at, status, wait_state, error, error_code, created_at, updated_at)
 VALUES
     (?1, ?2, ?3, ?4,
      ?5, ?6, ?7,
      ?8, ?9, ?10,
      ?11, ?12,
      ?13, ?14, ?15,
-     ?16, ?17, ?18, ?19, ?20)
+     ?16, ?17, ?18, ?19,
+     ?20, ?21)
 `
 
 type InsertInstanceParams struct {
@@ -575,6 +603,7 @@ type InsertInstanceParams struct {
 	Status         string
 	WaitState      string
 	Error          string
+	ErrorCode      string
 	CreatedAt      int64
 	UpdatedAt      int64
 }
@@ -599,6 +628,7 @@ func (q *Queries) InsertInstance(ctx context.Context, arg InsertInstanceParams) 
 		arg.Status,
 		arg.WaitState,
 		arg.Error,
+		arg.ErrorCode,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
@@ -890,10 +920,11 @@ SET task             = ?1,
                             THEN 'paused' ELSE CAST(?9 AS TEXT) END,
     wait_state       = ?10,
     error            = ?11,
-    updated_at       = ?12,
+    error_code       = ?12,
+    updated_at       = ?13,
     worker_id        = NULL,
     lease_expires_at = NULL
-WHERE id = ?13
+WHERE id = ?14
 `
 
 type UpdateInstanceParams struct {
@@ -908,6 +939,7 @@ type UpdateInstanceParams struct {
 	Status       string
 	WaitState    string
 	Error        string
+	ErrorCode    string
 	UpdatedAt    int64
 	ID           string
 }
@@ -933,6 +965,7 @@ func (q *Queries) UpdateInstance(ctx context.Context, arg UpdateInstanceParams) 
 		arg.Status,
 		arg.WaitState,
 		arg.Error,
+		arg.ErrorCode,
 		arg.UpdatedAt,
 		arg.ID,
 	)
