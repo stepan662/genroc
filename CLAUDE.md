@@ -85,6 +85,24 @@ Two invariants that are easy to break:
    is why `ResumeProcess` keys on paused rows anywhere in the subtree rather than on the
    root's own status.
 
+## Design drafts (proposed, not implemented)
+
+These describe intended future work, **not current behavior** — do not treat them as
+describing the code as it stands:
+
+- [docs/unknown-type.md](docs/unknown-type.md) — an `unknown` type (the `{}` top
+  type): a process handles opaque data it never inspects, and a consumer must narrow
+  it with a `result_schema` (runtime-checked) before use, like a `fetch` response.
+  Supersedes a rejected "schema-valued generics" direction (kept in that doc's appendix).
+- [docs/typed-values.md](docs/typed-values.md) — generalize `Shape` into a typed value
+  authorable as literal YAML (expression leaves) **or** a single expression, checked
+  against a schema via `inferShape`→`IsSubset`; applies to action payloads / `input`,
+  with editor autocomplete from a generated JSON Schema.
+- [docs/custom-tasks.md](docs/custom-tasks.md) — north-star: extend genroc **without
+  plugins** — custom tasks are child processes, complex logic lives in an HTTP sidecar
+  they call. Three tiers (engine / child process / sidecar), the poller & K8s-handler
+  use cases, and the child-as-activity contract (idempotency, cancel, versioning).
+
 ## Build / test
 
     make build      # produces ./genroc and ./genctl
