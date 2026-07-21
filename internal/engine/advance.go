@@ -202,7 +202,7 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 
 		if hasCall {
 			switch task.Action.Type {
-			case model.ActionTypeChildMap, model.ActionTypeChildList:
+			case model.ActionTypeChild, model.ActionTypeChildMap, model.ActionTypeChildList:
 				out, done := e.runChildProcesses(ctx, inst, task)
 				if done != nil {
 					return *done

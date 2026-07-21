@@ -55,6 +55,46 @@ func childMapParentRS(t *testing.T, childName string, rs *schema.Schema) *model.
 	return d
 }
 
+// childActionParentRS builds a parent whose standalone `child` action declares `rs` as
+// the child's result_schema — the unwrapped analogue of childMapParentRS.
+func childActionParentRS(t *testing.T, childName string, rs *schema.Schema) *model.ProcessDefinition {
+	t.Helper()
+	d := &model.ProcessDefinition{
+		Name: "parent",
+		Tasks: []*model.Task{
+			{
+				ID: "spawn",
+				Action: &model.Action{
+					Type:         model.ActionTypeChild,
+					Name:         childName,
+					ResultSchema: rs,
+				},
+				Switch: model.SwitchMap{{Goto: model.GotoEnd}},
+			},
+		},
+	}
+	if err := d.Normalize(); err != nil {
+		t.Fatalf("normalize parent: %v", err)
+	}
+	return d
+}
+
+func TestChildOutputType_ChildAction_MatchingObjectAccepted(t *testing.T) {
+	child := outputtingChild(t, "obj-child2",
+		map[string]any{"ok": "{{ true }}"}, "{{ outputs.compute }}")
+	rs := normalizedSchema(t, `{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
+	assertValidateOK(t, childActionParentRS(t, "obj-child2", rs), stubGetter{"obj-child2": child})
+}
+
+func TestChildOutputType_ChildAction_StringVsObjectRejected(t *testing.T) {
+	// The child's process output is a plain string against an object result_schema — the
+	// same static mismatch child_map rejects, checked here for the standalone `child`.
+	child := outputtingChild(t, "str-child2", nil, `{{ "hello" }}`)
+	rs := normalizedSchema(t, `{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
+	assertValidateErr(t, childActionParentRS(t, "str-child2", rs),
+		stubGetter{"str-child2": child}, "result_schema")
+}
+
 func TestChildOutputType_MatchingObjectAccepted(t *testing.T) {
 	// Child outputs { ok: boolean }; result_schema expects the same.
 	child := outputtingChild(t, "obj-child",

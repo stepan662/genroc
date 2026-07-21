@@ -1,17 +1,15 @@
-# yaml-language-server: $schema=http://localhost:8080/process-schema.json
+# yaml-language-server: $schema=http://localhost:8448/process-schema.json
 name: order-pipeline
 tasks:
   - id: child
     action:
-      type: child_map
-      children:
-        a:
-          name: child
-          result_schema:
-            type: object
-            properties:
-              test:
-                type: boolean
+      type: child
+      name: child
+      result_schema:
+        type: object
+        properties:
+          test:
+            type: boolean
     output: "{{ self.result }}"
     switch:
       - panic:

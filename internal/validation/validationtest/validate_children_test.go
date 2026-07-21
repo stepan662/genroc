@@ -355,11 +355,11 @@ func TestValidateChildProcessRefs_inputWithNestedRef(t *testing.T) {
 	assertValidateOK(t, def, getter)
 }
 
-// ── single-child (one-entry child_map) tests ──────────────────────────────────
+// ── single-child via a one-entry child_map ────────────────────────────────────
 
 // singleChildDef builds a ProcessDefinition that spawns one child via a one-entry
-// child_map — the way a single child is expressed now that the standalone `child`
-// type is gone. Subset-checking is per entry, so this exercises the same path.
+// child_map. This still exercises the per-entry subset path; the standalone `child`
+// action type has its own tests below (childActionDef).
 func singleChildDef(t *testing.T, inputSchemaRaw string, entry model.ChildEntry) *model.ProcessDefinition {
 	t.Helper()
 	def := &model.ProcessDefinition{
@@ -439,5 +439,96 @@ func TestValidateChildProcessRefs_Child_SelfReference(t *testing.T) {
 func TestValidateChildProcessRefs_Child_VersionZeroResolvesToLatest(t *testing.T) {
 	getter := stubGetter{"worker": childDef(t, "worker", "")}
 	def := singleChildDef(t, "", model.ChildEntry{Name: "worker", Version: 0})
+	assertValidateOK(t, def, getter)
+}
+
+// ── standalone `child` action type ────────────────────────────────────────────
+
+// childActionDef builds a ProcessDefinition that spawns one child via the standalone
+// `child` action (Name/Version/Input/ResultSchema on the Action itself, no Children map).
+// The subset checks are the same as a one-entry child_map, so it reuses model.ChildEntry
+// only as a convenient carrier for the fields.
+func childActionDef(t *testing.T, inputSchemaRaw string, entry model.ChildEntry) *model.ProcessDefinition {
+	t.Helper()
+	def := &model.ProcessDefinition{
+		Name: "parent",
+		Tasks: []*model.Task{
+			{
+				ID: "spawn",
+				Action: &model.Action{
+					Type:         model.ActionTypeChild,
+					Name:         entry.Name,
+					Version:      entry.Version,
+					Input:        entry.Input,
+					ResultSchema: entry.ResultSchema,
+				},
+				Switch: model.SwitchMap{{Goto: model.GotoEnd}},
+			},
+		},
+	}
+	if inputSchemaRaw != "" {
+		def.InputSchema = normalizedSchema(t, inputSchemaRaw)
+	}
+	if err := def.Normalize(); err != nil {
+		t.Fatalf("normalize parent def: %v", err)
+	}
+	return def
+}
+
+func TestValidateChildProcessRefs_ChildAction_ChildExistsNoInputSchema(t *testing.T) {
+	getter := stubGetter{"worker": childDef(t, "worker", "")}
+	def := childActionDef(t, "", model.ChildEntry{Name: "worker", Version: 1})
+	assertValidateOK(t, def, getter)
+}
+
+func TestValidateChildProcessRefs_ChildAction_ChildNotFound(t *testing.T) {
+	def := childActionDef(t, "", model.ChildEntry{Name: "missing", Version: 1})
+	assertValidateErr(t, def, stubGetter{}, "not found")
+}
+
+func TestValidateChildProcessRefs_ChildAction_CompatibleInput(t *testing.T) {
+	getter := stubGetter{
+		"worker": childDef(t, "worker", `{
+			"type": "object",
+			"properties": {"amount": {"type": "integer"}},
+			"required": ["amount"]
+		}`),
+	}
+	def := childActionDef(t, parentInputSchema, model.ChildEntry{
+		Name:    "worker",
+		Version: 1,
+		Input:   inputShape(map[string]string{"amount": "{{input.amount}}"}),
+	})
+	assertValidateOK(t, def, getter)
+}
+
+func TestValidateChildProcessRefs_ChildAction_IncompatibleInput(t *testing.T) {
+	getter := stubGetter{
+		"worker": childDef(t, "worker", `{
+			"type": "object",
+			"properties": {"amount": {"type": "string"}},
+			"required": ["amount"]
+		}`),
+	}
+	// input.amount is integer; child expects string.
+	def := childActionDef(t, parentInputSchema, model.ChildEntry{
+		Name:    "worker",
+		Version: 1,
+		Input:   inputShape(map[string]string{"amount": "{{input.amount}}"}),
+	})
+	assertValidateErr(t, def, getter, "not compatible")
+}
+
+func TestValidateChildProcessRefs_ChildAction_SelfReference(t *testing.T) {
+	def := childActionDef(t, parentInputSchema, model.ChildEntry{
+		Name:  "parent",
+		Input: inputShape(map[string]string{"amount": "{{input.amount}}", "name": "{{input.name}}"}),
+	})
+	assertValidateOK(t, def, stubGetter{})
+}
+
+func TestValidateChildProcessRefs_ChildAction_VersionZeroResolvesToLatest(t *testing.T) {
+	getter := stubGetter{"worker": childDef(t, "worker", "")}
+	def := childActionDef(t, "", model.ChildEntry{Name: "worker", Version: 0})
 	assertValidateOK(t, def, getter)
 }

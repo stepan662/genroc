@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=http://localhost:8080/process-schema.json
+# yaml-language-server: $schema=http://localhost:8448/process-schema.json
 name: child
 tasks:
   - id: fourth

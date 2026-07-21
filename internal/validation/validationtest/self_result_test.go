@@ -5,9 +5,10 @@ import (
 	"testing"
 )
 
-// A fetch/external action with no result_schema has an untyped raw result. It stays
-// routable in the switch (transient), but exporting it through an output is a type
-// error — you cannot persist an untyped value. Adding a result_schema types it.
+// A fetch/external action with no result_schema has no self.result at all: the result is
+// undeclared, ambiguous data, so it does not exist in the context. Referencing it — in an
+// output OR a switch — is a "not in schema" error. Adding a result_schema types it and makes
+// it accessible.
 func TestGenerate_OutputOfUntypedResult_Errors(t *testing.T) {
 	// Bare self.result in an output, no result_schema → error mentioning result_schema.
 	err := runGenerateErr(t, `{
@@ -37,10 +38,38 @@ func TestGenerate_OutputOfUntypedResult_Errors(t *testing.T) {
 		t.Errorf("exporting self.result with a result_schema should be valid: %v", err)
 	}
 
-	// The switch may still route on the raw result without a schema (transient use).
+	// Routing on self.result in a switch without a result_schema is ALSO an error: an untyped
+	// result does not exist in the context — there is no transient/raw-value routing.
 	if err := runGenerateErr(t, `{"name":"p","tasks":[
 		{"id":"call","action":{"type":"fetch","url":"http://x"},"switch":[{"case":"self.result == null","goto":"end"}]}
+	]}`); err == nil {
+		t.Error("expected an error routing on self.result in a switch without a result_schema")
+	}
+}
+
+// The same rule for an external task: with no result_schema the submitted result is untyped
+// and does not exist in the context — referencing it in an output OR a switch is an error;
+// declaring a result_schema types it and makes it accessible.
+func TestGenerate_ExternalUntypedResult_Errors(t *testing.T) {
+	// Output export of the raw result → error.
+	if err := runGenerateErr(t, `{"name":"p","tasks":[
+		{"id":"wait","action":{"type":"external"},"output":"{{ self.result }}","switch":"end"}
+	]}`); err == nil {
+		t.Error("expected an error exporting an external self.result without a result_schema")
+	}
+
+	// Routing on the raw result in a switch → error.
+	if err := runGenerateErr(t, `{"name":"p","tasks":[
+		{"id":"wait","action":{"type":"external"},"switch":[{"case":"self.result == null","goto":"end"}]}
+	]}`); err == nil {
+		t.Error("expected an error routing on an external self.result in a switch without a result_schema")
+	}
+
+	// With a result_schema the result is well-typed and accessible in both.
+	if err := runGenerateErr(t, `{"name":"p","tasks":[
+		{"id":"wait","action":{"type":"external","result_schema":{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}},
+		 "output":"{{ self.result }}","switch":[{"case":"self.result.ok","goto":"end"},{"goto":"end"}]}
 	]}`); err != nil {
-		t.Errorf("routing on self.result in a switch should be allowed without a result_schema: %v", err)
+		t.Errorf("external self.result with a result_schema should be accepted: %v", err)
 	}
 }

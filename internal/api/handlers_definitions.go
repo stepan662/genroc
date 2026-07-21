@@ -208,7 +208,7 @@ func (h *Handlers) applyBatch(defs []model.ProcessDefinition, channel string, au
 	return results, nil
 }
 
-// buildResolvedDeps returns dependency rows for a def's child_map/child_list tasks,
+// buildResolvedDeps returns dependency rows for a def's child/child_map/child_list tasks,
 // resolving version=0 refs via batchVersions or the channel. Self-refs are excluded
 // (the engine runs them at the caller's version) and def is not mutated.
 func (h *Handlers) buildResolvedDeps(def *model.ProcessDefinition, selfVersion int, channel string, batchVersions map[string]int) ([]db.DependencyRow, error) {
@@ -218,7 +218,7 @@ func (h *Handlers) buildResolvedDeps(def *model.ProcessDefinition, selfVersion i
 			continue
 		}
 		switch task.Action.Type {
-		case model.ActionTypeChildList:
+		case model.ActionTypeChild, model.ActionTypeChildList:
 			if task.Action.Name == def.Name && (task.Action.Version == 0 || task.Action.Version == selfVersion) {
 				continue
 			}
@@ -389,7 +389,7 @@ func topoSort(defs []*model.ProcessDefinition) ([]*model.ProcessDefinition, erro
 			}
 			var childNames []string
 			switch task.Action.Type {
-			case model.ActionTypeChildList:
+			case model.ActionTypeChild, model.ActionTypeChildList:
 				childNames = []string{task.Action.Name}
 			case model.ActionTypeChildMap:
 				for _, entry := range task.Action.Children {
@@ -441,7 +441,7 @@ func applyDepsToDefCopy(def *model.ProcessDefinition, deps []db.DependencyRow) *
 			continue
 		}
 		switch task.Action.Type {
-		case model.ActionTypeChildList:
+		case model.ActionTypeChild, model.ActionTypeChildList:
 			if v, ok := lookup[taskChildKey{task.ID, ""}]; ok {
 				task.Action.Version = v
 			}
@@ -500,7 +500,7 @@ func subtree(defs []db.VersionedDef, rootName string) ([]db.VersionedDef, error)
 				continue
 			}
 			switch task.Action.Type {
-			case model.ActionTypeChildList:
+			case model.ActionTypeChild, model.ActionTypeChildList:
 				if err := collect(task.Action.Name); err != nil {
 					return err
 				}

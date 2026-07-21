@@ -179,40 +179,44 @@ func collectTaskRefs(tasks []*model.Task, out map[string]TaskSchemas) {
 	}
 }
 
-func childMapOutputSchema(s *model.Task, defs schema.Defs) (schema.Schema, error) {
+// childMapOutputSchema types a child_map result as an object with one property per child
+// that declares a result_schema. A child WITHOUT a result_schema is omitted entirely — its
+// output is not accessible or exportable (there is no permissive fallback). The bool return
+// reports whether any child declared a result_schema; when none did, the whole result is
+// untyped (routable in a switch, not exportable), like a schema-less child/child_list.
+func childMapOutputSchema(s *model.Task, defs schema.Defs) (schema.Schema, bool, error) {
 	keys := make([]string, 0, len(s.Action.Children))
 	for key := range s.Action.Children {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	out := schema.Object()
+	typed := false
 	for _, key := range keys {
 		entry := s.Action.Children[key]
-		if entry.ResultSchema != nil {
-			merged, err := entry.ResultSchema.MergeInto(defs)
-			if err != nil {
-				return schema.Schema{}, err
-			}
-			out = out.WithProperty(key, merged, true)
-		} else {
-			out = out.WithProperty(key, schema.Object(), false)
+		if entry.ResultSchema == nil {
+			continue // no schema → not accessible; omit the key
 		}
+		merged, err := entry.ResultSchema.MergeInto(defs)
+		if err != nil {
+			return schema.Schema{}, false, err
+		}
+		out = out.WithProperty(key, merged, true)
+		typed = true
 	}
-	return out, nil
+	return out, typed, nil
 }
 
-// childListOutputSchema types a child_list result as an array whose element type
-// is the child's declared result_schema (a permissive object when none is declared)
-// — one entry per element of the `over` array, in order.
+// childListOutputSchema types a child_list result as an array whose element type is the
+// child's declared result_schema — one entry per element of `over`, in order. Only called
+// when a result_schema is declared; without one the result is untyped and not exportable
+// (see actionResultType), with no permissive-array fallback.
 func childListOutputSchema(s *model.Task, defs schema.Defs) (schema.Schema, error) {
-	if s.Action.ResultSchema != nil {
-		merged, err := s.Action.ResultSchema.MergeInto(defs)
-		if err != nil {
-			return schema.Schema{}, err
-		}
-		return schema.Array(merged), nil
+	merged, err := s.Action.ResultSchema.MergeInto(defs)
+	if err != nil {
+		return schema.Schema{}, err
 	}
-	return schema.Array(schema.Object()), nil
+	return schema.Array(merged), nil
 }
 
 func uniqueDefName(base string, defs schema.Defs) string {

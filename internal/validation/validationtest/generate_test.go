@@ -1,6 +1,7 @@
 package validationtest
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -339,6 +340,129 @@ func TestGenerate_ChildMapSingleEntry_OutputAvailableInDownstreamStep(t *testing
 	assertJSON(t, reportInput.Properties()["n"], `{"type": "integer"}`)
 }
 
+func TestGenerate_Child_WithResultSchema_ExposesUnwrappedOutput(t *testing.T) {
+	// A single child exposes the child's output DIRECTLY as self.result — not keyed
+	// (child_map) and not wrapped in an array (child_list). spawn_output must therefore be
+	// the result_schema itself.
+	out := runGenerate(t, `{
+  "name": "p",
+  "tasks": [
+    {
+      "id": "spawn",
+      "action": {
+        "type": "child",
+        "name": "worker",
+        "result_schema": {
+          "type": "object",
+          "properties": { "count": { "type": "integer" } },
+          "required": ["count"]
+        }
+      },
+      "switch": "end",
+      "output": "{{ self.result }}"
+    }
+  ]
+}`)
+	if out.Tasks["spawn"].Output.IsZero() {
+		t.Fatal("spawn should have a typed output in tasks")
+	}
+	assertJSON(t, defOf(out, "spawn_output"), `{
+		"type": "object",
+		"properties": { "count": { "type": "integer" } },
+		"required": ["count"]
+	}`)
+}
+
+func TestGenerate_Child_OutputAvailableInDownstreamStep(t *testing.T) {
+	// outputs.spawn.count is typed directly (no intermediate key) in a later step's input —
+	// the unwrapped analogue of child_map's outputs.spawn.out.count.
+	out := runGenerate(t, `{
+  "name": "p",
+  "tasks": [
+    {
+      "id": "spawn",
+      "action": {
+        "type": "child",
+        "name": "worker",
+        "result_schema": {
+          "type": "object",
+          "properties": { "count": { "type": "integer" } },
+          "required": ["count"]
+        }
+      },
+      "switch": "next",
+      "output": "{{ self.result }}"
+    },
+    {
+      "id": "report",
+      "action": {
+        "type": "fetch",
+        "url": "http://x",
+        "body": { "n": "{{outputs.spawn.count}}" }
+      }
+    }
+  ]
+}`)
+	reportInput := defOf(out, "report_input")
+	if reportInput.IsZero() || !reportInput.HasProperties() {
+		t.Fatal("report input should have properties")
+	}
+	assertJSON(t, reportInput.Properties()["n"], `{"type": "integer"}`)
+}
+
+func TestGenerate_Child_WithoutResultSchema_ResultNotAccessible(t *testing.T) {
+	// A child's output is only accessible once its result_schema is declared — no permissive
+	// fallback and no untyped/transient value. Without one, self.result does not exist:
+	// referencing it anywhere (output OR switch) is a "not in schema" error.
+	err := runGenerateErr(t, `{
+  "name": "p",
+  "tasks": [
+    {
+      "id": "spawn",
+      "action": { "type": "child", "name": "worker" },
+      "switch": "end",
+      "output": "{{ self.result }}"
+    }
+  ]
+}`)
+	if err == nil {
+		t.Fatal("expected an error exporting a child self.result without a result_schema")
+	}
+	if !strings.Contains(err.Error(), "result_schema") {
+		t.Errorf("error should point at the missing result_schema, got: %v", err)
+	}
+
+	// Member access under an output map is the same error.
+	if err := runGenerateErr(t, `{
+  "name": "p",
+  "tasks": [
+    {
+      "id": "spawn",
+      "action": { "type": "child", "name": "worker" },
+      "switch": "end",
+      "output": { "v": "{{ self.result.x }}" }
+    }
+  ]
+}`); err == nil {
+		t.Error("expected an error exporting self.result.x without a result_schema")
+	}
+
+	// Routing on self.result in a switch is ALSO an error — the untyped result does not
+	// exist in the context.
+	if err := runGenerateErr(t, `{
+  "name": "p",
+  "tasks": [
+    {
+      "id": "spawn",
+      "action": { "type": "child", "name": "worker" },
+      "switch": [{ "case": "self.result == null", "goto": "end" }]
+    }
+  ]
+}`); err == nil {
+		t.Error("expected an error routing on a child self.result in a switch without a result_schema")
+	}
+}
+
 func TestGenerate_ChildParallel_WithOutputSchemas_ExposesKeyedOutput(t *testing.T) {
 	out := runGenerate(t, `{
   "name": "p",
@@ -467,8 +591,10 @@ func TestGenerate_ChildParallel_KeyedOutputAvailableInDownstreamStep(t *testing.
 	assertJSON(t, aggInput.Properties()["b"], `{"type": "integer"}`)
 }
 
-func TestGenerate_ChildParallel_MixedOutputSchemas_UntypedKeyIsObject(t *testing.T) {
-	// A child without result_schema should still produce a key but typed as plain object.
+func TestGenerate_ChildParallel_MixedOutputSchemas_UntypedKeyOmitted(t *testing.T) {
+	// Per-key rule: a child WITHOUT result_schema is omitted from the output type entirely —
+	// its output is not accessible or exportable (no permissive fallback). Only the schema-
+	// bearing key survives.
 	out := runGenerate(t, `{
   "name": "p",
   "tasks": [
@@ -508,8 +634,90 @@ func TestGenerate_ChildParallel_MixedOutputSchemas_UntypedKeyIsObject(t *testing
 	if spawnOutput.Properties()["typed"].IsZero() {
 		t.Error("spawn_output should have property 'typed'")
 	}
-	if spawnOutput.Properties()["untyped"].IsZero() {
-		t.Error("spawn_output should have property 'untyped' even without result_schema")
+	if !spawnOutput.Properties()["untyped"].IsZero() {
+		t.Error("spawn_output should NOT expose 'untyped' (no result_schema → omitted)")
+	}
+}
+
+// A child_map in which NO child declares a result_schema has an untyped result: self.result
+// does not exist, so referencing it — in an output OR a switch — is an error.
+func TestGenerate_ChildMap_NoResultSchemas_ResultNotAccessible(t *testing.T) {
+	err := runGenerateErr(t, `{
+  "name": "p",
+  "tasks": [
+    {
+      "id": "spawn",
+      "action": { "type": "child_map", "children": { "a": { "name": "x" }, "b": { "name": "y" } } },
+      "switch": "end",
+      "output": "{{ self.result }}"
+    }
+  ]
+}`)
+	if err == nil {
+		t.Fatal("expected an error exporting a child_map result with no result_schemas")
+	}
+	if !strings.Contains(err.Error(), "result_schema") {
+		t.Errorf("error should point at the missing result_schema, got: %v", err)
+	}
+
+	// Routing on it in a switch is the same error.
+	if err := runGenerateErr(t, `{
+  "name": "p",
+  "tasks": [
+    {
+      "id": "spawn",
+      "action": { "type": "child_map", "children": { "a": { "name": "x" }, "b": { "name": "y" } } },
+      "switch": [{ "case": "self.result == null", "goto": "end" }]
+    }
+  ]
+}`); err == nil {
+		t.Error("expected an error routing on a schema-less child_map self.result in a switch")
+	}
+}
+
+// A child_list without a result_schema has an untyped array result: self.result does not
+// exist, so referencing it — in an output OR a switch — is an error.
+func TestGenerate_ChildList_NoResultSchema_ResultNotAccessible(t *testing.T) {
+	err := runGenerateErr(t, `{
+  "name": "p",
+  "input_schema": {
+    "type": "object",
+    "properties": { "items": { "type": "array", "items": { "type": "object" } } },
+    "required": ["items"]
+  },
+  "tasks": [
+    {
+      "id": "spread",
+      "action": { "type": "child_list", "name": "worker", "over": "{{ input.items }}" },
+      "switch": "end",
+      "output": "{{ self.result }}"
+    }
+  ]
+}`)
+	if err == nil {
+		t.Fatal("expected an error exporting a child_list result with no result_schema")
+	}
+	if !strings.Contains(err.Error(), "result_schema") {
+		t.Errorf("error should point at the missing result_schema, got: %v", err)
+	}
+
+	// Routing on it in a switch is the same error.
+	if err := runGenerateErr(t, `{
+  "name": "p",
+  "input_schema": {
+    "type": "object",
+    "properties": { "items": { "type": "array", "items": { "type": "object" } } },
+    "required": ["items"]
+  },
+  "tasks": [
+    {
+      "id": "spread",
+      "action": { "type": "child_list", "name": "worker", "over": "{{ input.items }}" },
+      "switch": [{ "case": "self.result == null", "goto": "end" }]
+    }
+  ]
+}`); err == nil {
+		t.Error("expected an error routing on a schema-less child_list self.result in a switch")
 	}
 }
 

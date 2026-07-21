@@ -60,6 +60,15 @@ func (e *Engine) runChildProcesses(ctx context.Context, inst *model.ProcessInsta
 
 	var children []*model.ProcessInstance
 	switch task.Action.Type {
+	case model.ActionTypeChild:
+		single, fail := e.buildSingleChild(inst, task, childCallStack)
+		if fail != nil {
+			return nil, fail
+		}
+		// Metadata mirrors the result shape: a single child records its one id as a
+		// scalar (child_map records an object, child_list an array).
+		spawned[task.ID] = single.ID
+		children = []*model.ProcessInstance{single}
 	case model.ActionTypeChildMap:
 		mapped, fail := e.buildMapChildren(ctx, inst, task, childCallStack)
 		if fail != nil {
@@ -161,6 +170,40 @@ func newChildInstance(parent *model.ProcessInstance, task *model.Task, def *mode
 		SpawnTaskID:    task.ID,
 		CallStack:      callStack,
 	}
+}
+
+// buildSingleChild resolves the definition, evaluates the input, and constructs the one
+// ProcessInstance a "child" task spawns. It carries no slot discriminant (there is a
+// single child, so no _spawn_child_key / _spawn_index); its output is collected unwrapped.
+// Persists nothing; a non-nil outcome means the parent failed and the caller must stop and
+// persist it.
+func (e *Engine) buildSingleChild(inst *model.ProcessInstance, task *model.Task, callStack []string) (*model.ProcessInstance, *advanceOutcome) {
+	version, err := e.resolveChildVersion(inst, task.ID, task.Action.Name, task.Action.Version, "")
+	if err != nil {
+		return nil, stop(e.failInstance(inst, errcode.EngineDefinition, fmt.Sprintf("task %q child: %v", task.ID, err)))
+	}
+	def, err := e.db.GetDefinition(task.Action.Name, version)
+	if err != nil {
+		return nil, stop(e.failInstance(inst, errcode.EngineDefinition, fmt.Sprintf("task %q child: %v", task.ID, err)))
+	}
+	input, err := e.evalChildInput(inst, task.ID, "child", task.Action.Input)
+	if err != nil {
+		return nil, stop(e.failInstance(inst, errcode.EngineExpression, err.Error()))
+	}
+	input, err = def.ValidateInput(input)
+	if err != nil {
+		return nil, stop(e.failInstance(inst, errcode.EngineInput, fmt.Sprintf("task %q child input validation: %v", task.ID, err)))
+	}
+	spawnCtx := map[string]any{
+		"_spawn_action_type": string(model.ActionTypeChild),
+	}
+	if task.Action.ResultSchema != nil {
+		if b, err := json.Marshal(task.Action.ResultSchema); err == nil {
+			spawnCtx["_spawn_result_schema"] = string(b)
+		}
+	}
+	base := idgen.ChildBase(inst.ID)
+	return newChildInstance(inst, task, def, version, input, callStack, idgen.Add(base, 0).String(), spawnCtx), nil
 }
 
 // buildMapChildren resolves definitions, evaluates inputs, and constructs

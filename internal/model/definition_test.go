@@ -244,6 +244,20 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			wantErr: "action.url is required",
 		},
 		{
+			name: "valid child call",
+			def: ProcessDefinition{Name: "p", Tasks: []*Task{
+				{ID: "spawn", Action: &Action{Type: ActionTypeChild, Name: "worker"}, Switch: SwitchMap{{Goto: GotoEnd}}},
+			}},
+			wantErr: "",
+		},
+		{
+			name: "child call missing name",
+			def: ProcessDefinition{Name: "p", Tasks: []*Task{
+				{ID: "spawn", Action: &Action{Type: ActionTypeChild}, Switch: SwitchMap{{Goto: GotoEnd}}},
+			}},
+			wantErr: "action.name is required",
+		},
+		{
 			name: "valid child_list call",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{ID: "spawn", Action: &Action{Type: ActionTypeChildList, Name: "worker", Over: "{{ input.items }}"}, Switch: SwitchMap{{Goto: GotoEnd}}},
@@ -299,7 +313,7 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{ID: "s1", Action: &Action{Type: "ftp", URL: "ftp://x"}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
-			wantErr: "action.type must be one of: fetch, child_map, child_list",
+			wantErr: "action.type must be one of: fetch, child, child_map, child_list",
 		},
 		{
 			name: "switch missing catch-all is rejected",

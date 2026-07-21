@@ -20,6 +20,7 @@ type ActionType string
 
 const (
 	ActionTypeFetch     ActionType = "fetch"
+	ActionTypeChild     ActionType = "child"
 	ActionTypeChildMap  ActionType = "child_map"
 	ActionTypeChildList ActionType = "child_list"
 	ActionTypeDelay     ActionType = "delay"
@@ -39,8 +40,11 @@ type ChildEntry struct {
 //     AcceptedStatus (optional), Body (optional), ResultSchema (optional) — an HTTP call
 //     like fetch(url, {method, headers, body}); every field is an expression/shape, so the
 //     whole request can come from the context. The body is sent raw (an object as JSON).
+//   - "child":      Name (required), Version (optional), Input (optional), ResultSchema (optional) —
+//     runs one named child process and waits for it; the result is that child's output directly
+//     (unwrapped), unlike child_map's keyed object. Use it when a task delegates to a single child.
 //   - "child_map":  Children (required, keyed map) — concurrent named child processes; the result is
-//     an object keyed by child name. A single child is expressed as a one-entry map.
+//     an object keyed by child name.
 //   - "child_list": Name (required), Over (required), Version (optional), ResultSchema (optional) —
 //     runs one child per element of the Over array; each element is that child's input, and the
 //     collected result is an array of the children's outputs in the same order as Over.
@@ -64,11 +68,11 @@ type Action struct {
 	Method         string                `json:"method,omitempty"`          // fetch: HTTP method (an expression); defaults to POST
 	Headers        *Shape                `json:"headers,omitempty"`         // fetch: request headers (a shape evaluating to a string map)
 	AcceptedStatus []string              `json:"accepted_status,omitempty"` // fetch: HTTP status patterns accepted as non-errors
-	ResultSchema   *schema.Schema        `json:"result_schema,omitempty"`   // fetch/child_list: validate & persist output
-	Name           string                `json:"name,omitempty"`            // child_list
-	Version        int                   `json:"version,omitempty"`         // child_list
+	ResultSchema   *schema.Schema        `json:"result_schema,omitempty"`   // fetch/child/child_list: validate & persist output
+	Name           string                `json:"name,omitempty"`            // child/child_list
+	Version        int                   `json:"version,omitempty"`         // child/child_list
 	Body           *Shape                `json:"body,omitempty"`            // fetch: templated request body
-	Input          *Shape                `json:"input,omitempty"`           // external: templated snapshot payload
+	Input          *Shape                `json:"input,omitempty"`           // child/external: templated input payload
 	Children       map[string]ChildEntry `json:"children,omitempty"`        // child_map
 	Over           string                `json:"over,omitempty"`            // child_list: expression evaluating to the input array (one child per element)
 	Ms             string                `json:"ms,omitempty"`              // delay: milliseconds to pause, as an expression
@@ -96,7 +100,20 @@ func (Action) JSONSchemaBytes() ([]byte, error) {
 			},
 			{
 				"type": "object",
-				"description": "Keyed child-process call — runs one or more named processes concurrently and waits for all to complete. The result is an object keyed by child name, available as outputs.taskID.childKey. A single child is a one-entry map.",
+				"description": "Single child-process call — runs one named process as a sub-instance and waits for it to complete. The result is the child's output directly (unwrapped), available as outputs.taskID.",
+				"properties": {
+					"type":          {"type": "string", "const": "child"},
+					"name":          {"type": "string", "description": "Name of the child process to invoke."},
+					"version":       {"type": "integer", "description": "Version to run; 0 means latest published version."},
+					"input":         {"$ref": "#/$defs/ModelShape", "description": "Templated value (string expression or nested object) evaluated against the current context to build the child's input payload."},
+					"result_schema": {"type": "object", "additionalProperties": true, "description": "JSON Schema to validate and expose the child's output. Without it the output is available only as self.result in this task's switch."}
+				},
+				"required": ["type", "name"],
+				"additionalProperties": false
+			},
+			{
+				"type": "object",
+				"description": "Keyed child-process call — runs one or more named processes concurrently and waits for all to complete. The result is an object keyed by child name, available as outputs.taskID.childKey.",
 				"properties": {
 					"type": {"type": "string", "const": "child_map"},
 					"children": {

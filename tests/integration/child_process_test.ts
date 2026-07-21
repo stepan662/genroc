@@ -397,13 +397,37 @@ test("child — two sequential child tasks both spawn and collect", async () => 
         tasks: [
           {
             id: "first",
-            action: { type: "child_map" as const, children: { out: { name: leafName } } },
+            action: {
+              type: "child_map" as const,
+              children: {
+                out: {
+                  name: leafName,
+                  result_schema: {
+                    type: "object",
+                    properties: { done: { type: "boolean" } },
+                    required: ["done"],
+                  },
+                },
+              },
+            },
             output: "{{ self.result.out }}",
             switch: [{ goto: "next" }],
           },
           {
             id: "second",
-            action: { type: "child_map" as const, children: { out: { name: leafName } } },
+            action: {
+              type: "child_map" as const,
+              children: {
+                out: {
+                  name: leafName,
+                  result_schema: {
+                    type: "object",
+                    properties: { done: { type: "boolean" } },
+                    required: ["done"],
+                  },
+                },
+              },
+            },
             output: "{{ self.result.out }}",
             switch: [{ goto: "end" }],
           },

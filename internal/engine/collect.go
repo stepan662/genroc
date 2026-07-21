@@ -119,6 +119,9 @@ func childSlotLabel(child *model.ProcessInstance) string {
 	if idx, ok := spawnIndex(child); ok {
 		return fmt.Sprintf("child_index %d", idx)
 	}
+	if at, _ := child.ContextData["_spawn_action_type"].(string); at == string(model.ActionTypeChild) {
+		return "single child"
+	}
 	return "child ?"
 }
 
@@ -145,10 +148,24 @@ func (e *Engine) buildChildOutput(task *model.Task, siblings []*model.ProcessIns
 			return nil, fmt.Errorf("child %q is %s; outputs can only be collected when all children completed", c.ID, c.Status)
 		}
 	}
-	if task.Action.Type == model.ActionTypeChildList {
+	switch task.Action.Type {
+	case model.ActionTypeChild:
+		return e.buildSingleChildOutput(siblings)
+	case model.ActionTypeChildList:
 		return e.buildListChildOutput(siblings)
+	default:
+		return e.buildMapChildOutput(siblings)
 	}
-	return e.buildMapChildOutput(siblings)
+}
+
+// buildSingleChildOutput returns the one child's output unwrapped — the child result is
+// the task result directly, not keyed (child_map) or arrayed (child_list). Validated
+// against the declared result_schema and resolved from the object store when externalized.
+func (e *Engine) buildSingleChildOutput(siblings []*model.ProcessInstance) (any, error) {
+	if len(siblings) != 1 {
+		return nil, fmt.Errorf("child task expected exactly one child, got %d", len(siblings))
+	}
+	return e.resolveAndValidateChildOutput(siblings[0])
 }
 
 // buildMapChildOutput returns each sibling's output keyed by its child key, validated

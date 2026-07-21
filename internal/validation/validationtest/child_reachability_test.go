@@ -47,6 +47,44 @@ func childMapParent(childName string, onError []model.ErrorCase) *model.ProcessD
 	return def
 }
 
+// childActionParent builds a parent with a standalone `child` action over the named
+// child, carrying the given on_error rules — the single-child analogue of childMapParent.
+func childActionParent(childName string, onError []model.ErrorCase) *model.ProcessDefinition {
+	return &model.ProcessDefinition{
+		Name: "parent",
+		Tasks: []*model.Task{
+			{
+				ID:      "pay",
+				Action:  &model.Action{Type: model.ActionTypeChild, Name: childName},
+				OnError: onError,
+				Switch:  model.SwitchMap{{Goto: model.GotoEnd}},
+			},
+		},
+	}
+}
+
+func TestR5_ChildAction_RuleForRaisableCode_OK(t *testing.T) {
+	getter := stubGetter{"charge-card": raisingChild("charge-card", "card_declined")}
+	def := childActionParent("charge-card", []model.ErrorCase{
+		{Code: []string{"card_declined"}, Goto: model.GotoEnd},
+	})
+	if err := def.Normalize(); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	assertValidateOK(t, def, getter)
+}
+
+func TestR5_ChildAction_RuleForUnraisableCode_Rejected(t *testing.T) {
+	getter := stubGetter{"charge-card": raisingChild("charge-card", "card_declined")}
+	def := childActionParent("charge-card", []model.ErrorCase{
+		{Code: []string{"card_expired"}, Goto: model.GotoEnd},
+	})
+	if err := def.Normalize(); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	assertValidateErr(t, def, getter, `no child of this task can raise a code matching "card_expired"`)
+}
+
 func TestR5_RuleForRaisableCode_OK(t *testing.T) {
 	getter := stubGetter{"charge-card": raisingChild("charge-card", "card_declined", "insufficient_funds")}
 	def := childMapParent("charge-card", []model.ErrorCase{

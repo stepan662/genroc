@@ -14,7 +14,7 @@ type DefinitionGetter interface {
 	LatestVersion(name string) (int, error)
 }
 
-// ValidateChildProcessRefs checks every child_map/child_list task in def:
+// ValidateChildProcessRefs checks every child/child_map/child_list task in def:
 //  1. The referenced process exists (version 0 resolves to latest).
 //  2. The schema inferred from the input expressions is a subset of the child's InputSchema.
 //
@@ -35,6 +35,18 @@ func ValidateChildProcessRefs(def *model.ProcessDefinition, currentVersion int, 
 		ctx := contextSchema(required[s.ID], optional[s.ID], tasks, processInput, configSchema, mustErr[s.ID], mayErr[s.ID]).WithDefs(defs)
 
 		switch s.Action.Type {
+		case model.ActionTypeChild:
+			// A single child is checked like a one-entry child_map: same input-subset and
+			// output-subset checks against the referenced child's schemas.
+			entry := model.ChildEntry{
+				Name:         s.Action.Name,
+				Version:      s.Action.Version,
+				Input:        s.Action.Input,
+				ResultSchema: s.Action.ResultSchema,
+			}
+			if err := validateChildEntry(s.ID, "child", entry, ctx, defs, def, currentVersion, getter); err != nil {
+				return err
+			}
 		case model.ActionTypeChildMap:
 			for key, entry := range s.Action.Children {
 				if err := validateChildEntry(s.ID, fmt.Sprintf("children[%q]", key), entry, ctx, defs, def, currentVersion, getter); err != nil {
@@ -68,7 +80,7 @@ func ValidateChildProcessRefs(def *model.ProcessDefinition, currentVersion int, 
 // reachability-checked.
 //
 // The raise set is the union over the task's children: every entry of a child_map, or
-// the single child of a child_list. Codes come from ProcessDefinition.Raises(), the same
+// the single child of a child / child_list. Codes come from ProcessDefinition.Raises(), the same
 // syntactic scan the definition endpoint publishes.
 func validateChildOnErrorReachability(s *model.Task, current *model.ProcessDefinition, currentVersion int, getter DefinitionGetter) error {
 	if len(s.OnError) == 0 || s.Action == nil {
@@ -86,6 +98,10 @@ func validateChildOnErrorReachability(s *model.Task, current *model.ProcessDefin
 	}
 
 	switch s.Action.Type {
+	case model.ActionTypeChild:
+		if err := addRaises(s.Action.Name, s.Action.Version); err != nil {
+			return nil
+		}
 	case model.ActionTypeChildMap:
 		for _, entry := range s.Action.Children {
 			if err := addRaises(entry.Name, entry.Version); err != nil {

@@ -128,6 +128,10 @@ func validateActionRequiredFields(s *Task) error {
 				return fmt.Errorf("task %q: action.children[%q].name is required", s.ID, key)
 			}
 		}
+	case ActionTypeChild:
+		if s.Action.Name == "" {
+			return fmt.Errorf("task %q: action.name is required for type %q", s.ID, s.Action.Type)
+		}
 	case ActionTypeChildList:
 		if s.Action.Name == "" {
 			return fmt.Errorf("task %q: action.name is required for type %q", s.ID, s.Action.Type)
@@ -143,7 +147,7 @@ func validateActionRequiredFields(s *Task) error {
 		// No required action fields: input and result_schema are both optional
 		// (mirroring fetch). The wait timeout is the task's timeout_ms (0 = forever).
 	default:
-		return fmt.Errorf("task %q: action.type must be one of: fetch, child_map, child_list, delay, external", s.ID)
+		return fmt.Errorf("task %q: action.type must be one of: fetch, child, child_map, child_list, delay, external", s.ID)
 	}
 	return nil
 }
@@ -255,7 +259,7 @@ func validateSwitch(s *Task, taskIDs map[string]struct{}, taskIdx, lastIdx int) 
 // isChildTask reports whether the task's action spawns child processes, which is what
 // makes its on_error a list of raised codes rather than engine codes (R4/M1).
 func isChildTask(s *Task) bool {
-	return s.Action != nil && (s.Action.Type == ActionTypeChildMap || s.Action.Type == ActionTypeChildList)
+	return s.Action != nil && (s.Action.Type == ActionTypeChild || s.Action.Type == ActionTypeChildMap || s.Action.Type == ActionTypeChildList)
 }
 
 // validateOnError checks the task's on_error rules: the terminal-clause arity (R3), the
