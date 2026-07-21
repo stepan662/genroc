@@ -66,9 +66,21 @@ function spawnProc(
   });
 }
 
-async function waitUntilReady(port: number, timeoutMs = 10_000): Promise<void> {
+async function waitUntilReady(
+  port: number,
+  proc: ChildProcess,
+  timeoutMs = 10_000,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    // Fail fast (and clearly) if the process died during startup — e.g. it could
+    // not bind the port — instead of polling a dead process until the timeout and
+    // then being fooled by some *other* server answering on the same port.
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+      throw new Error(
+        `genroc on port ${port} exited before becoming ready (code=${proc.exitCode}, signal=${proc.signalCode})`,
+      );
+    }
     try {
       const r = await fetch(`http://localhost:${port}/openapi.json`);
       await r.body?.cancel();
@@ -79,9 +91,20 @@ async function waitUntilReady(port: number, timeoutMs = 10_000): Promise<void> {
   throw new Error(`genroc on port ${port} did not become ready within ${timeoutMs}ms`);
 }
 
+// stopProc sends SIGTERM and resolves once the process has actually exited (so the
+// OS has released its listening port). Callers that reuse the port on the next line
+// MUST await this — a fixed sleep races the graceful shutdown on a slow host.
+function stopProc(proc: ChildProcess): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (proc.exitCode !== null || proc.signalCode !== null) return resolve();
+    proc.once("exit", () => resolve());
+    proc.kill("SIGTERM");
+  });
+}
+
 export interface GenrocProcess {
   client: ReturnType<typeof createClientTyped>;
-  stop: () => void;  // SIGTERM — clean shutdown
+  stop: () => Promise<void>; // SIGTERM — resolves once the process has fully exited
   crash: () => void; // SIGKILL — simulate a hard crash, lease stays in DB
 }
 
@@ -95,10 +118,10 @@ export async function startGenroc(
   immediateRetries?: boolean,
 ): Promise<GenrocProcess> {
   const proc = spawnProc(bin, port, db, pgDSN, pollMs, maxConcurrent, immediateRetries);
-  await waitUntilReady(port);
+  await waitUntilReady(port, proc);
   return {
     client: createClientTyped({ baseUrl: `http://localhost:${port}` }),
-    stop: () => proc.kill("SIGTERM"),
+    stop: () => stopProc(proc),
     crash: () => proc.kill("SIGKILL"),
   };
 }
@@ -163,7 +186,7 @@ export async function startSupervisedWorker(
     }, 100);
   };
   proc.on("exit", onExit);
-  await waitUntilReady(port);
+  await waitUntilReady(port, proc);
   return {
     restarts: () => restarts,
     stop: () =>

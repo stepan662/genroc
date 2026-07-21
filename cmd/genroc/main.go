@@ -84,7 +84,17 @@ func main() {
 	defer stop()
 
 	var wg sync.WaitGroup
-	var engErr error
+	var fatalErr error
+	// fatal records the first fatal error from any subsystem and winds the process
+	// down (cancelling ctx shuts down every listener and the engine). Reads happen
+	// after wg.Wait(), which is ordered after these writes.
+	fatal := func(what string, err error) {
+		if fatalErr == nil {
+			fatalErr = err
+		}
+		log.Error(what+"; shutting down", "err", err)
+		stop()
+	}
 
 	wg.Add(1)
 	go func() {
@@ -93,9 +103,7 @@ func main() {
 		// overwhelmed) means this worker can't keep up: wind everything down and
 		// exit non-zero so the supervisor restarts it.
 		if err := eng.Run(ctx); err != nil {
-			engErr = err
-			log.Error("engine stopped with fatal error; shutting down", "err", err)
-			stop()
+			fatal("engine stopped with fatal error", err)
 		}
 	}()
 
@@ -114,8 +122,12 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// A listener that cannot bind (e.g. the port is still held) returns a
+			// non-nil error here — graceful shutdown returns nil. A server that can't
+			// serve its API is useless, so treat it as fatal instead of running on
+			// headless; the supervisor then restarts it (or a test fails loudly).
 			if err := srv.ListenHTTP(ctx, *httpAddr); err != nil {
-				log.Error("HTTP server", "err", err)
+				fatal("HTTP server failed", err)
 			}
 		}()
 	}
@@ -125,7 +137,7 @@ func main() {
 		go func() {
 			defer wg.Done()
 			if err := srv.ListenTCP(ctx, *tcpAddr); err != nil {
-				log.Error("TCP server", "err", err)
+				fatal("TCP server failed", err)
 			}
 		}()
 	}
@@ -135,7 +147,7 @@ func main() {
 		go func() {
 			defer wg.Done()
 			if err := srv.ListenUDS(ctx, *udsPath); err != nil {
-				log.Error("UDS server", "err", err)
+				fatal("UDS server failed", err)
 			}
 		}()
 	}
@@ -143,7 +155,7 @@ func main() {
 	<-ctx.Done()
 	log.Info("shutting down")
 	wg.Wait()
-	if engErr != nil {
+	if fatalErr != nil {
 		os.Exit(1)
 	}
 }

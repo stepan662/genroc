@@ -261,8 +261,10 @@ async function benchEngine(
       }
       rootIds = await preload(loader.client, ROOTS, LOAD_CONCURRENCY);
     } finally {
-      loader.stop();
-      await sleep(300); // release the port and let SQLite checkpoint before reopening
+      // Await the exit (not a fixed sleep): the drainer rebinds the SAME port on the
+      // next line, so the loader must have fully released it. Its exit also flushes
+      // the SQLite checkpoint (database.Close runs on shutdown) before we reopen.
+      await loader.stop();
     }
 
     // Phase 2 — drain. Restart with the normal poll loop and time the work-off.
@@ -273,8 +275,9 @@ async function benchEngine(
       durations.push(Date.now() - start);
       instances = await countInstances(drainer.client, rootIds);
     } finally {
-      drainer.stop();
-      await sleep(200);
+      // Await the exit so the next run's loader (or the next engine's load phase)
+      // can rebind the port cleanly.
+      await drainer.stop();
     }
   }
   return { engine, durations, instances, concurrency };
