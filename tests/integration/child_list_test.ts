@@ -264,13 +264,16 @@ test("child_list — rejects `over` referencing an unknown field", async () => {
 
 // ── runtime behaviour ───────────────────────────────────────────────────────────
 
-test("child_list — a result_schema mismatch fails the parent and names the child process", async () => {
+test("child_list — a result_schema the child's output can't satisfy is rejected at registration", async () => {
   const uid = crypto.randomUUID().slice(0, 8);
   const leaf = `cl_mismatch_leaf_${uid}`;
   const parent = `cl_mismatch_parent_${uid}`;
   await defineDoubler(leaf); // produces { doubled, original }
 
-  await client.PUT("/definitions", {
+  // result_schema requires a field the child's output type never produces. This is a
+  // *static* incompatibility (the child's output type is not a subset of result_schema),
+  // so it is caught at registration rather than surfacing per-item at collect.
+  const { error } = await client.PUT("/definitions", {
     body: {
       name: parent,
       input_schema: {
@@ -290,7 +293,6 @@ test("child_list — a result_schema mismatch fails the parent and names the chi
             type: "child_list" as const,
             name: leaf,
             over: "{{ input.items }}",
-            // Requires a field the child never produces → each item fails validation at collect.
             result_schema: {
               type: "object",
               properties: { missing: { type: "string" } },
@@ -303,14 +305,8 @@ test("child_list — a result_schema mismatch fails the parent and names the chi
     },
   });
 
-  const { data: startData } = await client.POST("/instances", {
-    body: { process: parent, input: { items: [{ n: 1 }] } },
-  });
-  const id = startData!.id;
-  expect(await waitForInstance(id, 10_000)).toBe("failed");
-
-  const { data } = await client.GET("/instances/{id}", { params: { path: { id } } });
-  expect(data?.error).toContain(leaf);
+  expect(error).toBeDefined();
+  expect(JSON.stringify(error)).toContain("result_schema");
 });
 
 test("child_list — the collected array is usable downstream by index", async () => {

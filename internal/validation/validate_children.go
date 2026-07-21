@@ -134,30 +134,70 @@ func validateChildEntry(taskID string, label string, p model.ChildEntry, ctx sch
 		return fmt.Errorf("%s: %w", prefix, err)
 	}
 
-	if child.InputSchema == nil {
+	// Input compatibility is only checkable when the child declares an input schema; the
+	// output check runs regardless, so it is not gated behind the input one.
+	if child.InputSchema != nil {
+		var inferred schema.Schema
+		if p.Input.Present() {
+			inferred, err = inferShape(p.Input.Raw, ctx, fmt.Sprintf("%s input", prefix))
+			if err != nil {
+				return err
+			}
+		} else {
+			inferred = schema.Object()
+		}
+
+		// Attach the shared defs so the inferred shape's $refs resolve, then normalize:
+		// the flatten inlines/retains exactly the definitions the shape uses, giving a
+		// self-contained schema the subset check can compare against the child's.
+		normalized, err := inferred.WithDefs(defs).Normalize()
+		if err != nil {
+			return fmt.Errorf("%s: normalize inferred input: %w", prefix, err)
+		}
+
+		if !normalized.IsSubset(*child.InputSchema) {
+			return fmt.Errorf("%s: input is not compatible with %q v%d input_schema", prefix, p.Name, childVersion)
+		}
+	}
+
+	return checkChildOutputType(prefix, child, p.ResultSchema)
+}
+
+// checkChildOutputType verifies the child definition's declared process output is a
+// subset of the result_schema the parent declares for it — the output analogue of the
+// input subset check above. It catches a child whose output shape cannot satisfy what the
+// parent asserts (e.g. a child that outputs a string against an object result_schema),
+// which otherwise only surfaces at runtime as output.invalid on collect — or never, if
+// the child raises before it ever produces an output.
+//
+// The direction mirrors the input check: at runtime the collected output is validated
+// *against* result_schema, so every value the child can output must be accepted by it —
+// childOutput ⊆ result_schema. `any`/untyped is deliberately not a subset of a typed
+// schema (isSubset), exactly as an untyped input is not accepted by a typed input_schema.
+//
+// Skipped when the parent declares no result_schema (nothing to check against) or the
+// child declares no process output (its output type is open; runtime validation still
+// applies). Generate infers the child's output from its own tasks and declared
+// result_schemas — no getter, so it does not recurse across the tree.
+func checkChildOutputType(prefix string, child *model.ProcessDefinition, resultSchema *schema.Schema) error {
+	if resultSchema == nil || !child.Output.Present() {
 		return nil
 	}
-
-	var inferred schema.Schema
-	if p.Input.Present() {
-		inferred, err = inferShape(p.Input.Raw, ctx, fmt.Sprintf("%s input", prefix))
-		if err != nil {
-			return err
-		}
-	} else {
-		inferred = schema.Object()
-	}
-
-	// Attach the shared defs so the inferred shape's $refs resolve, then normalize:
-	// the flatten inlines/retains exactly the definitions the shape uses, giving a
-	// self-contained schema the subset check can compare against the child's.
-	normalized, err := inferred.WithDefs(defs).Normalize()
+	sf, err := Generate(child)
 	if err != nil {
-		return fmt.Errorf("%s: normalize inferred input: %w", prefix, err)
+		return fmt.Errorf("%s: infer child output type: %w", prefix, err)
 	}
-
-	if !normalized.IsSubset(*child.InputSchema) {
-		return fmt.Errorf("%s: input is not compatible with %q v%d input_schema", prefix, p.Name, childVersion)
+	if sf.ProcessOutput.IsZero() {
+		return nil
+	}
+	// Generate returns ProcessOutput as a $ref into sf.Defs; resolve it to the concrete
+	// schema (deref follows the whole ref chain) so IsSubset compares two real shapes.
+	childOut, err := sf.ProcessOutput.WithDefs(sf.Defs).Resolve()
+	if err != nil {
+		return fmt.Errorf("%s: resolve child output type: %w", prefix, err)
+	}
+	if !childOut.IsSubset(*resultSchema) {
+		return fmt.Errorf("%s: the child's output type is not compatible with the declared result_schema", prefix)
 	}
 	return nil
 }
@@ -179,29 +219,34 @@ func validateChildListEntry(taskID string, action *model.Action, ctx schema.Sche
 	if err != nil {
 		return err
 	}
-	if child.InputSchema == nil {
-		return nil
-	}
 
-	// Extract the element type (resolving `over` through a $ref first, so an array
-	// reached via a shared definition still yields its item schema), then subset-check
-	// it against the child's input schema.
-	if arr.HasRef() {
-		if resolved, rerr := arr.Resolve(); rerr == nil {
-			arr = resolved
+	// Element/input compatibility is only checkable when the child declares an input
+	// schema; the output check runs regardless, so it is not gated behind the input one.
+	if child.InputSchema != nil {
+		// Extract the element type (resolving `over` through a $ref first, so an array
+		// reached via a shared definition still yields its item schema), then subset-check
+		// it against the child's input schema.
+		if arr.HasRef() {
+			if resolved, rerr := arr.Resolve(); rerr == nil {
+				arr = resolved
+			}
+		}
+		if !arr.HasItems() {
+			return fmt.Errorf("%s: over is an array with no declared element type, so it cannot be checked against %q v%d input_schema; give the array a typed item schema", prefix, action.Name, childVersion)
+		}
+		elem := arr.Items()
+
+		normalized, err := elem.WithDefs(defs).Normalize()
+		if err != nil {
+			return fmt.Errorf("%s: normalize element type: %w", prefix, err)
+		}
+		if !normalized.IsSubset(*child.InputSchema) {
+			return fmt.Errorf("%s: array element type is not compatible with %q v%d input_schema", prefix, action.Name, childVersion)
 		}
 	}
-	if !arr.HasItems() {
-		return fmt.Errorf("%s: over is an array with no declared element type, so it cannot be checked against %q v%d input_schema; give the array a typed item schema", prefix, action.Name, childVersion)
-	}
-	elem := arr.Items()
 
-	normalized, err := elem.WithDefs(defs).Normalize()
-	if err != nil {
-		return fmt.Errorf("%s: normalize element type: %w", prefix, err)
-	}
-	if !normalized.IsSubset(*child.InputSchema) {
-		return fmt.Errorf("%s: array element type is not compatible with %q v%d input_schema", prefix, action.Name, childVersion)
-	}
-	return nil
+	// result_schema types each element of the child_list output, and each child's output
+	// is validated against it individually — so the per-child check is childOutput ⊆
+	// action.ResultSchema, the same shape as child_map's.
+	return checkChildOutputType(prefix, child, action.ResultSchema)
 }

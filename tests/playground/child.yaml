@@ -2,9 +2,12 @@
 name: child
 tasks:
   - id: fourth
+    output:
+      test: "{{ true }}"
     switch:
       - case: "true"
         raise:
           code: "fourth_failed"
           message: "Fourth task failed"
       - goto: end
+output: "{{ outputs.fourth }}"

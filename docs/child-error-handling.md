@@ -543,7 +543,7 @@ Step 2's `rule = nil` branch is the **normal** path for an unhandled raised code
 not an edge case — R5 does not require coverage (§3.1). Its message must name the
 code, the child and the slot, so the omission is readable straight off the
 instance detail:
-> `task "pay": child "charge-card" (child_key "charge") raised "insufficient_funds": the account has insufficient funds; no on_error rule matches`
+> `task "pay": child "charge-card" (child_key "charge") raised "insufficient_funds": the account has insufficient funds`
 
 Note what this means for composition: **an unhandled raise degrades to a defect.**
 The parent fails, which fails fast up its own tree. An error never propagates a
