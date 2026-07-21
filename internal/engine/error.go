@@ -15,8 +15,9 @@ import (
 // "how many instances died of this, and did it start after Tuesday's deploy" has to work
 // for engine failures too, and the code is otherwise buried in the error prose.
 //
-// All of them contain a dot, which is what keeps them distinguishable from authored
-// codes at a glance and in a filter: R1 forbids dots in a raise or panic code.
+// All of them contain a dot. Authored codes may now contain dots too (R1), so the two
+// are no longer distinguishable by shape alone — an author who wants the old at-a-glance
+// separation keeps authored codes dot-free by convention.
 const (
 	codeDefinition = "engine.definition" // definition unusable: missing, or a task/goto it names is not in it
 	codeExpression = "engine.expression" // an expression could not be evaluated against this context
@@ -43,8 +44,11 @@ func isRetryAllowed(task *model.Task, errCode string, matched *model.ErrorCase) 
 
 // matchOnError returns the first ErrorCase whose Code patterns match errCode,
 // or whose Code list is empty (catch-all). Returns nil when no rule matches.
-// Used for action tasks, where codes are engine codes (http.*, pre.*, …) and LIKE
-// patterns are meaningful.
+// Used for both action tasks (matching engine codes) and child tasks (matching a child's
+// raised code) — the same transport.MatchCode, where `%` is the only wildcard, so
+// `order_%` matches `order_placed` but not `order.placed`. A child task's patterns were
+// checked at registration against the child raise set (R5), so a rule that fires here can
+// always match something the child actually raises.
 func matchOnError(task *model.Task, errCode string) *model.ErrorCase {
 	for i := range task.OnError {
 		c := &task.OnError[i]
@@ -52,25 +56,7 @@ func matchOnError(task *model.Task, errCode string) *model.ErrorCase {
 			return c
 		}
 		for _, pat := range c.Code {
-			if transport.SQLLikeMatch(pat, errCode) {
-				return c
-			}
-		}
-	}
-	return nil
-}
-
-// matchOnErrorLiteral is matchOnError for a child task (M1): a rule matches iff its code
-// list contains the raised code *literally* — no LIKE evaluation, no empty-list catch-all.
-// This is not the same as matchOnError with a wildcard-free pattern: a raised code
-// contains underscores, which SQLLikeMatch would treat as single-char wildcards, so
-// `card_declined` as a LIKE pattern would spuriously match `cardxdeclined`. R4 rejects
-// everything this skips at registration, so the two never disagree.
-func matchOnErrorLiteral(task *model.Task, code string) *model.ErrorCase {
-	for i := range task.OnError {
-		c := &task.OnError[i]
-		for _, want := range c.Code {
-			if want == code {
+			if transport.MatchCode(pat, errCode) {
 				return c
 			}
 		}

@@ -5,6 +5,7 @@ import (
 
 	"genroc/internal/model"
 	"genroc/internal/schema"
+	"genroc/internal/transport"
 )
 
 // DefinitionGetter looks up process definitions. *db.DB satisfies this interface.
@@ -53,11 +54,18 @@ func ValidateChildProcessRefs(def *model.ProcessDefinition, currentVersion int, 
 	return nil
 }
 
-// validateChildOnErrorReachability enforces R5: every code an on_error rule on a child
-// task names must be raisable by some child of that task. It is a sanity check, not a
-// coverage guarantee (D3) — it runs one direction only, from rule to raise set, so a
-// typo'd or orphaned rule is caught, but a raisable code with no rule is allowed and
-// surfaces at runtime (§3.1).
+// validateChildOnErrorReachability enforces R5: every code *pattern* an on_error rule on
+// a child task names must match at least one code some child of that task can raise. It is
+// a sanity check, not a coverage guarantee (D3) — it runs one direction only, from rule to
+// raise set, so a typo'd or orphaned rule is caught, but a raisable code with no rule is
+// allowed and surfaces at runtime (§3.1).
+//
+// Patterns are matched with the same transport.MatchCode the engine uses at runtime
+// (`%` the only wildcard), so `fourth_%` is accepted as long as some child raises a
+// matching code. This is what makes the child raise set a genuinely closed set to validate
+// against — an action task's engine-code space is open (http.NNN, script.N), so there is
+// no equivalent check for it. A catch-all (empty code list) matches everything and is not
+// reachability-checked.
 //
 // The raise set is the union over the task's children: every entry of a child_map, or
 // the single child of a child_list. Codes come from ProcessDefinition.Raises(), the same
@@ -67,15 +75,13 @@ func validateChildOnErrorReachability(s *model.Task, current *model.ProcessDefin
 		return nil
 	}
 
-	raisable := map[string]struct{}{}
+	var raisable []string
 	addRaises := func(name string, version int) error {
 		child, _, err := resolveChild(name, version, current, currentVersion, getter)
 		if err != nil {
 			return err // already reported by the input-compat pass; resolve again defensively
 		}
-		for _, code := range child.Raises() {
-			raisable[code] = struct{}{}
-		}
+		raisable = append(raisable, child.Raises()...)
 		return nil
 	}
 
@@ -94,10 +100,19 @@ func validateChildOnErrorReachability(s *model.Task, current *model.ProcessDefin
 		return nil // not a child task: on_error codes are engine codes, not raised ones
 	}
 
+	matchesSomeRaise := func(pattern string) bool {
+		for _, code := range raisable {
+			if transport.MatchCode(pattern, code) {
+				return true
+			}
+		}
+		return false
+	}
+
 	for i, ec := range s.OnError {
-		for _, code := range ec.Code {
-			if _, ok := raisable[code]; !ok {
-				return fmt.Errorf("task %q on_error[%d]: no child of this task can raise %q", s.ID, i, code)
+		for _, pattern := range ec.Code {
+			if !matchesSomeRaise(pattern) {
+				return fmt.Errorf("task %q on_error[%d]: no child of this task can raise a code matching %q", s.ID, i, pattern)
 			}
 		}
 	}

@@ -30,12 +30,13 @@ func TestFault_R1_CodeShapeAndMessage(t *testing.T) {
 	}{
 		{"uppercase rejected", "Card_Declined", "m", "not a valid error code"},
 		{"hyphen rejected", "card-declined", "m", "not a valid error code"},
-		// The dot is the load-bearing one: it is what separates authored codes from
-		// engine-produced ones (http.500, pre.timeout) in a single error_code column.
-		{"dot rejected", "card.declined", "m", "not a valid error code"},
 		{"leading digit rejected", "1_declined", "m", "not a valid error code"},
 		{"empty rejected", "", "m", "not a valid error code"},
 		{"missing message rejected", "card_declined", "", "message is required"},
+		// '%' is the on_error wildcard, so it can never appear in a raised/panicked code —
+		// that is what removes any need to escape '%' in a pattern. Its own message.
+		{"percent rejected", "card%declined", "m", "must not contain '%'"},
+		{"trailing percent rejected", "declined%", "m", "must not contain '%'"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -50,12 +51,15 @@ func TestFault_R1_CodeShapeAndMessage(t *testing.T) {
 		})
 	}
 
-	t.Run("lower_snake_case accepted", func(t *testing.T) {
-		d := def(raiseTask("t", &Fault{Code: "insufficient_funds2", Message: "m"}))
-		if err := d.Validate(); err != nil {
-			t.Fatalf("unexpected rejection: %v", err)
-		}
-	})
+	for _, code := range []string{"insufficient_funds2", "order.rejected", "psp.declined"} {
+		t.Run("accepted: "+code, func(t *testing.T) {
+			// lower_snake_case with dots allowed (a code may carry a namespaced convention).
+			d := def(raiseTask("t", &Fault{Code: code, Message: "m"}))
+			if err := d.Validate(); err != nil {
+				t.Fatalf("unexpected rejection: %v", err)
+			}
+		})
+	}
 }
 
 // R2: a computed code would make the raise set uncomputable and error_code unqueryable;
@@ -132,9 +136,10 @@ func TestFault_R3_TerminalClauseArity(t *testing.T) {
 	})
 }
 
-// R4: on a child task the on_error codes are literal raised codes — no catch-all, no
-// LIKE patterns, no retries, no not_reached. The subtle one is that underscores are
-// *allowed*, because matching is literal (M1), even though '_' is a SQL LIKE wildcard.
+// R4: on a child task the on_error codes are LIKE patterns matched against the child's
+// raised codes (same syntax as an action task's), so wildcards and dots are allowed; only
+// the parent-side-retry fields (retries, not_reached) are rejected (D7). Reachability of a
+// pattern against the child raise set is R5, tested in the validation package.
 func TestFault_R4_ChildTaskOnError(t *testing.T) {
 	childTask := func(onError []ErrorCase) *Task {
 		return &Task{
@@ -148,28 +153,26 @@ func TestFault_R4_ChildTaskOnError(t *testing.T) {
 		}
 	}
 
-	t.Run("literal snake_case code accepted", func(t *testing.T) {
-		d := def(childTask([]ErrorCase{{Code: []string{"card_declined"}, Goto: GotoEnd}}))
-		if err := d.Validate(); err != nil {
-			t.Fatalf("an underscore in a literal code must be legal: %v", err)
-		}
-	})
-	t.Run("catch-all rejected", func(t *testing.T) {
+	for _, code := range []string{"card_declined", "card_%", "order.rejected", "psp.%"} {
+		t.Run("pattern accepted: "+code, func(t *testing.T) {
+			// LIKE patterns and dots are legal now (matching is the same SQL LIKE the
+			// engine uses). Whether the pattern can match a raise is R5, not R4.
+			d := def(childTask([]ErrorCase{{Code: []string{code}, Goto: GotoEnd}}))
+			if err := d.Validate(); err != nil {
+				t.Fatalf("pattern %q must be legal on a child task: %v", code, err)
+			}
+		})
+	}
+	t.Run("catch-all accepted as last rule", func(t *testing.T) {
 		d := def(childTask([]ErrorCase{{Goto: GotoEnd}}))
-		if err := d.Validate(); err == nil || !strings.Contains(err.Error(), "catch-all is not allowed") {
-			t.Fatalf("want catch-all rejection, got %v", err)
+		if err := d.Validate(); err != nil {
+			t.Fatalf("catch-all must be legal on a child task: %v", err)
 		}
 	})
-	t.Run("LIKE wildcard rejected", func(t *testing.T) {
-		d := def(childTask([]ErrorCase{{Code: []string{"card_%"}, Goto: GotoEnd}}))
-		if err := d.Validate(); err == nil || !strings.Contains(err.Error(), "literal raised code") {
-			t.Fatalf("want literal-code rejection, got %v", err)
-		}
-	})
-	t.Run("dotted engine code rejected", func(t *testing.T) {
-		d := def(childTask([]ErrorCase{{Code: []string{"http.500"}, Goto: GotoEnd}}))
-		if err := d.Validate(); err == nil || !strings.Contains(err.Error(), "literal raised code") {
-			t.Fatalf("want literal-code rejection, got %v", err)
+	t.Run("empty pattern string rejected", func(t *testing.T) {
+		d := def(childTask([]ErrorCase{{Code: []string{""}, Goto: GotoEnd}}))
+		if err := d.Validate(); err == nil || !strings.Contains(err.Error(), "code pattern must not be empty") {
+			t.Fatalf("want empty-pattern rejection, got %v", err)
 		}
 	})
 	t.Run("retries rejected", func(t *testing.T) {

@@ -2,7 +2,8 @@ import { expect, test } from "vitest";
 import { client, waitForInstance } from "../helpers/client.ts";
 
 // Phase 2/3: a parent catches a child's raised error through on_error rules on the child
-// task. The raised code is matched literally (M1); a matching rule routes the parent
+// task. The raised code is matched by the same patterns as an action task's on_error
+// (`%` is the only wildcard, so `order_%` matches `order_placed`); a matching rule routes the parent
 // (goto / raise / panic), and no matching rule degrades the raise to a defect that fails
 // the parent — carrying the child's own code and message forward (docs §5.2).
 //
@@ -28,6 +29,36 @@ async function putChild(name: string, raiseCode: string) {
     },
   });
 }
+
+// A wildcard pattern (not just a literal code) catches the child's raised code. `%` is
+// the only wildcard, so `fourth_%` matches `fourth_failed` (the underscore is literal).
+// Registration confirms the pattern can match a raise (R5); matchOnError routes at runtime.
+test("catch — a wildcard pattern matches the child's raised code", async () => {
+  const suffix = crypto.randomUUID().slice(0, 8).replace(/-/g, "_");
+  const child = `like_child_${suffix}`;
+  await putChild(child, "fourth_failed");
+
+  const parent = `like_parent_${suffix}`;
+  await client.PUT("/definitions", {
+    body: {
+      name: parent,
+      tasks: [
+        {
+          id: "pay",
+          action: { type: "child_map" as const, children: { a: { name: child } } },
+          on_error: [{ code: ["fourth_%"], goto: "end" }],
+          switch: "end",
+        },
+      ],
+    },
+  });
+
+  const { data: started } = await client.POST("/instances", {
+    body: { process: parent },
+  });
+  const id = started!.id;
+  expect(await waitForInstance(id)).toBe("completed");
+});
 
 // A rule that routes to a task: the parent recovers and completes past the batch.
 test("catch — a matching rule routes the parent to a recovery task", async () => {

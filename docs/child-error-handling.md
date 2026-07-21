@@ -10,7 +10,7 @@ All three phases (§10) are built:
 
 1. **Raise and panic** — `raise`/`panic`, the `raised` status, `error_code` on
    every terminal outcome, and all of §11.
-2. **Catch (single child)** — M1 literal matching, R4/R5, and the resolution step
+2. **Catch (single child)** — M1 LIKE matching, R4/R5, and the resolution step
    in `runChildProcesses`.
 3. **Batch resolution** — §5.2 over a multi-child batch, with `$error.child_key`
    / `.child_index` naming which child raised.
@@ -147,7 +147,7 @@ tasks:
 // message, both static. Used by both `raise` and `panic` — they differ in what
 // they do, not in what they carry.
 type Fault struct {
-    Code    string `json:"code"    validate:"required" description:"Error code, lower_snake_case, no dots. A literal — never an expression."`
+    Code    string `json:"code"    validate:"required" description:"Error code, lower_snake_case, dots allowed. A literal — never an expression."`
     Message string `json:"message" validate:"required" description:"Human-readable message. A literal string — never an expression."`
 }
 ```
@@ -276,8 +276,9 @@ collect-time output validation — all go straight to `failInstance`
 `on_error` at all. So a child task's `on_error` list is, by construction, a list
 of raised codes.
 
-They are also lexically distinct from engine codes at a glance: R1 forbids `.`
-in a raised code, while every engine code contains one (`http.500`,
+They were once lexically distinct from engine codes (R1 forbade dots); dots are
+now allowed in raised codes (R1 Delta), so an authored code *may* resemble an
+engine code (`http.500`,
 `pre.timeout`, `external.timeout`, `output.invalid`).
 
 **Propagation is explicit.** A parent re-raising a child's error is just a `raise`
@@ -297,10 +298,22 @@ raise set:
 Each rule states its rejection message verbatim.
 
 **R1 — fault shape.** On every `Fault` — under `raise` or `panic` alike —
-`Code` matches `^[a-z][a-z0-9_]*$` (no dots; those belong to engine codes) and
-`Message` is non-empty.
-> `task "charge": raise: "Card-Declined" is not a valid error code (use lower_snake_case, no dots)`
+`Code` matches `^[a-z][a-z0-9_.]*$` (lower_snake_case, dots allowed so a code can
+carry a namespaced convention like `order.rejected`) and `Message` is non-empty.
+The pattern excludes `%` deliberately: `%` is the `on_error` match wildcard (§4),
+so keeping it out of raised/panicked codes means a code never contains a character
+that has meaning in a pattern — no escaping is ever needed, in either direction.
+> `task "charge": raise: "Card-Declined" is not a valid error code (lower_snake_case, dots allowed)`
+> `task "charge": panic: "rate%exceeded" must not contain '%' — it is the on_error match wildcard, so a code containing it could never be caught`
 > `task "charge": raise "card_declined": message is required`
+
+> **Delta (implemented).** The draft forbade dots, to keep authored codes
+> lexically distinct from engine codes (which always have one). Dots are now
+> **allowed** — a code may read `psp.declined`. The distinction was only an
+> observability nicety (telling authored from engine codes in an `error_code`
+> filter), never a correctness dependency; the author is the authority on how to
+> name their codes. The trade-off: an authored code *can* now look like an engine
+> code, so the two are no longer distinguishable by shape alone.
 
 **R2 — faults are static.** Neither `Code` nor `Message` contains `{{ }}`. A
 computed code would make `raises(D)` uncomputable and `error_code` unqueryable;
@@ -322,31 +335,40 @@ a computed message would smuggle data across the boundary.
 > checks a `goto`'s *shape* — so the rejection can name the task and the case
 > index instead of surfacing as an opaque decode error.
 
-**R4 — child tasks match literally, and do not retry.** On a task whose action is
-`child_map` or `child_list`, every `on_error` rule has a non-empty `code` list of
-literal raised codes — no catch-all, no patterns. `retries` and `not_reached`
-are rejected outright: there is no parent-side retry (D7), and accepting a field
-that is silently ignored would be worse than refusing it.
-> `task "pay": on_error[0]: a child task requires literal error codes — catch-all is not allowed`
+**R4 — child tasks do not retry.** On a task whose action is `child_map` or
+`child_list`, `on_error` codes are patterns matched against the child's raised
+codes — the same syntax as an action task's on_error (`%` the only wildcard, §4).
+`retries` and `not_reached` are rejected: there is no parent-side retry (D7), and
+accepting a field that is silently ignored would be worse than refusing it.
 > `task "pay": on_error[0]: retries is not supported on a child task; retry inside the child, then raise`
 > `task "pay": on_error[0]: not_reached has no meaning on a child task`
 
-> **Delta (implemented).** The draft said "no `%` or `_`". That is a slip: `_` is
-> a legal — and near-universal — character in a raised code (`card_declined`,
-> `insufficient_funds`), so forbidding it would reject almost every realistic
-> rule. The `_` in the draft was the *SQL LIKE single-char wildcard*, but on a
-> child task matching is literal (M1), so `_` is just a character, not a wildcard.
-> What R4 actually enforces is that each code matches the raised-code shape
-> `^[a-z][a-z0-9_]*$` — the same `faultCodeRe` as R1. That forbids a catch-all
-> (empty), a `%`, a dot (so a dotted engine code or `child.failed` is rejected —
-> D5), and uppercase, while allowing `_`. The code-regime check runs *before* the
-> goto-target check, so on a child task R4 speaks first
-> ([validate.go](internal/model/validate.go), `validateOnError`).
+> **Delta (implemented).** The draft made child on_error codes *literal* (no
+> patterns, no catch-all), matched by a dedicated `matchOnErrorLiteral`. That was
+> **reversed**: child on_error now uses the same patterns and the same
+> `matchOnError` as an action task, so `order_%` catches `order_placed`. The safety
+> the literal rule was reaching for is provided instead by R5 below: a pattern is
+> validated at registration against the child's *known, finite* raise set, so a
+> pattern that can never match is still caught — but a pattern that *can* match is
+> allowed. (The original literal-only rule existed partly to dodge SQL LIKE's `_`
+> single-char wildcard clashing with underscores in codes — that clash was removed
+> at the source instead, by dropping `_` as a wildcard: see §4, M1.)
 
-**R5 — rule reachability.** On a child task, every code named by an `on_error`
-rule is in `⋃ raises(D)` over the task's resolved children (the union across
-entries, for `child_map`).
-> `task "pay": on_error[1]: no child of this task can raise "card_expired"`
+**R5 — rule reachability.** On a child task, every code *pattern* an `on_error`
+rule names must match at least one code in `⋃ raises(D)` over the task's resolved
+children (the union across entries, for `child_map`). A catch-all (empty list)
+matches everything and is exempt.
+> `task "pay": on_error[1]: no child of this task can raise a code matching "card_%"`
+
+> **Delta (implemented).** Generalized from *literal membership* (each code is in
+> the raise set) to *pattern match* (each pattern matches some code in the raise
+> set), using the runtime `transport.MatchCode`. This is what lets R4 safely
+> allow patterns: the child raise set is exact and finite, so "does `fourth_%`
+> match anything this child can raise" is a decidable, precise check. It also
+> subsumes the old special-cased `child.failed` rejection — a child that raises
+> nothing has an empty raise set, so *any* pattern against it is unreachable and
+> rejected, which is the same "you cannot catch a failure, only a raise" outcome
+> reached by a general rule instead of a named one.
 
 **R6 — a code is a raise code or a panic code, not both.** Within one definition,
 no code appears on both a `raise` and a `panic`. Otherwise `error_code` would be
@@ -394,25 +416,29 @@ it would break re-registration for every parent. See D3.
 
 ## 4. Matching
 
-**M1 — literal matching on child tasks.**
+**M1 — pattern matching on child tasks.**
 
-> On a child task, a rule matches **iff its `code` list contains the raised code
-> literally.** No LIKE evaluation, no empty-list catch-all.
+> On a child task, a rule matches **iff one of its `code` patterns matches the
+> raised code** (or the rule is an empty-list catch-all) — the same `matchOnError`
+> an action task uses. The only wildcard is `%` (any run of characters); every
+> other character, `_` and `.` included, is literal.
 
-R4 rejects at registration everything this clause would silently skip, so the two
-never disagree. Non-child tasks keep today's `SQLLikeMatch` semantics unchanged
-for `http.*` / `pre.*` / `external.timeout` / `script.*` / `output.*`.
+R5 rejects at registration every pattern that could never match a raise, so a rule
+reaching this point can always match a code the child actually raises. Non-child
+tasks use the identical matcher for `http.*` / `pre.*` / `external.timeout` /
+`script.*` / `output.*`.
 
-This is the mechanical expression of the first corollary in §0: a child error is
-handled by naming it, or not at all.
-
-> **Delta (implemented).** M1 is a *separate* matcher, `matchOnErrorLiteral`
-> ([error.go](internal/engine/error.go)), not a clause bolted onto `matchOnError`.
-> It has to be separate for a concrete reason: a raised code contains underscores,
-> and `SQLLikeMatch` treats `_` as a single-char wildcard — so `card_declined`
-> reused as a LIKE pattern would spuriously match `cardxdeclined`. Literal `==`
-> comparison is the only correct match for a raised code. `matchOnError` keeps its
-> LIKE semantics for action tasks; the resolution path calls `matchOnErrorLiteral`.
+> **Delta (implemented).** Two reversals, one after the other. The draft matched
+> child codes *literally* via a separate `matchOnErrorLiteral`, to avoid a raised
+> code's underscores being read as SQL LIKE `_` wildcards (`card_declined`
+> spuriously matching `cardxdeclined`). That was first replaced with shared SQL
+> LIKE — which reintroduced exactly that footgun: `order_%` matched `order.placed`,
+> because `_` matched the `.`. The fix that stuck removes the wildcard at its
+> source: the matcher (`transport.MatchCode`) makes **`%` the only wildcard** and
+> treats `_` and `.` as literals, since both are ordinary characters in an error
+> code. So `order_%` matches `order_placed` but not `order.placed`, and child and
+> action tasks share one intuitive matcher. This is not full SQL LIKE, and the
+> `ErrorCase.Code` description says so.
 
 ## 5. Operational semantics
 
@@ -733,11 +759,11 @@ uniformly queryable.
 > code, so R1's namespace split still holds: a filter never confuses one with an
 > authored code.
 
-The two namespaces stay legible side by side because R1 forbids dots in authored
-codes and every engine code has one: `bad_credentials` is something a definition
-decided, `http.401` is something the engine observed. A filter never has to
-disambiguate them, and a reader can tell at a glance which kind of failure they
-are looking at.
+The two namespaces once stayed legible because R1 forbade dots in authored codes;
+dots are now allowed (R1 Delta), so `psp.declined` (authored) and `http.401`
+(engine) are no longer distinguishable by shape alone. An author who wants the
+old at-a-glance separation can still keep authored codes dot-free — it is now a
+convention, not a rule.
 
 **Exactly one status predicate changes.** The engine keeps four separate copies
 of "which statuses are live", and it is worth stating that only one of them has
@@ -776,7 +802,7 @@ Other query changes: `GetChildrenForTask`, `instanceColumns`,
 - `collectChildOutputs` → split into `buildChildOutput(task, siblings)` +
   `resolveRaisedBatch` ([collect.go](internal/engine/collect.go)); the strict
   every-child-completed guard stays (§5.2).
-- `matchOnErrorLiteral` ([error.go](internal/engine/error.go)), M1; `Raises()`
+- child tasks share `matchOnError` ([error.go](internal/engine/error.go)), M1; `Raises()`
   reachability pass `validateChildOnErrorReachability`
   ([validate_children.go](internal/validation/validate_children.go)), R5; the
   `$error` schema gains `child_key` + `child_index`
@@ -861,8 +887,8 @@ far from the change.
 
 - **D1 — no `child.` prefix.** A child task's `on_error` can only ever see raised
   codes, because every other failure path on those actions goes straight to
-  `failInstance` (E6). Raised codes are also lexically distinct from engine codes
-  (R1 forbids dots; every engine code has one).
+  `failInstance` (E6). (Raised codes were once lexically distinct from engine
+  codes; R1 now allows dots, so that distinction is a convention, not a guarantee.)
 - **D2 — no `siblings`; `$error` reports one raise.** An earlier draft put an
   aggregate `siblings` list (every raised child in the batch) in `$error`, argued
   as information not data: "6 of 10 failed" is a branching input. **Reversed and
@@ -938,7 +964,7 @@ tested in this order:
    failure (§7.1), `CountActiveSiblings`. A raising child still failed its parent
    at this stage, but a *root* process could already report a typed failure, and
    `panic` was complete on its own from day one. Includes all of §11.
-2. **Catch, single child.** ✅ M1 (`matchOnErrorLiteral`), R4/R5, and
+2. **Catch, single child.** ✅ M1 (child tasks use `matchOnError`), R4/R5, and
    `resolveRaisedBatch` ahead of the collect (§5.2). `saveAndNotify` needed no
    change (§5.1). Complete for a one-entry `child_map`.
 3. **Batch resolution.** ✅ §5.2 over a multi-child batch, with `$error.child_key`

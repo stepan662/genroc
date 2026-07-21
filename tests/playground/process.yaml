@@ -18,6 +18,6 @@ tasks:
           code: test
           message: test
     on_error:
-      - code: ["fourth_failed"]
+      - code: ["fourth.%"]
         goto: end
 output: "{{ error }}"

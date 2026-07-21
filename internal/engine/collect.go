@@ -26,7 +26,7 @@ func (e *Engine) resolveRaisedBatch(inst *model.ProcessInstance, task *model.Tas
 	inst.WaitState = model.WaitStateNone
 	first := raised[0]
 	e.setBatchError(inst, task, first)
-	rule := matchOnErrorLiteral(task, first.ErrorCode)
+	rule := matchOnError(task, first.ErrorCode)
 
 	switch {
 	case rule == nil || (rule.Goto == "" && rule.Raise == nil && rule.Panic == nil):

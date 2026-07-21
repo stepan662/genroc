@@ -147,12 +147,15 @@ func validateActionRequiredFields(s *Task) error {
 	return nil
 }
 
-// faultCodeRe is the R1 shape for an authored error code: lower_snake_case, no dots.
-// Excluding dots is what keeps the two code namespaces legible side by side — every
-// engine-produced code has one (http.500, pre.timeout, output.invalid), so a reader
-// (and a filter on error_code) can always tell an authored code from an observed one,
-// and a child task's on_error list is unambiguously a list of raised codes.
-var faultCodeRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+// faultCodeRe is the R1 shape for an authored error code: lower_snake_case, with dots
+// allowed so a code can carry a namespaced convention (order.rejected, psp.declined). It
+// starts with a letter and otherwise contains letters, digits, underscores and dots.
+//
+// Note it excludes '%'. That is deliberate and load-bearing: '%' is the on_error match
+// wildcard (transport.MatchCode), so keeping it out of raised/panicked codes means a code
+// never contains a character that has meaning in a pattern — a pattern's '%' is always a
+// wildcard, a code's characters are always literal, and no escaping is ever needed.
+var faultCodeRe = regexp.MustCompile(`^[a-z][a-z0-9_.]*$`)
 
 // validateFault enforces R1 (code shape, message present) and R2 (both literal) on one
 // raise or panic clause. where locates the case ("switch case 0", "on_error[1]") and
@@ -162,8 +165,13 @@ func validateFault(f *Fault, taskID, where, clause string) error {
 	if f == nil {
 		return nil
 	}
+	// '%' gets its own message: it is not just an invalid character but the on_error
+	// wildcard, so a code containing it could never be matched literally by any pattern.
+	if strings.Contains(f.Code, "%") {
+		return fmt.Errorf("task %q %s: %s: %q must not contain '%%' — it is the on_error match wildcard, so a code containing it could never be caught", taskID, where, clause, f.Code)
+	}
 	if !faultCodeRe.MatchString(f.Code) {
-		return fmt.Errorf("task %q %s: %s: %q is not a valid error code (use lower_snake_case, no dots)", taskID, where, clause, f.Code)
+		return fmt.Errorf("task %q %s: %s: %q is not a valid error code (lower_snake_case, dots allowed)", taskID, where, clause, f.Code)
 	}
 	if f.Message == "" {
 		return fmt.Errorf("task %q %s: %s %q: message is required", taskID, where, clause, f.Code)
@@ -242,9 +250,16 @@ func isChildTask(s *Task) bool {
 	return s.Action != nil && (s.Action.Type == ActionTypeChildMap || s.Action.Type == ActionTypeChildList)
 }
 
-// validateOnError checks the task's on_error rules: the terminal-clause arity (R3), goto
-// targets, and then one of two code regimes — literal raised codes on a child task (R4),
-// or LIKE patterns with the only_once retry restrictions on an action task.
+// validateOnError checks the task's on_error rules: the terminal-clause arity (R3), the
+// code patterns (valid LIKE, catch-all last), goto targets, and the task-kind-specific
+// rules — a child task forbids parent-side retry (D7); an action task carries the
+// only_once retry restrictions.
+//
+// Child and action tasks share the same LIKE code syntax: a rule matches a raised code
+// (child task) or an engine code (action task) by the same SQL LIKE semantics. The
+// difference is what the codes are checked *against* — a child task's are checked at
+// registration against the child's known raise set (R5, in the validation package), which
+// an action task's open engine-code space has no exact analogue for.
 func validateOnError(s *Task, taskIDs map[string]struct{}) error {
 	onlyOnce := s.OnlyOnce != nil && *s.OnlyOnce
 	child := isChildTask(s)
@@ -271,46 +286,16 @@ func validateOnError(s *Task, taskIDs map[string]struct{}) error {
 			return err
 		}
 
-		// The code regime is checked before the goto target, so a child task's R4
-		// rejection speaks first: on a child task the codes ARE the rule's subject, and
-		// "these aren't literal raised codes" is more useful than an incidental complaint
-		// about the goto.
-		if child {
-			// R4: on a child task the codes are the literal codes its children can raise,
-			// matched literally (M1) — so there is no catch-all and no LIKE pattern, and
-			// there is no parent-side retry (D7). A code must be a valid raised code:
-			// note this *allows* underscores, unlike the SQL '_' wildcard, because a
-			// literal match treats them as ordinary characters (spec §7.2 Delta). A dotted
-			// code like `child.failed` fails here too — that failure is never catchable
-			// (D5); convert it to a raise inside the child.
-			if len(ec.Code) == 0 {
-				return fmt.Errorf("task %q %s: a child task requires literal error codes — catch-all is not allowed", s.ID, where)
+		// Code shape: each entry is a non-empty LIKE pattern; an empty list is a catch-all
+		// and must be last. Common to both task kinds.
+		for _, pat := range ec.Code {
+			if !validLikePattern(pat) {
+				return fmt.Errorf("task %q %s: code pattern must not be empty", s.ID, where)
 			}
-			for _, code := range ec.Code {
-				if !faultCodeRe.MatchString(code) {
-					return fmt.Errorf("task %q %s: %q must be a literal raised code (lower_snake_case, no dots or LIKE wildcards) — a child task matches codes literally, so a pattern like child.failed cannot be caught; convert the failure into a raise inside the child", s.ID, where, code)
-				}
-			}
-			if ec.Retries > 0 {
-				return fmt.Errorf("task %q %s: retries is not supported on a child task; retry inside the child, then raise", s.ID, where)
-			}
-			if ec.NotReached != nil {
-				return fmt.Errorf("task %q %s: not_reached has no meaning on a child task", s.ID, where)
-			}
-		} else {
-			// Action task: LIKE patterns against engine codes, plus catch-all ordering.
-			for _, pat := range ec.Code {
-				if !validLikePattern(pat) {
-					return fmt.Errorf("task %q %s: code pattern must not be empty", s.ID, where)
-				}
-				if sqlLikeMatch(pat, "child.failed") {
-					return fmt.Errorf("task %q %s: catching child.failed is not supported; convert the failure into a raise inside the child, then catch the raised code", s.ID, where)
-				}
-			}
-			isLast := i == len(s.OnError)-1
-			if len(ec.Code) == 0 && !isLast {
-				return fmt.Errorf("task %q %s: catch-all must be the last rule (unreachable rules after it)", s.ID, where)
-			}
+		}
+		isLast := i == len(s.OnError)-1
+		if len(ec.Code) == 0 && !isLast {
+			return fmt.Errorf("task %q %s: catch-all must be the last rule (unreachable rules after it)", s.ID, where)
 		}
 
 		if ec.Goto != "" && ec.Goto != GotoEnd {
@@ -318,9 +303,21 @@ func validateOnError(s *Task, taskIDs map[string]struct{}) error {
 				return fmt.Errorf("task %q %s: goto %q is not a known task", s.ID, where, ec.Goto)
 			}
 		}
+
 		if child {
-			continue // the only_once retry regime below is action-task only
+			// D7: no parent-side retry — re-spawning a batch is not a retry (§10.1), so a
+			// retry field would be silently ignored, which is worse than refusing it.
+			// (Reachability of each pattern against the child raise set is R5, checked in
+			// the validation package where children can be resolved.)
+			if ec.Retries > 0 {
+				return fmt.Errorf("task %q %s: retries is not supported on a child task; retry inside the child, then raise", s.ID, where)
+			}
+			if ec.NotReached != nil {
+				return fmt.Errorf("task %q %s: not_reached has no meaning on a child task", s.ID, where)
+			}
+			continue
 		}
+
 		if onlyOnce && ec.Retries > 0 {
 			// not_reached:true is an explicit user override — allow retries regardless of pattern.
 			if ec.NotReached != nil && *ec.NotReached {
@@ -370,45 +367,16 @@ func validLikePattern(p string) bool {
 	return strings.TrimSpace(p) != ""
 }
 
-// patternOnlyMatchesPre reports whether a LIKE pattern can only match error codes in the
-// pre.* namespace: its constant prefix (before the first % or _ wildcard) must start with
-// "pre.".
+// patternOnlyMatchesPre reports whether a code pattern can only match error codes in the
+// pre.* namespace: its constant prefix (before the first % wildcard) must start with
+// "pre.". '%' is the only wildcard (see transport.MatchCode), so it is the only boundary.
 func patternOnlyMatchesPre(p string) bool {
 	for i := 0; i < len(p); i++ {
-		if p[i] == '%' || p[i] == '_' {
+		if p[i] == '%' {
 			return strings.HasPrefix(p[:i], "pre.")
 		}
 	}
 	return strings.HasPrefix(p, "pre.")
-}
-
-func sqlLikeMatch(p, s string) bool {
-	for len(p) > 0 {
-		switch p[0] {
-		case '%':
-			p = p[1:]
-			if len(p) == 0 {
-				return true
-			}
-			for i := 0; i <= len(s); i++ {
-				if sqlLikeMatch(p, s[i:]) {
-					return true
-				}
-			}
-			return false
-		case '_':
-			if len(s) == 0 {
-				return false
-			}
-			p, s = p[1:], s[1:]
-		default:
-			if len(s) == 0 || p[0] != s[0] {
-				return false
-			}
-			p, s = p[1:], s[1:]
-		}
-	}
-	return len(s) == 0
 }
 
 func validAcceptedStatusPattern(p string) bool {

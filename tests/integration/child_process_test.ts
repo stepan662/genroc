@@ -112,23 +112,23 @@ test("child — output validation failure error includes process name", async ()
   expect(inst?.error).toContain(childName);
 });
 
-test("child — on_error with child.failed pattern is rejected at registration", async () => {
+test("child — on_error against a child that raises nothing is rejected at registration", async () => {
   const id = crypto.randomUUID();
-  const childName = `child_fails_${id}`;
+  const childName = `child_no_raise_${id}`;
   const parentName = `parent_handles_${id}`;
 
+  // A child that only completes — its raise set is empty.
   await client.PUT("/definitions", {
     body: {
       name: childName,
-      tasks: [
-        {
-          id: "action",
-          switch: [{ goto: "end" }],
-        },
-      ],
+      tasks: [{ id: "action", switch: [{ goto: "end" }] }],
     },
   });
 
+  // Any on_error pattern on the parent's child task is therefore unreachable: a failed
+  // child is never catchable (it poisons its ancestors), only a raised code is — and this
+  // child raises none. This is the mechanism that replaces the old special-cased
+  // "child.failed cannot be caught" rule.
   const { error } = await client.PUT("/definitions", {
     body: {
       name: parentName,
@@ -136,7 +136,7 @@ test("child — on_error with child.failed pattern is rejected at registration",
         {
           id: "spawn",
           action: { type: "child_map" as const, children: { out: { name: childName } } },
-          on_error: [{ code: ["child.%"], goto: "$recovery" }],
+          on_error: [{ code: ["child.%"], goto: "end" }],
           switch: [{ goto: "end" }],
         },
       ],
@@ -144,7 +144,7 @@ test("child — on_error with child.failed pattern is rejected at registration",
   });
 
   expect(error).toBeDefined();
-  expect(JSON.stringify(error)).toContain("child.failed");
+  expect(JSON.stringify(error)).toContain("no child of this task can raise");
 });
 
 test("child — no on_error cascades to parent failure", async () => {

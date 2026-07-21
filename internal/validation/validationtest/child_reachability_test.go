@@ -68,7 +68,58 @@ func TestR5_RuleForUnraisableCode_Rejected(t *testing.T) {
 	if err := def.Normalize(); err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
-	assertValidateErr(t, def, getter, `no child of this task can raise "card_expired"`)
+	assertValidateErr(t, def, getter, `no child of this task can raise a code matching "card_expired"`)
+}
+
+// A LIKE pattern is accepted as long as it matches at least one raised code — it need not
+// be a literal member of the raise set.
+func TestR5_LikePatternMatchingRaiseAccepted(t *testing.T) {
+	getter := stubGetter{"charge-card": raisingChild("charge-card", "card_declined", "card_expired")}
+	def := childMapParent("charge-card", []model.ErrorCase{
+		{Code: []string{"card_%"}, Goto: model.GotoEnd},
+	})
+	if err := def.Normalize(); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	assertValidateOK(t, def, getter)
+}
+
+// A pattern that matches no raised code is still rejected — the reachability guarantee
+// holds for patterns, not just literals.
+func TestR5_LikePatternMatchingNothingRejected(t *testing.T) {
+	getter := stubGetter{"charge-card": raisingChild("charge-card", "card_declined")}
+	def := childMapParent("charge-card", []model.ErrorCase{
+		{Code: []string{"shipping_%"}, Goto: model.GotoEnd},
+	})
+	if err := def.Normalize(); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	assertValidateErr(t, def, getter, `no child of this task can raise a code matching "shipping_%"`)
+}
+
+// A dotted raised code is catchable by a matching pattern (dots are allowed in codes now).
+func TestR5_DottedRaiseCodeCatchable(t *testing.T) {
+	getter := stubGetter{"pay": raisingChild("pay", "psp.declined")}
+	def := childMapParent("pay", []model.ErrorCase{
+		{Code: []string{"psp.%"}, Goto: model.GotoEnd},
+	})
+	if err := def.Normalize(); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	assertValidateOK(t, def, getter)
+}
+
+// '_' is a literal, not a wildcard: an underscore pattern does not match a dotted code, so
+// `fourth_%` is rejected against a child that raises `fourth.failed`. (The user's case.)
+func TestR5_UnderscorePatternDoesNotMatchDottedCode(t *testing.T) {
+	getter := stubGetter{"pay": raisingChild("pay", "fourth.failed")}
+	def := childMapParent("pay", []model.ErrorCase{
+		{Code: []string{"fourth_%"}, Goto: model.GotoEnd},
+	})
+	if err := def.Normalize(); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	assertValidateErr(t, def, getter, `no child of this task can raise a code matching "fourth_%"`)
 }
 
 // A child_map takes the union of raises across all entries (E11).
@@ -150,7 +201,7 @@ func TestR5_PanicCodeIsNotRaisable(t *testing.T) {
 	if err := def.Normalize(); err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
-	assertValidateErr(t, def, getter, `no child of this task can raise "broken_contract"`)
+	assertValidateErr(t, def, getter, `no child of this task can raise a code matching "broken_contract"`)
 }
 
 // Sanity: ValidateChildProcessRefs is the entry point R5 rides on, and it composes with

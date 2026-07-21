@@ -154,9 +154,14 @@ func RetryDelay(attempt int) time.Duration {
 	return d
 }
 
-// SQLLikeMatch reports whether s matches the SQL LIKE pattern p.
-// '%' matches any sequence of characters; '_' matches exactly one character.
-func SQLLikeMatch(p, s string) bool {
+// MatchCode reports whether the error code s matches the pattern p. '%' is the only
+// wildcard: it matches any sequence of characters (including none). Every other character
+// is literal — in particular '_' and '.' match themselves, because both are ordinary
+// characters in an error code (snake_case, and dotted namespaces like http.500 /
+// order.rejected). This is deliberately NOT full SQL LIKE: LIKE's '_' single-char wildcard
+// is a footgun for codes that contain underscores, so `order_%` matches `order_placed` but
+// not `order.placed`.
+func MatchCode(p, s string) bool {
 	for len(p) > 0 {
 		switch p[0] {
 		case '%':
@@ -165,16 +170,11 @@ func SQLLikeMatch(p, s string) bool {
 				return true
 			}
 			for i := 0; i <= len(s); i++ {
-				if SQLLikeMatch(p, s[i:]) {
+				if MatchCode(p, s[i:]) {
 					return true
 				}
 			}
 			return false
-		case '_':
-			if len(s) == 0 {
-				return false
-			}
-			p, s = p[1:], s[1:]
 		default:
 			if len(s) == 0 || p[0] != s[0] {
 				return false
