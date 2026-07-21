@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"genroc/internal/db"
+	"genroc/internal/errcode"
 	"genroc/internal/idgen"
 	"genroc/internal/model"
 	"genroc/internal/transport"
@@ -31,15 +32,15 @@ func (e *Engine) executeAction(ctx context.Context, inst *model.ProcessInstance,
 	// secret values it carries are scrubbed from the logged URL/errors in audit().
 	url, err := e.resolveURL(inst, task.Action)
 	if err != nil {
-		return nil, stop(e.failInstance(inst, codeExpression, fmt.Sprintf("task %q url: %v", task.ID, err)))
+		return nil, stop(e.failInstance(inst, errcode.EngineExpression, fmt.Sprintf("task %q url: %v", task.ID, err)))
 	}
 	method, err := e.resolveMethod(inst, task.Action)
 	if err != nil {
-		return nil, stop(e.failInstance(inst, codeExpression, fmt.Sprintf("task %q method: %v", task.ID, err)))
+		return nil, stop(e.failInstance(inst, errcode.EngineExpression, fmt.Sprintf("task %q method: %v", task.ID, err)))
 	}
 	resolvedHeaders, err := e.resolveHeaders(inst, task.Action)
 	if err != nil {
-		return nil, stop(e.failInstance(inst, codeExpression, fmt.Sprintf("task %q headers: %v", task.ID, err)))
+		return nil, stop(e.failInstance(inst, errcode.EngineExpression, fmt.Sprintf("task %q headers: %v", task.ID, err)))
 	}
 	// Stamp the caller's identity on every request (set last so it is authoritative and
 	// a user-supplied header of the same name cannot spoof it).
@@ -52,7 +53,7 @@ func (e *Engine) executeAction(ctx context.Context, inst *model.ProcessInstance,
 	if task.Action.Body.Present() {
 		body, err = e.evalShapeCtx(inst, task.Action.Body.Raw, nil)
 		if err != nil {
-			return nil, stop(e.failInstance(inst, codeExpression, fmt.Sprintf("task %q body: %v", task.ID, err)))
+			return nil, stop(e.failInstance(inst, errcode.EngineExpression, fmt.Sprintf("task %q body: %v", task.ID, err)))
 		}
 	}
 
@@ -86,7 +87,7 @@ func (e *Engine) executeAction(ctx context.Context, inst *model.ProcessInstance,
 	// projection adds anything to outputs.<id>.
 	normalized, err := task.Action.ValidateOutput(resp.Body)
 	if err != nil {
-		return nil, stop(e.handleCallError(inst, task, err.Error(), "output.invalid"))
+		return nil, stop(e.handleCallError(inst, task, err.Error(), errcode.OutputInvalid))
 	}
 	resp.Body = normalized
 	inst.RetryCount = 0
@@ -115,7 +116,7 @@ func (e *Engine) runDelay(inst *model.ProcessInstance, task *model.Task) *advanc
 	if inst.WakeAt == nil {
 		ms, err := e.evalDurationMsCtx(inst, task.Action.Ms)
 		if err != nil {
-			return stop(e.failInstance(inst, codeExpression, fmt.Sprintf("task %q delay: %v", task.ID, err)))
+			return stop(e.failInstance(inst, errcode.EngineExpression, fmt.Sprintf("task %q delay: %v", task.ID, err)))
 		}
 		wake := db.Now().Add(time.Duration(ms) * time.Millisecond)
 		inst.WakeAt = &wake
@@ -154,8 +155,8 @@ func (e *Engine) runExternal(ctx context.Context, inst *model.ProcessInstance, t
 	if inst.WaitState == model.WaitStateExternal {
 		inst.WaitState = model.WaitStateNone
 		delete(inst.ContextData, model.CtxExternal)
-		e.audit(inst, logEvent{Level: model.LogWarn, Event: model.EventExternalTimeout, Task: task.ID, Msg: "external task timed out", Code: "external.timeout"})
-		return nil, stop(e.handleCallError(inst, task, "external task timed out", "external.timeout"))
+		e.audit(inst, logEvent{Level: model.LogWarn, Event: model.EventExternalTimeout, Task: task.ID, Msg: "external task timed out", Code: errcode.ExternalTimeout})
+		return nil, stop(e.handleCallError(inst, task, "external task timed out", errcode.ExternalTimeout))
 	}
 
 	// Phase 1: first arrival. Atomically either consume a signal already buffered for this
@@ -164,7 +165,7 @@ func (e *Engine) runExternal(ctx context.Context, inst *model.ProcessInstance, t
 	// external.timeout retry keeps its counter and on_error budgeting terminates.
 	input, err := e.buildTaskData(inst, task)
 	if err != nil {
-		return nil, stop(e.failInstance(inst, codeExpression, fmt.Sprintf("task %q input: %v", task.ID, err)))
+		return nil, stop(e.failInstance(inst, errcode.EngineExpression, fmt.Sprintf("task %q input: %v", task.ID, err)))
 	}
 	token := inst.ID + "." + idgen.New()
 	var wakeAt *time.Time
@@ -174,7 +175,7 @@ func (e *Engine) runExternal(ctx context.Context, inst *model.ProcessInstance, t
 	}
 	consumed, result, err := e.db.ArmExternalOrConsumeSignal(ctx, inst, task.ID, token, input, wakeAt)
 	if err != nil {
-		return nil, stop(e.failInstance(inst, codeSpawn, fmt.Sprintf("task %q arm: %v", task.ID, err)))
+		return nil, stop(e.failInstance(inst, errcode.EngineSpawn, fmt.Sprintf("task %q arm: %v", task.ID, err)))
 	}
 	if consumed {
 		// A buffered signal fed the task immediately. Continue advancing with it as the

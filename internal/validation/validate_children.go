@@ -63,7 +63,7 @@ func ValidateChildProcessRefs(def *model.ProcessDefinition, currentVersion int, 
 // Patterns are matched with the same transport.MatchCode the engine uses at runtime
 // (`%` the only wildcard), so `fourth_%` is accepted as long as some child raises a
 // matching code. This is what makes the child raise set a genuinely closed set to validate
-// against — an action task's engine-code space is open (http.NNN, script.N), so there is
+// against — an action task's engine-code space is open (http.NNN is unbounded), so there is
 // no equivalent check for it. A catch-all (empty code list) matches everything and is not
 // reachability-checked.
 //

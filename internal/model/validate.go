@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"genroc/internal/errcode"
 	"genroc/internal/schema"
 
 	"github.com/go-playground/validator/v10"
@@ -375,15 +376,16 @@ func validLikePattern(p string) bool {
 }
 
 // patternOnlyMatchesPre reports whether a code pattern can only match error codes in the
-// pre.* namespace: its constant prefix (before the first % wildcard) must start with
-// "pre.". '%' is the only wildcard (see transport.MatchCode), so it is the only boundary.
+// not-reached (pre.*) namespace: its constant prefix (before the first % wildcard) must
+// start with errcode.NotReached. '%' is the only wildcard (see transport.MatchCode), so it
+// is the only boundary.
 func patternOnlyMatchesPre(p string) bool {
 	for i := 0; i < len(p); i++ {
 		if p[i] == '%' {
-			return strings.HasPrefix(p[:i], "pre.")
+			return strings.HasPrefix(p[:i], errcode.NotReached)
 		}
 	}
-	return strings.HasPrefix(p, "pre.")
+	return strings.HasPrefix(p, errcode.NotReached)
 }
 
 func validAcceptedStatusPattern(p string) bool {

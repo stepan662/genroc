@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"genroc/internal/errcode"
 	"genroc/internal/numeric"
 	"io"
 	"net"
@@ -26,7 +27,7 @@ const (
 )
 
 // Response carries the result of a Send call.
-// ErrorCode is non-empty on failure ("http.404", "output.parse", "start.error", etc.).
+// ErrorCode is non-empty on failure ("http.404", "output.parse", "pre.timeout", etc.).
 // ErrorMessage is a human-readable description of the failure (may include trimmed response body).
 // Body holds the raw decoded JSON body on success.
 // Status is the HTTP status code for a REST call (success or failure); 0 for non-HTTP transports.
@@ -91,12 +92,12 @@ func sendHTTP(ctx context.Context, url, method string, acceptedStatus []string, 
 		if msg == "" {
 			msg = fmt.Sprintf("request failed with status %d without response body", resp.StatusCode)
 		}
-		return &Response{ErrorCode: fmt.Sprintf("http.%d", resp.StatusCode), ErrorMessage: msg, Status: resp.StatusCode}, nil
+		return &Response{ErrorCode: errcode.HTTP(resp.StatusCode), ErrorMessage: msg, Status: resp.StatusCode}, nil
 	}
 
 	var b any
 	if err := numeric.DecodeReader(resp.Body, &b); err != nil {
-		return &Response{ErrorCode: "output.parse", Status: resp.StatusCode}, nil
+		return &Response{ErrorCode: errcode.OutputParse, Status: resp.StatusCode}, nil
 	}
 	return &Response{Body: b, Status: resp.StatusCode}, nil
 }
@@ -138,11 +139,11 @@ func ClassifyGoError(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		var netErr *net.OpError
 		if errors.As(err, &netErr) && netErr.Op == "dial" {
-			return "pre.timeout"
+			return errcode.PreTimeout
 		}
-		return "http.timeout"
+		return errcode.HTTPTimeout
 	}
-	return "pre.error"
+	return errcode.PreError
 }
 
 // RetryDelay returns the backoff duration for a given retry attempt (exponential, capped at 5 min).
@@ -157,8 +158,8 @@ func RetryDelay(attempt int) time.Duration {
 // MatchCode reports whether the error code s matches the pattern p. '%' is the only
 // wildcard: it matches any sequence of characters (including none). Every other character
 // is literal — in particular '_' and '.' match themselves, because both are ordinary
-// characters in an error code (snake_case, and dotted namespaces like http.500 /
-// order.rejected). This is deliberately NOT full SQL LIKE: LIKE's '_' single-char wildcard
+// characters in an error code (snake_case, and dotted engine codes like http.500 /
+// pre.timeout). This is deliberately NOT full SQL LIKE: LIKE's '_' single-char wildcard
 // is a footgun for codes that contain underscores, so `order_%` matches `order_placed` but
 // not `order.placed`.
 func MatchCode(p, s string) bool {

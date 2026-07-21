@@ -2,36 +2,22 @@ package engine
 
 import (
 	"fmt"
-	"strings"
 
 	"genroc/internal/db"
+	"genroc/internal/errcode"
 	"genroc/internal/model"
 	"genroc/internal/transport"
 )
 
-// Engine-produced error codes for the failures the engine detects itself, as opposed to
-// the ones a call reports (http.*, pre.*, script.*, output.*) or an author declares with
-// panic. Every terminal failure carries a code so error_code is uniformly queryable --
-// "how many instances died of this, and did it start after Tuesday's deploy" has to work
-// for engine failures too, and the code is otherwise buried in the error prose.
-//
-// All of them contain a dot, which authored codes never do (R1 forbids dots) — so an
-// engine code and an authored one are always distinguishable by shape, and an authored
-// error carries its own semantic name rather than mirroring a system code.
-const (
-	codeDefinition = "engine.definition" // definition unusable: missing, or a task/goto it names is not in it
-	codeExpression = "engine.expression" // an expression could not be evaluated against this context
-	codeConfig     = "engine.config"     // config could not be resolved from the environment
-	codeInput      = "engine.input"      // a child's input did not satisfy its input_schema
-	codeSpawn      = "engine.spawn"      // spawning a batch of children failed
-	codeCollect    = "engine.collect"    // collecting a settled batch's outputs failed
-	codeOnlyOnce   = "engine.only_once"  // an only_once task was interrupted and cannot be safely re-run
-)
+// All engine-produced codes live in package errcode (the single source of truth). The
+// engine.* ones below are the failures the engine detects itself, as opposed to the ones a
+// call reports (http.*, pre.*, output.*, external.timeout) or an author declares with
+// panic. Every terminal failure carries a code so error_code is uniformly queryable.
 
 // isRetryAllowed reports whether a retry is safe for the given task and error.
 // For idempotent tasks (the default) retries are always governed by on_error rules.
 // For non-idempotent tasks, a retry is only allowed when we know the remote call
-// never started: start.* error codes, or an on_error rule with executed:false.
+// never started: a pre.* (not-reached) code, or an on_error rule with not_reached:true.
 func isRetryAllowed(task *model.Task, errCode string, matched *model.ErrorCase) bool {
 	if task.OnlyOnce == nil || !*task.OnlyOnce {
 		return true
@@ -39,7 +25,7 @@ func isRetryAllowed(task *model.Task, errCode string, matched *model.ErrorCase) 
 	if matched != nil && matched.NotReached != nil && *matched.NotReached {
 		return true
 	}
-	return strings.HasPrefix(errCode, "pre.")
+	return errcode.IsNotReached(errCode)
 }
 
 // matchOnError returns the first ErrorCase whose Code patterns match errCode,
@@ -106,7 +92,7 @@ func (e *Engine) handleCallError(inst *model.ProcessInstance, task *model.Task, 
 			return e.completeViaErrorHandler(inst, task, errMsg, errCode)
 		}
 		if err := e.resolveGoto(inst, matched.Goto); err != nil {
-			return e.failInstance(inst, codeDefinition, err.Error())
+			return e.failInstance(inst, errcode.EngineDefinition, err.Error())
 		}
 		inst.Task = matched.Goto
 		inst.RetryCount = 0
@@ -134,7 +120,7 @@ func (e *Engine) completeViaErrorHandler(inst *model.ProcessInstance, task *mode
 	inst.RetryCount = 0
 	inst.WakeAt = nil
 	if err := e.computeOutput(inst); err != nil {
-		return e.failInstance(inst, codeExpression, err.Error())
+		return e.failInstance(inst, errcode.EngineExpression, err.Error())
 	}
 	e.audit(inst, logEvent{Level: model.LogInfo, Event: model.EventErrorCompleted, Task: task.ID, Msg: msg, Code: code})
 	return advanceOutcome{kind: outcomeTerminal}
@@ -196,7 +182,7 @@ func (e *Engine) failInstance(inst *model.ProcessInstance, code, reason string) 
 // re-execution when the operator resumes.
 func (e *Engine) settlePausing(inst *model.ProcessInstance, task *model.Task) advanceOutcome {
 	if inst.ReclaimedExpired && task != nil && task.Action != nil && task.OnlyOnce != nil && *task.OnlyOnce {
-		return e.failInstance(inst, codeOnlyOnce, fmt.Sprintf(
+		return e.failInstance(inst, errcode.EngineOnlyOnce, fmt.Sprintf(
 			"task %q is only_once and was interrupted by a lease takeover; cannot re-execute", task.ID))
 	}
 	inst.Status = model.StatusPaused

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"genroc/internal/errcode"
 	"genroc/internal/model"
 )
 
@@ -80,7 +81,7 @@ func (e *Engine) prepareAdvance(inst *model.ProcessInstance) (*model.ProcessDefi
 	// definition cannot be loaded cannot run, so fail it with a clear reason.
 	def, err := e.db.GetDefinition(inst.ProcessName, inst.ProcessVersion)
 	if err != nil {
-		return nil, 0, stop(e.failInstance(inst, codeDefinition, fmt.Sprintf("load definition: %v", err)))
+		return nil, 0, stop(e.failInstance(inst, errcode.EngineDefinition, fmt.Sprintf("load definition: %v", err)))
 	}
 
 	// Resolve config from the OS environment for this tick. Config is never
@@ -90,7 +91,7 @@ func (e *Engine) prepareAdvance(inst *model.ProcessInstance) (*model.ProcessDefi
 	if def.ConfigSchema != nil {
 		cfg, err := def.ResolveConfig(os.LookupEnv)
 		if err != nil {
-			return nil, 0, stop(e.failInstance(inst, codeConfig, fmt.Sprintf("config: %v", err)))
+			return nil, 0, stop(e.failInstance(inst, errcode.EngineConfig, fmt.Sprintf("config: %v", err)))
 		}
 		inst.Config = cfg
 	}
@@ -100,7 +101,7 @@ func (e *Engine) prepareAdvance(inst *model.ProcessInstance) (*model.ProcessDefi
 	// isn't in the definition is a corrupt/mismatched row: fail it.
 	idx := taskIndex(def.Tasks, inst.Task)
 	if inst.Task != "" && idx < 0 {
-		return nil, 0, stop(e.failInstance(inst, codeDefinition, fmt.Sprintf("current task %q not found in definition", inst.Task)))
+		return nil, 0, stop(e.failInstance(inst, errcode.EngineDefinition, fmt.Sprintf("current task %q not found in definition", inst.Task)))
 	}
 
 	// Lease takeover: this instance was reclaimed from an expired lease, so its
@@ -115,7 +116,7 @@ func (e *Engine) prepareAdvance(inst *model.ProcessInstance) (*model.ProcessDefi
 		if idx >= 0 {
 			s := def.Tasks[idx]
 			if s.Action != nil && s.OnlyOnce != nil && *s.OnlyOnce {
-				return nil, 0, stop(e.failInstance(inst, codeOnlyOnce, fmt.Sprintf(
+				return nil, 0, stop(e.failInstance(inst, errcode.EngineOnlyOnce, fmt.Sprintf(
 					"task %q is only_once and was interrupted by a lease takeover; cannot re-execute", s.ID)))
 			}
 		}
@@ -177,7 +178,7 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 			inst.Status = model.StatusCompleted
 			inst.WakeAt = nil
 			if err := e.computeOutput(inst); err != nil {
-				return e.failInstance(inst, codeExpression, err.Error())
+				return e.failInstance(inst, errcode.EngineExpression, err.Error())
 			}
 			e.audit(inst, logEvent{Level: model.LogInfo, Event: model.EventInstanceDone, Data: e.outputData(inst)})
 			return advanceOutcome{kind: outcomeTerminal}
@@ -218,7 +219,7 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 					return *done
 				}
 				actionResult = out
-			default: // rest, script
+			default: // fetch
 				out, done := e.executeAction(ctx, inst, task)
 				if done != nil {
 					return *done
@@ -235,7 +236,7 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 		if hasOutput {
 			remapped, err := e.evalTaskOutput(inst, task, actionResult, priorOutput)
 			if err != nil {
-				return e.failInstance(inst, codeExpression, fmt.Sprintf("task %q output: %v", task.ID, err))
+				return e.failInstance(inst, errcode.EngineExpression, fmt.Sprintf("task %q output: %v", task.ID, err))
 			}
 			e.setTaskOutput(inst, task.ID, remapped)
 			taskOutput = remapped
@@ -250,12 +251,12 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 		}
 		matched, err := e.evalSwitch(inst, task, self)
 		if err != nil {
-			return e.failInstance(inst, codeExpression, fmt.Sprintf("task %q switch: %v", task.ID, err))
+			return e.failInstance(inst, errcode.EngineExpression, fmt.Sprintf("task %q switch: %v", task.ID, err))
 		}
 		if matched == nil {
 			// Validation requires a catch-all case, but legacy rows in the DB may
 			// predate that rule — fail the instance rather than panic on gotoID[1:].
-			return e.failInstance(inst, codeDefinition, fmt.Sprintf("task %q switch: no case matched", task.ID))
+			return e.failInstance(inst, errcode.EngineDefinition, fmt.Sprintf("task %q switch: no case matched", task.ID))
 		}
 
 		// A terminal clause ends the process here, in place of routing. Neither computes
@@ -274,7 +275,7 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 			inst.RetryCount = 0
 			inst.WakeAt = nil
 			if err := e.computeOutput(inst); err != nil {
-				return e.failInstance(inst, codeExpression, err.Error())
+				return e.failInstance(inst, errcode.EngineExpression, err.Error())
 			}
 			e.audit(inst, logEvent{Level: model.LogInfo, Event: model.EventInstanceDone, Task: task.ID, Data: e.outputData(inst)})
 			return advanceOutcome{kind: outcomeTerminal}
@@ -285,7 +286,7 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 		} else {
 			// gotoID is a task reference like "$ship" — strip the sigil.
 			if idx = taskIndex(def.Tasks, gotoID[1:]); idx < 0 {
-				return e.failInstance(inst, codeDefinition, fmt.Sprintf("goto task %q not found in %q v%d", gotoID[1:], inst.ProcessName, inst.ProcessVersion))
+				return e.failInstance(inst, errcode.EngineDefinition, fmt.Sprintf("goto task %q not found in %q v%d", gotoID[1:], inst.ProcessName, inst.ProcessVersion))
 			}
 		}
 		// Reflect the new position (empty once we run past the last task) so a

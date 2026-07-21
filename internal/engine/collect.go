@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 
+	"genroc/internal/errcode"
 	"genroc/internal/model"
 	"genroc/internal/schema"
 )
@@ -44,7 +45,7 @@ func (e *Engine) resolveRaisedBatch(inst *model.ProcessInstance, task *model.Tas
 		return e.completeViaErrorHandler(inst, task, first.Error, first.ErrorCode)
 	default: // goto $id
 		if err := e.resolveGoto(inst, rule.Goto); err != nil {
-			return e.failInstance(inst, codeDefinition, err.Error())
+			return e.failInstance(inst, errcode.EngineDefinition, err.Error())
 		}
 		inst.Task = rule.Goto
 		inst.RetryCount = 0
