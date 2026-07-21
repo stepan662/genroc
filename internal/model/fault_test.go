@@ -33,6 +33,10 @@ func TestFault_R1_CodeShapeAndMessage(t *testing.T) {
 		{"leading digit rejected", "1_declined", "m", "not a valid error code"},
 		{"empty rejected", "", "m", "not a valid error code"},
 		{"missing message rejected", "card_declined", "", "message is required"},
+		// '.' is reserved for engine codes: an authored error must carry its own semantic
+		// name, not re-raise a system code. Its own message.
+		{"dot rejected", "http.503", "m", "must not contain '.'"},
+		{"dotted namespace rejected", "order.rejected", "m", "must not contain '.'"},
 		// '%' is the on_error wildcard, so it can never appear in a raised/panicked code —
 		// that is what removes any need to escape '%' in a pattern. Its own message.
 		{"percent rejected", "card%declined", "m", "must not contain '%'"},
@@ -51,9 +55,9 @@ func TestFault_R1_CodeShapeAndMessage(t *testing.T) {
 		})
 	}
 
-	for _, code := range []string{"insufficient_funds2", "order.rejected", "psp.declined"} {
+	for _, code := range []string{"insufficient_funds2", "card_declined", "poll_timeout"} {
 		t.Run("accepted: "+code, func(t *testing.T) {
-			// lower_snake_case with dots allowed (a code may carry a namespaced convention).
+			// lower_snake_case, no dots.
 			d := def(raiseTask("t", &Fault{Code: code, Message: "m"}))
 			if err := d.Validate(); err != nil {
 				t.Fatalf("unexpected rejection: %v", err)
@@ -153,10 +157,10 @@ func TestFault_R4_ChildTaskOnError(t *testing.T) {
 		}
 	}
 
-	for _, code := range []string{"card_declined", "card_%", "order.rejected", "psp.%"} {
+	for _, code := range []string{"card_declined", "card_%", "out_of_stock"} {
 		t.Run("pattern accepted: "+code, func(t *testing.T) {
-			// LIKE patterns and dots are legal now (matching is the same SQL LIKE the
-			// engine uses). Whether the pattern can match a raise is R5, not R4.
+			// Patterns (with the '%' wildcard) are legal on a child task; whether one can
+			// actually match a raise is R5, not R4.
 			d := def(childTask([]ErrorCase{{Code: []string{code}, Goto: GotoEnd}}))
 			if err := d.Validate(); err != nil {
 				t.Fatalf("pattern %q must be legal on a child task: %v", code, err)

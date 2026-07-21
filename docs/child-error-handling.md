@@ -147,7 +147,7 @@ tasks:
 // message, both static. Used by both `raise` and `panic` — they differ in what
 // they do, not in what they carry.
 type Fault struct {
-    Code    string `json:"code"    validate:"required" description:"Error code, lower_snake_case, dots allowed. A literal — never an expression."`
+    Code    string `json:"code"    validate:"required" description:"Error code, lower_snake_case, no dots. A literal — never an expression."`
     Message string `json:"message" validate:"required" description:"Human-readable message. A literal string — never an expression."`
 }
 ```
@@ -276,12 +276,12 @@ collect-time output validation — all go straight to `failInstance`
 `on_error` at all. So a child task's `on_error` list is, by construction, a list
 of raised codes.
 
-Authored and engine codes share one namespace: dots are allowed in raised codes
-(R1 Delta), so an authored code *may* be spelled exactly like an engine one
-(`http.500`, `pre.timeout`, `external.timeout`, `output.invalid`). That is
-intentional — a child can catch an engine failure and re-raise it under the same
-code (see below), and a definition is free to adopt the engine's vocabulary rather
-than invent a parallel one.
+They are also lexically distinct from engine codes at a glance: R1 forbids `.` in a
+raised code, while every engine code contains one (`http.500`, `pre.timeout`,
+`external.timeout`, `output.invalid`). So a raised code is always an authored,
+semantic name — a child that catches an engine failure re-raises it under a *new*
+code that says what it means (`psp_unavailable`, not `http.503`), which is the
+point of raising rather than letting the failure propagate.
 
 **Propagation is explicit.** A parent re-raising a child's error is just a `raise`
 in an `on_error` rule — and that is what puts the new code into *this* process's
@@ -300,24 +300,18 @@ raise set:
 Each rule states its rejection message verbatim.
 
 **R1 — fault shape.** On every `Fault` — under `raise` or `panic` alike —
-`Code` matches `^[a-z][a-z0-9_.]*$` (lower_snake_case, dots allowed so a code can
-carry a namespaced convention like `order.rejected`) and `Message` is non-empty.
-The pattern excludes `%` deliberately: `%` is the `on_error` match wildcard (§4),
-so keeping it out of raised/panicked codes means a code never contains a character
-that has meaning in a pattern — no escaping is ever needed, in either direction.
-> `task "charge": raise: "Card-Declined" is not a valid error code (lower_snake_case, dots allowed)`
+`Code` matches `^[a-z][a-z0-9_]*$` (lower_snake_case) and `Message` is non-empty.
+The two excluded characters each carry meaning that keeps them out of a code:
+`.` is how engine-produced codes are spelled — forbidding it keeps authored codes
+lexically distinct *and* stops a raise from just mirroring a system code (an
+authored error should carry its own semantic name, `card_declined`, not re-raise
+`http.503`); `%` is the `on_error` match wildcard (§4), so keeping it out means a
+code never contains a character that has meaning in a pattern, and no escaping is
+ever needed.
+> `task "charge": raise: "Card-Declined" is not a valid error code (lower_snake_case, no dots)`
+> `task "charge": raise: "http.503" must not contain '.' — dots are reserved for engine-produced codes; give the error a semantic lower_snake_case name of its own rather than re-raising a system code`
 > `task "charge": panic: "rate%exceeded" must not contain '%' — it is the on_error match wildcard, so a code containing it could never be caught`
 > `task "charge": raise "card_declined": message is required`
-
-> **Delta (implemented).** The draft forbade dots, to keep authored codes
-> lexically distinct from engine codes (which always have one). Dots are now
-> **allowed** — a code may read `psp.declined` — and authored and engine codes
-> share one namespace on purpose. Keeping them separate was only an observability
-> nicety, never a correctness dependency, and merging them is useful: a child can
-> re-raise an engine failure under its own code (e.g. catch `http.503` and
-> `raise: {code: http.503, …}`), turning an uncatchable failure into a catchable
-> raise the parent can branch on, without inventing a parallel code. An author who
-> still wants the at-a-glance separation can simply keep their codes dot-free.
 
 **R2 — faults are static.** Neither `Code` nor `Message` contains `{{ }}`. A
 computed code would make `raises(D)` uncomputable and `error_code` unqueryable;
@@ -760,15 +754,13 @@ uniformly queryable.
 > `engine.expression`, `engine.config`, `engine.definition`, `engine.input`,
 > `engine.spawn`, `engine.collect`, `engine.only_once`
 > ([error.go](internal/engine/error.go)). They carry a dot like every other engine
-> code.
+> code, so R1's namespace split still holds.
 
-Authored and engine codes share one `error_code` namespace by design (R1 Delta):
-`psp.declined` (authored) and `http.401` (engine) are spelled the same way, and a
-definition may deliberately reuse an engine code — e.g. re-raising a caught
-`http.503` under the same code. A filter therefore treats all codes uniformly,
-which is the point. An author who wants an at-a-glance authored-vs-engine
-separation can keep their codes dot-free as a convention, but the system does not
-require or rely on it.
+The two namespaces stay legible side by side because R1 forbids dots in authored
+codes and every engine code has one: `card_declined` is something a definition
+decided, `http.401` is something the engine observed. A filter never has to
+disambiguate them, and a raised code is always an authored, semantic name rather
+than a re-raised system one.
 
 **Exactly one status predicate changes.** The engine keeps four separate copies
 of "which statuses are live", and it is worth stating that only one of them has
@@ -892,9 +884,9 @@ far from the change.
 
 - **D1 — no `child.` prefix.** A child task's `on_error` can only ever see raised
   codes, because every other failure path on those actions goes straight to
-  `failInstance` (E6). (Authored and engine codes share one namespace by design —
-  R1 allows dots — so a raised code may reuse an engine spelling on purpose; keeping
-  them apart is an author's convention, not something the system relies on.)
+  `failInstance` (E6). Raised codes are also lexically distinct from engine codes
+  (R1 forbids dots; every engine code has one), so a raised code is always an
+  authored, semantic name — never a re-raised system code.
 - **D2 — no `siblings`; `$error` reports one raise.** An earlier draft put an
   aggregate `siblings` list (every raised child in the batch) in `$error`, argued
   as information not data: "6 of 10 failed" is a branching input. **Reversed and

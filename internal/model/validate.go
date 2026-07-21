@@ -147,15 +147,18 @@ func validateActionRequiredFields(s *Task) error {
 	return nil
 }
 
-// faultCodeRe is the R1 shape for an authored error code: lower_snake_case, with dots
-// allowed so a code can carry a namespaced convention (order.rejected, psp.declined). It
-// starts with a letter and otherwise contains letters, digits, underscores and dots.
+// faultCodeRe is the R1 shape for an authored error code: lower_snake_case, no dots and
+// no '%'. It starts with a letter and otherwise contains letters, digits and underscores.
 //
-// Note it excludes '%'. That is deliberate and load-bearing: '%' is the on_error match
-// wildcard (transport.MatchCode), so keeping it out of raised/panicked codes means a code
-// never contains a character that has meaning in a pattern — a pattern's '%' is always a
-// wildcard, a code's characters are always literal, and no escaping is ever needed.
-var faultCodeRe = regexp.MustCompile(`^[a-z][a-z0-9_.]*$`)
+// The two excluded characters each carry meaning that keeps them out of authored codes:
+//   - '.' is how engine-produced codes are spelled (http.500, pre.timeout, output.invalid).
+//     Forbidding it keeps authored codes lexically distinct from engine ones, and — the
+//     stronger reason — stops a raise from just mirroring a system code: an authored error
+//     is meant to carry its own semantic name (card_declined), not re-raise http.503.
+//   - '%' is the on_error match wildcard (transport.MatchCode); keeping it out means a
+//     code never contains a character that has meaning in a pattern, so no escaping is
+//     ever needed.
+var faultCodeRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 // validateFault enforces R1 (code shape, message present) and R2 (both literal) on one
 // raise or panic clause. where locates the case ("switch case 0", "on_error[1]") and
@@ -165,13 +168,17 @@ func validateFault(f *Fault, taskID, where, clause string) error {
 	if f == nil {
 		return nil
 	}
-	// '%' gets its own message: it is not just an invalid character but the on_error
-	// wildcard, so a code containing it could never be matched literally by any pattern.
+	// '.' and '%' get their own messages: each is not merely an invalid character but one
+	// with a specific meaning (an engine-code separator; the on_error wildcard), so the
+	// message says why rather than a generic "invalid code".
+	if strings.Contains(f.Code, ".") {
+		return fmt.Errorf("task %q %s: %s: %q must not contain '.' — dots are reserved for engine-produced codes; give the error a semantic lower_snake_case name of its own rather than re-raising a system code", taskID, where, clause, f.Code)
+	}
 	if strings.Contains(f.Code, "%") {
 		return fmt.Errorf("task %q %s: %s: %q must not contain '%%' — it is the on_error match wildcard, so a code containing it could never be caught", taskID, where, clause, f.Code)
 	}
 	if !faultCodeRe.MatchString(f.Code) {
-		return fmt.Errorf("task %q %s: %s: %q is not a valid error code (lower_snake_case, dots allowed)", taskID, where, clause, f.Code)
+		return fmt.Errorf("task %q %s: %s: %q is not a valid error code (lower_snake_case, no dots)", taskID, where, clause, f.Code)
 	}
 	if f.Message == "" {
 		return fmt.Errorf("task %q %s: %s %q: message is required", taskID, where, clause, f.Code)

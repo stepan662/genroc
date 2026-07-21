@@ -15,9 +15,9 @@ import (
 // "how many instances died of this, and did it start after Tuesday's deploy" has to work
 // for engine failures too, and the code is otherwise buried in the error prose.
 //
-// All of them contain a dot. Authored codes may contain dots too (R1) and share this
-// namespace by design — an author can even re-raise one of these engine codes under the
-// same spelling. Nothing here relies on the two being distinguishable by shape.
+// All of them contain a dot, which authored codes never do (R1 forbids dots) — so an
+// engine code and an authored one are always distinguishable by shape, and an authored
+// error carries its own semantic name rather than mirroring a system code.
 const (
 	codeDefinition = "engine.definition" // definition unusable: missing, or a task/goto it names is not in it
 	codeExpression = "engine.expression" // an expression could not be evaluated against this context

@@ -1,43 +1,12 @@
-# Child process: the polling worker.
-#
-#   kickstart   POST {url}/jobs     -> { job_id }          start the remote task
-#   check       POST {url}/status   -> { status, result }  ask whether it's done
-#                 status == "done"       -> finish   (return the result)
-#                 attempts exhausted     -> give_up  (overall timeout)
-#                 otherwise              -> wait
-#   wait        external (short timeout)                         cancel checkpoint
-#                 cancel signal          -> cancel
-#                 no signal              -> backoff
-#   backoff     delay ({{ poll_interval_ms }})                  configurable back-off
-#                                        -> check
-#   cancel      POST {url}/cancel   -> { cancelled }        caller cancelled
-#   give_up     POST {url}/cancel   -> { cancelled }        ran out of attempts
-#
-# The poll loop is expressed structurally with switch gotos — genroc has no while/until.
-#
-# Each request is a `fetch` action (url/method/headers/body are all expressions). The
-# caller supplies the whole `headers` map — typed as an open string map via
-# additionalProperties — and each task splats it on with `headers: "{{ input.headers }}"`,
-# so arbitrary auth/trace headers flow from the parent down without being declared here.
-#
-# Configurability (all optional, defaulted; the parent passes them down):
-#   - poll_interval_ms — the back-off between polls. It lives on the `backoff` DELAY,
-#     because a delay's `ms` is a templated expression (a task's static timeout_ms is not).
-#   - max_attempts     — the overall timeout, expressed as a max number of status checks
-#     (genroc expressions have no wall clock, so a poll budget is the honest primitive;
-#     the wall-time budget is roughly max_attempts * poll_interval_ms). `check` counts its
-#     own runs via self.previous and gives up once the budget is spent.
-#
-# Cancellation: `wait` is a short-lived `external` checkpoint hit once per loop. A caller
-# POSTs /instances/{id}/signal {task_id: "wait", result: {cancel: true}} to route to the
-# `cancel` task. Signals buffer, so a cancel sent mid-poll is honoured on the next loop
-# (within ~one poll interval) rather than instantly — the price of a configurable interval.
+# Child: polls a remote job until it's done, looping structurally check → wait → backoff.
+# Returns { answer } on success; RAISES an anticipated error the parent catches — `cancelled`
+# (a caller signals the `wait` checkpoint) or `poll_timeout` (out of max_attempts polls).
+# See README.md for the poll-budget and cancel-signal details.
 name: poll-until-done
 input_schema:
   type: object
   properties:
     url: { type: string }
-    # An open string map: any header the caller wants sent on every request.
     headers:
       type: object
       additionalProperties: { type: string }
@@ -45,7 +14,6 @@ input_schema:
     max_attempts: { type: integer, default: 20 }
   required: [url, headers]
 tasks:
-  # 1. Kick the remote task off and remember the id it hands back.
   - id: kickstart
     action:
       type: fetch
@@ -62,8 +30,6 @@ tasks:
     timeout_ms: 2000
     switch: next
 
-  # 2. Ask for the job's status, counting this attempt. Done -> finish; out of attempts
-  #    -> give_up; otherwise -> wait.
   - id: check
     action:
       type: fetch
@@ -82,22 +48,16 @@ tasks:
             required: [answer]
         required: [status]
     output:
-      status: "{{ self.result.status }}"
       result: "{{ self.result.result }}"
       attempt: "{{ (self.previous.attempt ?? 0) + 1 }}"
     timeout_ms: 2000
     switch:
       - case: "self.result.status == 'done'"
         goto: $finish
-      # max_attempts is an optional input with a schema default, so it is always present
-      # and non-nullable — usable directly. (attempt is a task-output ref with no default,
-      # so it still needs the ?? 0 guard.)
       - case: "(outputs.check.attempt ?? 0) >= input.max_attempts"
         goto: $give_up
       - goto: $wait
 
-  # 3. Cancel checkpoint. Parks briefly listening for a cancel signal; a signal routes to
-  #    $cancel, a timeout falls through to the back-off.
   - id: wait
     action:
       type: external
@@ -115,14 +75,13 @@ tasks:
         goto: $cancel
       - goto: $backoff
 
-  # 4. Configurable back-off, then poll again. `delay` holds no worker while parked.
   - id: backoff
     action:
       type: delay
       ms: "{{ input.poll_interval_ms }}"
     switch: $check
 
-  # 5. Cancellation path: tell the server to stop the job, then finish.
+  # Both failure paths clean up the remote job, then raise for the parent to catch.
   - id: cancel
     action:
       type: fetch
@@ -135,12 +94,12 @@ tasks:
         properties:
           cancelled: { type: boolean }
         required: [cancelled]
-    output:
-      cancelled: "{{ true }}"
     timeout_ms: 2000
-    switch: end
+    switch:
+      - raise:
+          code: cancelled
+          message: "the caller cancelled the job"
 
-  # 6. Timeout path: same server cleanup, but reported as a timeout rather than a cancel.
   - id: give_up
     action:
       type: fetch
@@ -153,18 +112,14 @@ tasks:
         properties:
           cancelled: { type: boolean }
         required: [cancelled]
-    output:
-      timed_out: "{{ true }}"
     timeout_ms: 2000
-    switch: end
+    switch:
+      - raise:
+          code: poll_timeout
+          message: "gave up after max_attempts polls"
 
-  # 7. Success path terminal routing task.
   - id: finish
     switch: end
 
-# Uniform result across all outcomes. `cancelled`/`timed_out` say which path we took;
-# `answer` carries the polled result (0 unless we reached "done").
 output:
-  cancelled: "{{ (outputs.cancel.cancelled) ?? false }}"
-  timed_out: "{{ (outputs.give_up.timed_out) ?? false }}"
   answer: "{{ (outputs.check.result.answer) ?? 0 }}"

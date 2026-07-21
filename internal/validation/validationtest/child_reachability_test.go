@@ -97,31 +97,6 @@ func TestR5_LikePatternMatchingNothingRejected(t *testing.T) {
 	assertValidateErr(t, def, getter, `no child of this task can raise a code matching "shipping_%"`)
 }
 
-// A dotted raised code is catchable by a matching pattern (dots are allowed in codes now).
-func TestR5_DottedRaiseCodeCatchable(t *testing.T) {
-	getter := stubGetter{"pay": raisingChild("pay", "psp.declined")}
-	def := childMapParent("pay", []model.ErrorCase{
-		{Code: []string{"psp.%"}, Goto: model.GotoEnd},
-	})
-	if err := def.Normalize(); err != nil {
-		t.Fatalf("normalize: %v", err)
-	}
-	assertValidateOK(t, def, getter)
-}
-
-// '_' is a literal, not a wildcard: an underscore pattern does not match a dotted code, so
-// `fourth_%` is rejected against a child that raises `fourth.failed`. (The user's case.)
-func TestR5_UnderscorePatternDoesNotMatchDottedCode(t *testing.T) {
-	getter := stubGetter{"pay": raisingChild("pay", "fourth.failed")}
-	def := childMapParent("pay", []model.ErrorCase{
-		{Code: []string{"fourth_%"}, Goto: model.GotoEnd},
-	})
-	if err := def.Normalize(); err != nil {
-		t.Fatalf("normalize: %v", err)
-	}
-	assertValidateErr(t, def, getter, `no child of this task can raise a code matching "fourth_%"`)
-}
-
 // A child_map takes the union of raises across all entries (E11).
 func TestR5_UnionAcrossChildMapEntries(t *testing.T) {
 	getter := stubGetter{

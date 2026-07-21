@@ -2,32 +2,37 @@
 
 A parent process that spawns a **child process** whose whole job is to kick off a
 long-running task on a remote server and then **poll its status until it's done** — or
-until a caller cancels it, or an attempt budget runs out — finally returning the outcome
-up to the parent.
+until a caller cancels it, or an attempt budget runs out. On success the child returns the
+job's answer; the two failure modes are **raised** as errors the parent catches.
 
 ```
 polling-example (parent)
   └─ run: child_map ──spawn──▶ poll-until-done (child)
-                                 kickstart  POST {url}/jobs    ─▶ { job_id }
-                                 check      POST {url}/status  ─▶ { status, result }
-                                   ├─ status == "done"     ─▶ finish ─▶ end
-                                   ├─ attempts exhausted   ─▶ give_up  POST {url}/cancel ─▶ end
-                                   └─ else                 ─▶ wait
-                                 wait       external (cancel checkpoint)
-                                   ├─ cancel signal ─▶ cancel   POST {url}/cancel ─▶ end
-                                   └─ no signal     ─▶ backoff
-                                 backoff    delay ({{ poll_interval_ms }}) ─▶ back to check
+       on_error:                 kickstart  POST {url}/jobs    ─▶ { job_id }
+         cancelled ─▶ report      check      POST {url}/status  ─▶ { status, result }
+         poll_timeout ─▶ report     ├─ status == "done"     ─▶ finish ─▶ output { answer }
+                                    ├─ attempts exhausted   ─▶ give_up  POST {url}/cancel ─▶ raise poll_timeout
+                                    └─ else                 ─▶ wait
+                                  wait       external (cancel checkpoint)
+                                    ├─ cancel signal ─▶ cancel   POST {url}/cancel ─▶ raise cancelled
+                                    └─ no signal     ─▶ backoff
+                                  backoff    delay ({{ poll_interval_ms }}) ─▶ back to check
 ```
 
-The child always returns `{ cancelled, timed_out, answer }`, so the parent gets a uniform
-result whichever way the poll ends.
+This is the child → parent error-handling contract (see
+[`docs/child-error-handling.md`](../../docs/child-error-handling.md)): success is an
+**output**, but a cancellation or timeout is an anticipated error the child **raises** by a
+named code, and the parent's `on_error` on the child task **catches** it — here routing both
+to a `report` task that reads the raised error from `$error`. A result the caller inspects
+would stay in output; control-flow conditions the caller reacts to are raises.
 
 ## Files
 
 - [`poller.genroc.yaml`](./poller.genroc.yaml) — the child. Starts the remote job, then
   loops `check → wait → backoff → check` until it's `done`, cancelled, or out of attempts.
 - [`parent.genroc.yaml`](./parent.genroc.yaml) — spawns the poller as a child, threads the
-  connection details and the (optional) knobs down, and surfaces its result.
+  connection details and the (optional) knobs down, collects its answer on success, and
+  catches `cancelled` / `poll_timeout` via `on_error` on the child task.
 
 ## The polling pattern
 
@@ -52,7 +57,7 @@ no `?? ` guard.) The parent declares the same defaults and threads the values do
   status checks**. genroc expressions have no wall clock, so a poll budget is the honest primitive;
   the wall-time budget is roughly `max_attempts × poll_interval_ms`. `check` counts its own
   runs via `self.previous`, and once the budget is spent routes to `give_up`, which cleans up
-  the remote job and reports `timed_out`.
+  the remote job and **raises `poll_timeout`**.
 
 ```sh
 genctl run polling-example \
@@ -74,7 +79,8 @@ genctl signal <child-instance-id> --task wait --result '{ "cancel": true }'
 ```
 
 The `wait` task's `switch` routes a `cancel: true` result to the `cancel` task, which hits
-`POST {url}/cancel` to stop the remote job and then finishes. Signals **buffer**, so a
+`POST {url}/cancel` to stop the remote job and then **raises `cancelled`** for the parent to
+catch. Signals **buffer**, so a
 cancel sent mid-poll is honoured on the next loop — within roughly one poll interval rather
 than instantly, which is the trade-off for a runtime-configurable interval (the wait can't be
 both a cancellable `external` *and* a templated-duration `delay`). The signal targets the
@@ -114,5 +120,6 @@ genctl run polling-example --input '{
 
 [`tests/integration/examples_polling_test.ts`](../../tests/integration/examples_polling_test.ts)
 loads these YAML files verbatim, applies them against a throwaway mock job service, and
-asserts all three outcomes — polling through to `done`, cancelling via a signal, and running
-out of `max_attempts` — so this example is also an executable test. Run it with `make test-int`.
+asserts all three outcomes — polling through to `done` (answer returned), cancelling via a
+signal (`cancelled` raised and caught), and running out of `max_attempts` (`poll_timeout`
+raised and caught) — so this example is also an executable test. Run it with `make test-int`.

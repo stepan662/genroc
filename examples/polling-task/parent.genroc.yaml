@@ -1,18 +1,9 @@
-# Parent process: runs the poller as a CHILD process and returns whatever result the
-# child eventually polls out of the remote job.
+# Parent process: runs the poller as a child and reacts to what it raises.
 #
-# The parent owns the connection details — the job service URL and the request headers —
-# and passes them down to the child through the child's `input`. The child splats that
-# headers map onto every fetch. This is how a parent configures the headers its child
-# sends: the headers are an open string map (additionalProperties), so the parent can pass
-# any keys through child input without the child declaring them.
-#
-# The parent also optionally sets the poll interval and the overall timeout (as a max
-# number of polls); both fall back to defaults when the caller omits them.
-#
-# Here everything comes from the parent's own input to keep the example self-contained; a
-# real deployment would more likely source the URL/headers from config vars set via
-# GENROC_<PROCESS>_<NAME>.
+# It owns the connection details (url + headers) and passes them down as the child's input;
+# the headers are an open string map, so any auth/trace header flows through without the
+# child declaring it. On success it returns the child's answer; a `cancelled` or
+# `poll_timeout` raise is caught on the child task and reported.
 name: polling-example
 input_schema:
   type: object
@@ -39,11 +30,16 @@ tasks:
           result_schema:
             type: object
             properties:
-              cancelled: { type: boolean }
-              timed_out: { type: boolean }
               answer: { type: number }
-            required: [cancelled, timed_out, answer]
+            required: [answer]
+    on_error:
+      - code: [cancelled, poll_timeout]
+        goto: $report
     output: "{{ self.result.poll }}"
     switch: end
 
-output: "{{ outputs.run }}"
+  - id: report
+    output:
+      outcome: "{{ error.code }}"
+      detail: "{{ error.message }}"
+    switch: end

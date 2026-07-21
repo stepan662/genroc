@@ -7,7 +7,7 @@ tasks:
     switch:
       - case: "true"
         raise:
-          code: "fourth.failed"
+          code: "fourth_failed"
           message: "Fourth task failed"
       - goto: end
 output: "{{ outputs.fourth }}"

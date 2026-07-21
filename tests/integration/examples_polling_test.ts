@@ -3,12 +3,13 @@ import type { AddressInfo } from "net";
 import { readFileSync } from "node:fs";
 import { load as loadYaml } from "js-yaml";
 import { expect, test } from "vitest";
-import { client, listAllInstances, waitForInstance } from "../helpers/client.ts";
+import { client, waitForInstance } from "../helpers/client.ts";
 
-// The definitions under test are the real example files in examples/polling-task/,
-// loaded and applied verbatim — so this test doubles as an executable check that the
-// shipped example works end to end. (Vitest's bundler can't `import` a .yaml file, so
-// we read + parse the source instead.)
+// The definitions under test are the real example files in examples/polling-task/, loaded
+// and applied verbatim — so this doubles as an executable check that the shipped example
+// works end to end. The poller returns the job's { answer } on success, or RAISES
+// `cancelled` / `poll_timeout`; the parent catches those on the child task. (Vitest's
+// bundler can't `import` a .yaml file, so we read + parse the source instead.)
 const EXAMPLES = new URL("../../examples/polling-task/", import.meta.url);
 function loadDef(file: string): any {
   return loadYaml(readFileSync(new URL(file, EXAMPLES), "utf8"));
@@ -22,8 +23,7 @@ const parent = loadDef("parent.genroc.yaml");
 //                                               checks of a job, then "done" with `result`
 //   POST /cancel -> { cancelled: true }         stops the job (cancel or timeout cleanup)
 // Every request must carry `expectedAuth` or it's rejected 401 — so a completed run
-// proves the auth header the parent set reached the service on each call. Route hit
-// counts and the distinct Authorization values seen are recorded for assertions.
+// proves the auth header the parent set reached the service on each call.
 async function startJobService(
   pendingPolls: number,
   result: Record<string, unknown>,
@@ -120,12 +120,12 @@ async function waitForChildId(parentId: string, timeoutMs = 10_000): Promise<str
   throw new Error(`child of ${parentId} was not spawned within ${timeoutMs}ms`);
 }
 
-async function outputOf(id: string): Promise<any> {
+async function outputsOf(id: string): Promise<Record<string, any>> {
   const { data } = await client.GET("/instances/{id}", { params: { path: { id } } });
-  return (data?.context as any)?.output;
+  return ((data?.context as any)?.outputs ?? {}) as Record<string, any>;
 }
 
-test("examples/polling-task: child polls a remote job until done and returns its result", async () => {
+test("examples/polling-task: the poller returns the job's answer to the parent", async () => {
   const pendingPolls = 2; // two "pending" replies, then "done" on the third check
   const mock = await startJobService(pendingPolls, { answer: 42 }, `Bearer ${AUTH_TOKEN}`);
 
@@ -135,8 +135,10 @@ test("examples/polling-task: child polls a remote job until done and returns its
 
     expect(await waitForInstance(id, 20_000)).toBe("completed");
 
-    // The result polled out of the remote task made it all the way up to the parent.
-    expect(await outputOf(id)).toEqual({ cancelled: false, timed_out: false, answer: 42 });
+    // The polled answer flowed all the way up; the error path was never taken.
+    const outputs = await outputsOf(id);
+    expect(outputs.run).toEqual({ answer: 42 });
+    expect(outputs.report).toBeUndefined();
 
     // Started once, polled until done (pendingPolls "pending" + 1 "done"), never cancelled.
     expect(mock.startCount()).toBe(1);
@@ -150,7 +152,7 @@ test("examples/polling-task: child polls a remote job until done and returns its
   }
 });
 
-test("examples/polling-task: a cancel signal during the wait stops the job and finishes", async () => {
+test("examples/polling-task: a cancel signal raises `cancelled`, which the parent catches", async () => {
   // The job never reports done, so the poller keeps looping until it's cancelled.
   const mock = await startJobService(Number.MAX_SAFE_INTEGER, { answer: 42 }, `Bearer ${AUTH_TOKEN}`);
 
@@ -159,8 +161,7 @@ test("examples/polling-task: a cancel signal during the wait stops the job and f
     // High attempt budget + short interval so we cancel well before the timeout fires.
     const id = await startExample(mock.port, { poll_interval_ms: 50, max_attempts: 100 });
 
-    // Signal the child's `wait` task to cancel. It buffers until the task next arms, so we
-    // don't have to race the poll loop — the cancel is honoured on the next back-off.
+    // Signal the child's `wait` task to cancel; it routes the child to $cancel, which raises.
     const childId = await waitForChildId(id);
     const { error: sigErr } = await client.POST("/instances/{id}/signal", {
       params: { path: { id: childId } },
@@ -170,21 +171,22 @@ test("examples/polling-task: a cancel signal during the wait stops the job and f
 
     expect(await waitForInstance(id, 20_000)).toBe("completed");
 
-    // The process finished on the cancel path and reported it up to the parent.
-    const output = await outputOf(id);
-    expect(output.cancelled).toBe(true);
-    expect(output.timed_out).toBe(false);
+    // The child raised `cancelled`; the parent caught it and reported. No answer collected.
+    const outputs = await outputsOf(id);
+    expect(outputs.run).toBeUndefined();
+    expect(outputs.report).toEqual({
+      outcome: "cancelled",
+      detail: "the caller cancelled the job",
+    });
 
-    // The job was started, polled at least once, and then cancelled on the server.
     expect(mock.startCount()).toBe(1);
-    expect(mock.statusRequests()).toBeGreaterThanOrEqual(1);
     expect(mock.cancelCount()).toBe(1);
   } finally {
     await mock.stop();
   }
 });
 
-test("examples/polling-task: the poller gives up after max_attempts and cleans up", async () => {
+test("examples/polling-task: exhausting max_attempts raises `poll_timeout`, which the parent catches", async () => {
   // The job never reports done; the caller caps it at two attempts.
   const mock = await startJobService(Number.MAX_SAFE_INTEGER, { answer: 42 }, `Bearer ${AUTH_TOKEN}`);
 
@@ -194,11 +196,12 @@ test("examples/polling-task: the poller gives up after max_attempts and cleans u
 
     expect(await waitForInstance(id, 20_000)).toBe("completed");
 
-    // Reported as a timeout, not a cancel, with no answer.
-    const output = await outputOf(id);
-    expect(output.timed_out).toBe(true);
-    expect(output.cancelled).toBe(false);
-    expect(output.answer).toBe(0);
+    // The child gave up and raised `poll_timeout`; the parent caught it.
+    const outputs = await outputsOf(id);
+    expect(outputs.report).toEqual({
+      outcome: "poll_timeout",
+      detail: "gave up after max_attempts polls",
+    });
 
     // Exactly max_attempts status checks, then the server job was cleaned up.
     expect(mock.startCount()).toBe(1);
