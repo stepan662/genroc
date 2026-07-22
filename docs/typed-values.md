@@ -28,7 +28,7 @@ the one expression sigil for both:
 
 | you write | meaning | result type |
 |---|---|---|
-| `$: EXPR` | typed expression, **whole leaf** (leading whitespace tolerated) | the inferred type of `EXPR` |
+| `"$: EXPR"` | typed expression, **whole leaf**; a quoted string (leading whitespace tolerated) | the inferred type of `EXPR` |
 | `…${ EXPR }…` | interpolate `EXPR` into surrounding text, **anywhere** | always `string` |
 | `plain text` (no marker) | literal string | `string` |
 | `42` / `true` / `null` / `[…]` / `{…}` | structured literal (YAML/JSON) | the literal's type |
@@ -42,6 +42,32 @@ the one expression sigil for both:
 - `$:` marks the **entire** leaf — everything after `$:` (trimmed) is one expression.
   There is no "mixed" typed leaf; to concatenate inside a typed expression, use the
   expression language's `+`, not `${}`.
+
+### Authoring in YAML: a `$:` expression is a quoted string
+
+A typed expression is just a **string** whose content starts with `$:`, so in YAML it
+**must be quoted**:
+
+```yaml
+count:   "$: input.n + 1"
+body:    "$: map(input.rows, r => {sku: r.code})"
+headers: { Authorization: "$: input.token" }
+```
+
+The reason to spell this out (it *is* a footgun otherwise): `$:` mirrors YAML's own
+`key:` syntax, so an **unquoted** `$:` leaf does not survive parsing —
+`body: $: input.x` errors (`mapping values are not allowed`), and on its own indented
+line it **silently** parses to the object `{"$": "input.x"}` rather than a string. Quote
+it and both problems vanish.
+
+This is not special to `$:` — **any expression containing `: `** (an object literal
+`{a: b}`, a ternary `c ? x : y`) must be quoted or written as a block scalar, because a
+colon is a YAML mapping indicator. Interpolation (`${ }`) carries no colon, so plain
+templates need no quoting (`url: ${config.api}/users`), and an expression-only position
+needs quoting only when its expression contains a colon (`over: input.items` is fine
+bare; `over: "map(xs, x => {a: x.n})"` must be quoted).
+
+**Rule of thumb: quote every `$:` leaf, and quote any expression with a `:` inside.**
 
 ### Expression-only positions never take a marker
 
@@ -359,6 +385,22 @@ Homes: `internal/template/template_test.go`, `internal/validation/validationtest
   flags typos. *(open)*
 - **Homogeneous arrays only** (`array<join>`), no tuple/positional types — matches the
   engine's single `items`. Proposal: homogeneous only. *(open)*
+- **Future — object spread `...$:`.** Merge an expression-produced object into a
+  structural literal, explicit keys overriding — prefill a payload (or the whole fetch
+  `with:`) and override selectively: `{ "...$": "input.request", headers: {…} }`.
+  Deferred, but two traps for whoever picks it up: (1) override is **order-dependent**,
+  and a JSON object / Go `map[string]any` does not preserve key order — it would need an
+  ordered representation like `SwitchMap` (`internal/model/wire.go:54`); and (2) both
+  `...` (YAML's document-end token) and `$:` need quoting, so the surface spelling wants
+  care. Also net-new in the expression language, which has object literals but no spread.
+  *(future)*
 - **Sigil spelling confirmed:** `$:` (typed) and `${}` (interpolation), `\` escape.
   `$()` was considered and rejected (reads as a call; `${}` matches the universal
-  "expand a value here"). **Settled.**
+  "expand a value here"). No trailing-space requirement — `$:` is a plain string prefix.
+  **Settled.**
+- **The block-form YAML misparse is handled by docs, not a mechanism.** Writing a `$:`
+  expression on its own indented line (`body:\n  $: x`) parses to `{"$":"x"}` silently;
+  the fix is the "quote every `$:` leaf" rule above. Deliberately *not* enforced in code.
+  If it ever proves error-prone, reserving `$` as an object key (a registration error
+  with a "did you mean `\"$: …\"`?" hint) would make that one case loud at zero ergonomic
+  cost — the escape hatch is recorded, not taken. **Settled (docs-only).**
