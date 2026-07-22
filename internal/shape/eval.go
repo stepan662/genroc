@@ -94,38 +94,3 @@ func Roots(node any) (expression.Roots, error) {
 	}
 	return r, walk(node)
 }
-
-
-// RefsSelfResult reports whether any expression in a templated value reads self.result
-// (a string leaf or a nested array/object of them).
-func RefsSelfResult(node any) (bool, error) {
-	switch n := node.(type) {
-	case string:
-		t, err := template.Get(n)
-		if err != nil {
-			return false, err
-		}
-		return t.RootRefs().SelfResult, nil
-	case []any:
-		for _, v := range n {
-			ref, err := RefsSelfResult(v)
-			if err != nil {
-				return false, err
-			}
-			if ref {
-				return true, nil
-			}
-		}
-	case map[string]any:
-		for _, v := range n {
-			ref, err := RefsSelfResult(v)
-			if err != nil {
-				return false, err
-			}
-			if ref {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
-}

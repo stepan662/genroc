@@ -21,17 +21,6 @@ func Array(item Schema) Schema {
 	return Schema{n}
 }
 
-// Map returns an open-object Schema whose undeclared keys must each conform to sub.
-// Like Array, sub is embedded structurally — any root $defs it carries are dropped,
-// so it should reference the shared pool.
-func Map(sub Schema) Schema {
-	n := &node{Type: SchemaType{"object"}}
-	if sub.n != nil {
-		n.AdditionalProperties = sub.n
-	}
-	return Schema{n}
-}
-
 func Ref(name string) Schema {
 	return Schema{&node{Ref: "#/$defs/" + name}}
 }

@@ -95,7 +95,7 @@ func TestShape_Check_InfersOutputType(t *testing.T) {
 
 // Check enforces conformance to a declared required Schema.
 func TestShape_Check_ConformanceGate(t *testing.T) {
-	// Fits: {double: integer} ⊆ {double: number}.
+	// Conforms: {double: integer} ⊆ {double: number}.
 	ok := shape.Shape{
 		Raw:    mustShapeVal(t, `{"double": "$: input.n * 2"}`),
 		Schema: schemaPtr(t, `{"type":"object","properties":{"double":{"type":"number"}},"required":["double"]}`),

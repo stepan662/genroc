@@ -6,17 +6,9 @@ import (
 	"genroc/internal/expression/syntax"
 )
 
-// OutputRefs returns the distinct task ids referenced via outputs.<id> in expr — the
-// edges of the output-dependency graph used for ordering and recursion detection.
-func OutputRefs(expression string) ([]string, error) {
-	node, err := syntax.Parse(expression)
-	if err != nil {
-		return nil, err
-	}
-	return OutputRefsNode(node), nil
-}
-
-// OutputRefsNode is OutputRefs over an already-parsed expression.
+// OutputRefsNode returns the distinct task ids referenced via outputs.<id> in an
+// already-parsed expression — the edges of the output-dependency graph used for ordering
+// and recursion detection.
 func OutputRefsNode(node syntax.Node) []string {
 	set := map[string]struct{}{}
 	collectOutputRefs(node, nil, set)

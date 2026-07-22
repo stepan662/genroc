@@ -33,10 +33,6 @@ var inferUnaryOps = map[string]func(operand Schema) (Schema, error){
 	"+": numericPassthrough,
 }
 
-func alwaysBoolean(_, _ Schema) (Schema, error) {
-	return Type("boolean"), nil
-}
-
 // inferEquality types == and !=. Comparing two structured values is rejected:
 // the useful answer would be a deep walk, which a statically-checked language
 // should not hide behind an operator, and the runtime half refuses it too. The

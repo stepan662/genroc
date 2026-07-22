@@ -165,8 +165,6 @@ func (q *listQuery) EqIf(col string, value any, include bool) *listQuery {
 	return q
 }
 
-func (q *listQuery) Gte(col string, value any) *listQuery { return q.cond(col, ">=", value) }
-
 // GteIf adds "col >= ?" only when include is true.
 func (q *listQuery) GteIf(col string, value any, include bool) *listQuery {
 	if include {

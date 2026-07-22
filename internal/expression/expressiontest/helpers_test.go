@@ -2,7 +2,6 @@ package expressiontest
 
 import (
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
@@ -131,15 +130,6 @@ var richCtx = map[string]any{
 			"fee":     1.5,
 		},
 	},
-}
-
-// assertUnsupported checks that the error is ErrUnsupported.
-func assertUnsupported(t *testing.T, err error) {
-	t.Helper()
-	var e expression.ErrUnsupported
-	if !errors.As(err, &e) {
-		t.Errorf("expected ErrUnsupported, got %T: %v", err, err)
-	}
 }
 
 // richContextJSON is a reusable context schema for most tests.

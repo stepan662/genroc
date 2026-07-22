@@ -186,8 +186,3 @@ func MatchCode(p, s string) bool {
 	return len(s) == 0
 }
 
-// ValidLikePattern reports whether p is a valid SQL LIKE pattern — for now just a
-// non-empty check.
-func ValidLikePattern(p string) bool {
-	return len(strings.TrimSpace(p)) > 0
-}

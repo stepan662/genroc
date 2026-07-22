@@ -227,15 +227,6 @@ type Schema struct {
 	n *node
 }
 
-// fromNode wraps an already-normalized root node as a Schema; its own $defs are
-// the resolution context. A nil node becomes an empty schema.
-func fromNode(n *node) Schema {
-	if n == nil {
-		n = &node{}
-	}
-	return Schema{n}
-}
-
 // wrap builds a Schema whose node is n but whose resolution context is the given
 // defs map. TEMPORARY migration shim — use Schema.WithDefs / Defs instead.
 func wrap(n *node, defs map[string]*node) Schema {
