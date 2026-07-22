@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 
+	"genroc/internal/expression"
 	"genroc/internal/model"
 	"genroc/internal/schema"
 	"genroc/internal/shape"
@@ -97,18 +98,38 @@ func buildInputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proces
 				switchCtx = withSelf
 			}
 			switchCtx = switchCtx.WithDefs(defs)
+			// An untyped action result cannot be read in a case any more than it can be
+			// exported through an output, so a case that touches self.result gets the same
+			// actionable message the output slot gives.
+			untypedResult := false
+			if s.Action != nil {
+				if _, typed, err := actionResultType(s, defs); err != nil {
+					return fmt.Errorf("task %q: %w", s.ID, err)
+				} else {
+					untypedResult = !typed
+				}
+			}
 			for _, c := range s.Switch {
 				if c.Case == "" {
 					continue
 				}
 				// A case is an expression-only shape: a bare boolean expression, checked
 				// through the same object API so it shares the roots machinery.
-				shp := shape.Shape{Raw: c.Case, Schema: &boolSchema, Name: fmt.Sprintf("task %q switch case %q", s.ID, c.Case), Expr: true}
-				if _, err := shp.CheckWith(switchCtx, shape.CheckHooks{
+				hooks := shape.CheckHooks{
 					Result: func(inferred, _ schema.Schema) error {
 						return fmt.Errorf("task %q switch case %q: expression must evaluate to boolean, got %q", s.ID, c.Case, inferred.TypeName())
 					},
-				}); err != nil {
+				}
+				if untypedResult {
+					hooks.Roots = func(refs expression.Roots) error {
+						if refs.SelfResult {
+							return fmt.Errorf("task %q switch case %q: references self.result, but the action has no result_schema — add a result_schema to type the response", s.ID, c.Case)
+						}
+						return nil
+					}
+				}
+				shp := shape.Shape{Raw: c.Case, Schema: &boolSchema, Name: fmt.Sprintf("task %q switch case %q", s.ID, c.Case), Expr: true}
+				if _, err := shp.CheckWith(switchCtx, hooks); err != nil {
 					return err
 				}
 			}
@@ -125,8 +146,9 @@ func buildInputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proces
 var (
 	scalarSchema = schema.Type("string", "number", "boolean")
 	arraySchema  = schema.Array(schema.Schema{})
-	objectSchema = schema.Object()
-	boolSchema   = schema.Type("boolean")
+	// Headers must be a non-null object whose values are all strings (HTTP header values).
+	headersSchema = schema.Map(schema.Type("string"))
+	boolSchema    = schema.Type("boolean")
 	// A delay ms is a number (a numeric expression) or a string (a literal like "30000",
 	// which stringifies and is parsed at runtime); array/object/boolean/null are rejected.
 	msSchema = schema.Type("number", "string")
@@ -192,10 +214,13 @@ func inferActionPayload(s *model.Task, ctx schema.Schema) (schema.Schema, error)
 // checkHeadersShape verifies the fetch Headers shape produces a non-null object (a literal
 // map of templated values, or an expression yielding a map).
 func checkHeadersShape(raw any, ctx schema.Schema, taskID string) error {
-	shp := shape.Shape{Raw: raw, Schema: &objectSchema, Name: fmt.Sprintf("task %q headers", taskID)}
+	shp := shape.Shape{Raw: raw, Schema: &headersSchema, Name: fmt.Sprintf("task %q headers", taskID)}
 	_, err := shp.CheckWith(ctx, shape.CheckHooks{
-		Result: func(_, _ schema.Schema) error {
-			return fmt.Errorf("task %q headers must evaluate to a non-null object", taskID)
+		Result: func(inferred, _ schema.Schema) error {
+			if inferred.HasNull() || !inferred.IsType("object") {
+				return fmt.Errorf("task %q headers must evaluate to a non-null object", taskID)
+			}
+			return fmt.Errorf("task %q headers values must all be strings", taskID)
 		},
 	})
 	return err

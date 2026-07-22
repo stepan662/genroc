@@ -25,6 +25,17 @@ func Ref(name string) Schema {
 	return Schema{&node{Ref: "#/$defs/" + name}}
 }
 
+// Map returns an open-object Schema whose undeclared keys must each conform to sub.
+// Like Array, sub is embedded structurally — any root $defs it carries are dropped,
+// so it should reference the shared pool.
+func Map(sub Schema) Schema {
+	n := &node{Type: SchemaType{"object"}}
+	if sub.n != nil {
+		n.AdditionalProperties = sub.n
+	}
+	return Schema{n}
+}
+
 // ArrayLiteral builds the schema of an array literal from its already-inferred element
 // schemas. An empty slice is the provably-empty array (maxItems 0) — which is what lets
 // a literal `[]` (and the `?? []` idiom) be a subset of any array<T>; a non-empty slice
