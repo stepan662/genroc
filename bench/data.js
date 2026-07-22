@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784699277267,
+  "lastUpdate": 1784711632654,
   "repoUrl": "https://github.com/stepan662/genroc",
   "entries": {
     "genroc throughput": [
@@ -7030,6 +7030,78 @@ window.BENCHMARK_DATA = {
             "value": 470,
             "unit": "inst/s",
             "extra": "INTEL(R) XEON(R) PLATINUM 8573C · 4 cores · 16GB · linux x64 6.17.0-1020-azure"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "granat.stepan@gmail.com",
+            "name": "Štěpán Granát",
+            "username": "stepan662"
+          },
+          "committer": {
+            "email": "granat.stepan@gmail.com",
+            "name": "Štěpán Granát",
+            "username": "stepan662"
+          },
+          "distinct": true,
+          "id": "bb7b66446be4741bcf79b0437a2688e01b6b1987",
+          "message": "chore: improve template specs",
+          "timestamp": "2026-07-22T11:08:55+02:00",
+          "tree_id": "2a166ea8ed4147eddb4721b8bd78b656843d1c7a",
+          "url": "https://github.com/stepan662/genroc/commit/bb7b66446be4741bcf79b0437a2688e01b6b1987"
+        },
+        "date": 1784711631463,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "spawn deep sqlite",
+            "value": 21,
+            "unit": "inst/s",
+            "extra": "Intel(R) Xeon(R) 6973P-C · 4 cores · 16GB · linux x64 6.17.0-1020-azure"
+          },
+          {
+            "name": "spawn deep postgres",
+            "value": 296,
+            "unit": "inst/s",
+            "extra": "Intel(R) Xeon(R) 6973P-C · 4 cores · 16GB · linux x64 6.17.0-1020-azure"
+          },
+          {
+            "name": "spawn drain_big sqlite",
+            "value": 869,
+            "unit": "inst/s",
+            "extra": "AMD EPYC 9V74 80-Core Processor · 4 cores · 16GB · linux x64 6.17.0-1020-azure"
+          },
+          {
+            "name": "spawn drain_big postgres",
+            "value": 994,
+            "unit": "inst/s",
+            "extra": "AMD EPYC 9V74 80-Core Processor · 4 cores · 16GB · linux x64 6.17.0-1020-azure"
+          },
+          {
+            "name": "spawn drain sqlite",
+            "value": 899,
+            "unit": "inst/s",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C · 4 cores · 16GB · linux x64 6.17.0-1020-azure"
+          },
+          {
+            "name": "spawn drain postgres",
+            "value": 1600,
+            "unit": "inst/s",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C · 4 cores · 16GB · linux x64 6.17.0-1020-azure"
+          },
+          {
+            "name": "spawn recursive sqlite",
+            "value": 154,
+            "unit": "inst/s",
+            "extra": "AMD EPYC 7763 64-Core Processor · 4 cores · 16GB · linux x64 6.17.0-1020-azure"
+          },
+          {
+            "name": "spawn recursive postgres",
+            "value": 489,
+            "unit": "inst/s",
+            "extra": "AMD EPYC 7763 64-Core Processor · 4 cores · 16GB · linux x64 6.17.0-1020-azure"
           }
         ]
       }
