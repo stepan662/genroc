@@ -10,7 +10,7 @@ tasks:
         properties:
           test:
             type: boolean
-    output: "$: self.result"
+    output: "$: 10"
     switch:
       - panic:
           code: test
@@ -18,4 +18,11 @@ tasks:
     on_error:
       - code: ["fourth_%"]
         goto: end
+  - id: call
+    action:
+      type: fetch
+      url: ""
+      headers:
+        test: "100"
+    switch: end
 output: "$: error"

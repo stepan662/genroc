@@ -1,10 +1,13 @@
 package model
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"genroc/internal/schema"
+	"genroc/internal/shape"
 )
 
 // GotoEnd signals process termination. Stored verbatim in SwitchCase.Goto and
@@ -80,8 +83,38 @@ type Action struct {
 
 // JSONSchemaBytes returns the JSON Schema for Action as a discriminated union
 // so that OpenAPI reflection produces a proper oneOf instead of a flat object.
+//
+// The headers slot is a Shape whose value must conform to object<string> (the same target
+// checkHeadersShape validates against). Rather than hand-write the "object of strings, or an
+// expression" schema, it is generated from that target by shape.RelaxedSchema — the relax(S)
+// transform that makes every node "the literal value or an expression". A property-level
+// description is merged onto the generated node so the editor still explains the slot.
 func (Action) JSONSchemaBytes() ([]byte, error) {
-	return []byte(`{
+	headers, err := relaxedHeadersSchema()
+	if err != nil {
+		return nil, err
+	}
+	return []byte(strings.Replace(actionSchemaTemplate, headersPlaceholder, string(headers), 1)), nil
+}
+
+// relaxedHeadersSchema builds the editor schema for fetch headers from its object<string>
+// target and merges a property-level description onto the generated node.
+func relaxedHeadersSchema() ([]byte, error) {
+	raw, err := shape.RelaxedSchema(schema.Map(schema.Type("string")))
+	if err != nil {
+		return nil, err
+	}
+	var node map[string]any
+	if err := json.Unmarshal(raw, &node); err != nil {
+		return nil, err
+	}
+	node["description"] = "Request headers, evaluating to an object of string values. Author it as a literal map (each value a ${ } template or a $: expression yielding a string), or as a single $: expression yielding the whole map."
+	return json.Marshal(node)
+}
+
+const headersPlaceholder = "__HEADERS_SCHEMA__"
+
+var actionSchemaTemplate = `{
 		"oneOf": [
 			{
 				"type": "object",
@@ -90,7 +123,7 @@ func (Action) JSONSchemaBytes() ([]byte, error) {
 					"type":            {"type": "string", "const": "fetch"},
 					"url":             {"type": "string", "description": "Request URL. May contain ${ } interpolations evaluated against the current context (e.g. ${ config.server_url }/path)."},
 					"method":          {"type": "string", "description": "HTTP method, a template (e.g. GET, POST, ${ input.method }). Defaults to POST."},
-					"headers":         {"$ref": "#/$defs/ModelShape", "description": "Request headers: a shape evaluating to an object of string values (a literal map of templated values, or a single expression yielding a map)."},
+					"headers":         __HEADERS_SCHEMA__,
 					"accepted_status": {"type": "array", "items": {"type": "string"}, "description": "HTTP status patterns accepted as non-errors, e.g. \"2xx\" or \"404\". Defaults to any 2xx."},
 					"body":            {"$ref": "#/$defs/ModelShape", "description": "Templated value (string expression or nested object) evaluated against the current context to build the request body. An object is sent as JSON."},
 					"result_schema":   {"type": "object", "additionalProperties": true, "description": "JSON Schema to validate and persist the response body. Without it the response is available only as 'self' in this task's switch."}
@@ -172,8 +205,7 @@ func (Action) JSONSchemaBytes() ([]byte, error) {
 			}
 		],
 		"discriminator": {"propertyName": "type"}
-	}`), nil
-}
+	}`
 
 // Task is a single unit of work in a process definition.
 // Every task must have a switch (and optionally a call).

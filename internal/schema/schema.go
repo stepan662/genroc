@@ -72,7 +72,7 @@ var allowedKeywords = map[string]bool{
 	"minimum": true, "maximum": true, "minLength": true, "maxLength": true,
 	"minItems": true, "maxItems": true,
 	"$ref": true, "$defs": true, "$anchor": true, "$id": true,
-	"default": true, "secret": true,
+	"default": true, "secret": true, "description": true,
 	// "allOf" is intentionally omitted — see the package doc.
 }
 
@@ -81,9 +81,14 @@ var allowedKeywords = map[string]bool{
 // exported so encoding/json (and in-package code) can reach them.
 // Any JSON key absent from allowedKeywords causes an UnmarshalJSON error.
 type node struct {
-	Type       SchemaType       `json:"type,omitempty"`
-	Properties map[string]*node `json:"properties,omitempty"`
-	Required   []string         `json:"required,omitempty"`
+	Type SchemaType `json:"type,omitempty"`
+	// Description is a free-text annotation with no bearing on type-checking: it is preserved
+	// through parse/normalize/store and shown in the editor, but stripped by canonicalizeNode
+	// so two schemas denoting the same type stay equal (the recursive-inference fixpoint
+	// compares canonical JSON). Like a JSON Schema "description", never a constraint.
+	Description string           `json:"description,omitempty"`
+	Properties  map[string]*node `json:"properties,omitempty"`
+	Required    []string         `json:"required,omitempty"`
 	// AdditionalProperties, when non-nil, types the object's undeclared keys as an
 	// open map (each extra value must conform to this subschema, and survives
 	// normalization). nil = closed object (undeclared keys stripped). Only the schema

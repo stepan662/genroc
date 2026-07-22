@@ -17,6 +17,9 @@ func canonicalizeNode(s *node) *node {
 		return nil
 	}
 	n := *s
+	// Description is a documentation annotation with no type meaning; drop it so two schemas
+	// that differ only in wording compare equal (the fixpoint keys off canonical JSON).
+	n.Description = ""
 
 	if s.Properties != nil {
 		props := make(map[string]*node, len(s.Properties))

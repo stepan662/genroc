@@ -280,7 +280,7 @@ func isPureRef(nd *node) bool {
 		nd.MinLength == nil && nd.MaxLength == nil &&
 		nd.MinItems == nil && nd.MaxItems == nil &&
 		nd.Defs == nil && nd.Anchor == "" && nd.ID == "" &&
-		nd.Default == nil && !nd.Secret
+		nd.Default == nil && !nd.Secret && nd.Description == ""
 }
 
 // aliasTarget follows a chain of pure-$ref definitions from def to the first

@@ -7,9 +7,10 @@ import (
 )
 
 // TestProcessSchemaShape guards the served process-schema.json wiring for the
-// recursive Shape type: the def must exist as oneOf(string, object), recurse via
-// a self $ref, and be referenced by the task output and the action input. Breaking
-// this silently breaks editor autocomplete in the playground.
+// recursive Shape type: the def must exist as the generic Value anyOf (string,
+// number, boolean, null, array, object), recurse via a self $ref, and be referenced
+// by the task output and the action input. Breaking this silently breaks editor
+// autocomplete in the playground.
 func TestProcessSchemaShape(t *testing.T) {
 	b := buildProcessDefinitionSchema()
 	var root map[string]any
@@ -21,11 +22,13 @@ func TestProcessSchemaShape(t *testing.T) {
 	if !ok {
 		t.Fatalf("no ModelShape def; defs=%v", keysOf(defs))
 	}
-	variants, ok := shape["oneOf"].([]any)
-	if !ok || len(variants) != 2 {
-		t.Fatalf("ModelShape should be oneOf with 2 variants, got %v", shape["oneOf"])
+	// anyOf (not oneOf): the string branch overlaps nested string leaves, so oneOf's
+	// exactly-one rule would spuriously reject them.
+	variants, ok := shape["anyOf"].([]any)
+	if !ok || len(variants) != 6 {
+		t.Fatalf("ModelShape should be anyOf with 6 variants (string/number/boolean/null/array/object), got %v", shape["anyOf"])
 	}
-	// The object variant must recurse back into the Shape def.
+	// The array and object branches must recurse back into the Shape def.
 	raw, _ := json.Marshal(shape)
 	if !strings.Contains(string(raw), `"$ref":"#/$defs/ModelShape"`) {
 		t.Errorf("ModelShape must recurse via #/$defs/ModelShape; got %s", raw)

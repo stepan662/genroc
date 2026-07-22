@@ -36,6 +36,15 @@ func (s Schema) Default() any {
 	return s.n.Default
 }
 
+// Description returns the node's free-text documentation annotation ("" if none). It has no
+// type meaning — see the node.Description doc.
+func (s Schema) Description() string {
+	if s.n == nil {
+		return ""
+	}
+	return s.n.Description
+}
+
 func (s Schema) AdditionalProperties() (Schema, bool) {
 	if s.n == nil || s.n.AdditionalProperties == nil {
 		return Schema{}, false

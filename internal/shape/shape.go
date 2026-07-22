@@ -120,19 +120,10 @@ func checkShape(n any) error {
 	}
 }
 
-// JSONSchemaBytes exposes the recursive Shape schema for OpenAPI reflection. The
-// self-reference uses the def name ModelShape — the spec builder's InterceptDefName maps
-// this type's generated name to ModelShape (kept stable across the move out of package
-// model), which the OpenAPI builder rewrites to #/components/schemas/ModelShape.
+// JSONSchemaBytes exposes the Shape schema for OpenAPI reflection (swaggest calls it to
+// produce the ModelShape def). It is generated, not hand-written: the generic Value grammar
+// from GenericValueSchema, the single source every free Shape slot resolves to. See that
+// function for the anyOf/recursion/permissive-array rationale.
 func (Shape) JSONSchemaBytes() ([]byte, error) {
-	return []byte(`{
-		"oneOf": [
-			{"type": "string", "description": "A $: expression, a ${ } template, or a literal string."},
-			{
-				"type": "object",
-				"description": "Nested object; each value is recursively a Shape.",
-				"additionalProperties": {"$ref": "#/$defs/ModelShape"}
-			}
-		]
-	}`), nil
+	return GenericValueSchema()
 }

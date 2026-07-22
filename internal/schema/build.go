@@ -96,6 +96,18 @@ func (s Schema) WithProperty(name string, sub Schema, required bool) Schema {
 	return Schema{&n}
 }
 
+// WithDescription returns a copy of s carrying desc as its documentation annotation (root
+// $defs preserved). The annotation has no bearing on type-checking.
+func (s Schema) WithDescription(desc string) Schema {
+	base := s.n
+	if base == nil {
+		base = &node{}
+	}
+	n := *base
+	n.Description = desc
+	return Schema{&n}
+}
+
 func (s Schema) WithDef(name string, def Schema) Schema {
 	cloned, _ := deepClone(s.n)
 	if cloned == nil {
