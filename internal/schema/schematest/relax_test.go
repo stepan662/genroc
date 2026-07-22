@@ -95,6 +95,41 @@ func TestRelaxed_NestedObjectInArray(t *testing.T) {
 	}
 }
 
+// Relax descends into $defs and through a $ref target, hoisting root $defs onto the wrapper
+// so the ref still resolves — the branch used by any future ref-bearing bounded target.
+func TestRelaxed_RefTargetRecursesDefsAndStaysResolvable(t *testing.T) {
+	src := `{"type":"object","properties":{"x":{"$ref":"#/$defs/foo"}},"$defs":{"foo":{"type":"integer"}}}`
+	raw, err := schema.Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := raw.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(s.Relaxed(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	str := string(b)
+	// The referenced def is itself relaxed (integer → integer|string) …
+	if !strings.Contains(str, `"foo":{"anyOf":[{"type":"integer"},{"type":"string"}]}`) {
+		t.Errorf("$defs target should be relaxed, got %s", str)
+	}
+	// … and the $ref (plus its hoisted $defs) is preserved so it still resolves.
+	if !strings.Contains(str, `"$ref":"#/$defs/foo"`) || !strings.Contains(str, `"$defs"`) {
+		t.Errorf("the $ref and hoisted $defs should be preserved, got %s", str)
+	}
+}
+
+// A null leaf is not a string, so it gains the string (expression) alternative.
+func TestRelaxed_NullGainsStringAlternative(t *testing.T) {
+	m := relaxToMap(t, schema.Type("null"))
+	if _, ok := m["anyOf"]; !ok {
+		t.Errorf("null should relax to anyOf[null, string], got %v", m)
+	}
+}
+
 // stringNote labels every string position (the reported gap: header VALUES) — a string leaf
 // and the string alternative added to a non-string node both carry it, and it is set on the
 // node itself so no JSON post-pass is needed.

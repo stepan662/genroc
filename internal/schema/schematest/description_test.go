@@ -64,6 +64,47 @@ func TestDescription_IgnoredBySubset(t *testing.T) {
 	}
 }
 
+// A description on a $ref alias is preserved through normalize: the alias is NOT collapsed
+// (isPureRef treats a described ref as non-pure), so the annotation is not lost.
+func TestDescription_OnRefAliasSurvivesNormalize(t *testing.T) {
+	src := `{"$ref":"#/$defs/foo","description":"my alias","$defs":{"foo":{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}}}`
+	raw, err := schema.Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := raw.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Description() != "my alias" {
+		t.Errorf("a described $ref alias should keep its description through normalize, got %q", s.Description())
+	}
+}
+
+// Descriptions (root and nested) survive the shared-$defs MergeInto (clone + rename) path
+// used when a process shares $defs across its schemas.
+func TestDescription_SurvivesMergeInto(t *testing.T) {
+	src := `{"type":"object","description":"a record","properties":{"n":{"type":"integer","description":"a count"}},"required":["n"]}`
+	raw, err := schema.Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := raw.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged, err := s.MergeInto(schema.NewDefs())
+	if err != nil {
+		t.Fatalf("MergeInto: %v", err)
+	}
+	if merged.Description() != "a record" {
+		t.Errorf("root description lost through MergeInto, got %q", merged.Description())
+	}
+	if got := merged.Properties()["n"].Description(); got != "a count" {
+		t.Errorf("nested description lost through MergeInto, got %q", got)
+	}
+}
+
 // WithDescription / Description round-trip, leaving the type untouched.
 func TestDescription_Builder(t *testing.T) {
 	s := schema.Type("number").WithDescription("a count")
