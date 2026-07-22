@@ -250,4 +250,4 @@ process:
     - id: finish
       switch: end
   output:
-    echo: "{{ input.blob }}"
+    echo: "$: input.blob"

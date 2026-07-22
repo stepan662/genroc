@@ -25,7 +25,7 @@ func TestGenerate_ContextSets_LinearChain_RequiredOutputNonNullable(t *testing.T
           ]
         }
       },
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     },
     {
       "id": "B",
@@ -33,7 +33,7 @@ func TestGenerate_ContextSets_LinearChain_RequiredOutputNonNullable(t *testing.T
         "type": "fetch",
         "url": "http://x",
         "body": {
-          "flag": "{{outputs.A.ok}}"
+          "flag": "$: outputs.A.ok"
         }
       }
     }
@@ -91,7 +91,7 @@ func TestGenerate_ContextSets_ExclusiveBranch_SkippedStepOutputNullable(t *testi
           ]
         }
       },
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     },
     {
       "id": "slow",
@@ -106,7 +106,7 @@ func TestGenerate_ContextSets_ExclusiveBranch_SkippedStepOutputNullable(t *testi
         "type": "fetch",
         "url": "http://x",
         "body": {
-          "s": "{{outputs.fast.speed}}"
+          "s": "$: outputs.fast.speed"
         }
       }
     }
@@ -141,7 +141,7 @@ func TestGenerate_ContextSets_PreBranchStepRequiredAtAllMergePoints(t *testing.T
           ]
         }
       },
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     },
     {
       "id": "gate",
@@ -175,7 +175,7 @@ func TestGenerate_ContextSets_PreBranchStepRequiredAtAllMergePoints(t *testing.T
         "type": "fetch",
         "url": "http://x",
         "body": {
-          "pre_id": "{{outputs.pre.id}}"
+          "pre_id": "$: outputs.pre.id"
         }
       }
     }
@@ -219,7 +219,7 @@ func TestGenerate_ContextSets_DefaultEndSwitch_SuccessorRequiredNotOptional(t *t
           "goto": "end"
         }
       ],
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     },
     {
       "id": "work",
@@ -227,7 +227,7 @@ func TestGenerate_ContextSets_DefaultEndSwitch_SuccessorRequiredNotOptional(t *t
         "type": "fetch",
         "url": "http://x",
         "body": {
-          "flag": "{{outputs.decide.ok}}"
+          "flag": "$: outputs.decide.ok"
         }
       }
     }
@@ -268,7 +268,7 @@ func TestGenerate_OnError_MixedPath_FailingStepOutputNullable(t *testing.T) {
         }
       ],
       "switch": "next",
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     },
     {
       "id": "finale",
@@ -276,8 +276,8 @@ func TestGenerate_OnError_MixedPath_FailingStepOutputNullable(t *testing.T) {
         "type": "fetch",
         "url": "http://x",
         "body": {
-          "val": "{{outputs.start.ok}}",
-          "errCode": "{{error.code}}"
+          "val": "$: outputs.start.ok",
+          "errCode": "$: error.code"
         }
       },
       "switch": "end"
@@ -325,7 +325,7 @@ func TestGenerate_OnError_ExclusivePath_ErrorRequiredOutputAbsent(t *testing.T) 
           "goto": "$handler"
         }
       ],
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     },
     {
       "id": "handler",
@@ -333,7 +333,7 @@ func TestGenerate_OnError_ExclusivePath_ErrorRequiredOutputAbsent(t *testing.T) 
         "type": "fetch",
         "url": "http://x",
         "body": {
-          "code": "{{error.code}}"
+          "code": "$: error.code"
         }
       },
       "switch": "end"
@@ -372,7 +372,7 @@ func TestGenerate_Switch_ScalarNext_CreatesSequentialEdge(t *testing.T) {
         }
       },
       "switch": "next",
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     },
     {
       "id": "b",
@@ -380,7 +380,7 @@ func TestGenerate_Switch_ScalarNext_CreatesSequentialEdge(t *testing.T) {
         "type": "fetch",
         "url": "http://x",
         "body": {
-          "flag": "{{outputs.a.ok}}"
+          "flag": "$: outputs.a.ok"
         }
       },
       "switch": "end"
@@ -424,7 +424,7 @@ func TestGenerate_Switch_ScalarStepRef_CreatesJumpEdge(t *testing.T) {
         }
       },
       "switch": "next",
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     },
     {
       "id": "merge",
@@ -432,7 +432,7 @@ func TestGenerate_Switch_ScalarStepRef_CreatesJumpEdge(t *testing.T) {
         "type": "fetch",
         "url": "http://x",
         "body": {
-          "s": "{{outputs.fast.speed}}"
+          "s": "$: outputs.fast.speed"
         }
       },
       "switch": "end"
@@ -473,11 +473,11 @@ func TestGenerate_OnError_EndTerminal_RecognisedAsTerminal(t *testing.T) {
           "next": "end"
         }
       ],
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     }
   ],
   "output": {
-    "result": "{{outputs.task.result}}"
+    "result": "$: outputs.task.result"
   }
 }`)
 }

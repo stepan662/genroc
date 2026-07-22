@@ -11,7 +11,7 @@ test("child — task without result_schema after a task with one does not fail",
     body: {
       name: leafWithOutput,
       tasks: [{ id: "done", switch: [{ goto: "end" }] }],
-      output: { value: "{{1}}" },
+      output: { value: "$: 1" },
     },
   });
 
@@ -313,7 +313,7 @@ test("child_map — recursive spawn completes with correct aggregated output", a
             children: {
               first: {
                 name: processName,
-                input: { ttl: "{{input.ttl - 1}}" },
+                input: { ttl: "$: input.ttl - 1" },
                 result_schema: {
                   type: "object",
                   properties: { processes: { type: "number" } },
@@ -322,7 +322,7 @@ test("child_map — recursive spawn completes with correct aggregated output", a
               },
               second: {
                 name: processName,
-                input: { ttl: "{{input.ttl - 1}}" },
+                input: { ttl: "$: input.ttl - 1" },
                 result_schema: {
                   type: "object",
                   properties: { processes: { type: "number" } },
@@ -331,13 +331,13 @@ test("child_map — recursive spawn completes with correct aggregated output", a
               },
             },
           },
-          output: "{{ self.result }}",
+          output: "$: self.result",
           switch: [{ goto: "end" }],
         },
       ],
       output: {
         processes:
-          "{{(outputs.recursion.first.processes ?? 0) + (outputs.recursion.second.processes ?? 0) + 1}}",
+          "$: (outputs.recursion.first.processes ?? 0) + (outputs.recursion.second.processes ?? 0) + 1",
       },
     },
   });
@@ -388,7 +388,7 @@ test("child — two sequential child tasks both spawn and collect", async () => 
             switch: [{ goto: "end" }],
           },
         ],
-        output: { done: "{{true}}" },
+        output: { done: "$: true" },
       },
     });
     await client.PUT("/definitions", {
@@ -410,7 +410,7 @@ test("child — two sequential child tasks both spawn and collect", async () => 
                 },
               },
             },
-            output: "{{ self.result.out }}",
+            output: "$: self.result.out",
             switch: [{ goto: "next" }],
           },
           {
@@ -428,7 +428,7 @@ test("child — two sequential child tasks both spawn and collect", async () => 
                 },
               },
             },
-            output: "{{ self.result.out }}",
+            output: "$: self.result.out",
             switch: [{ goto: "end" }],
           },
         ],

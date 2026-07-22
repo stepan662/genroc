@@ -6,6 +6,7 @@ import (
 
 	"genroc/internal/expression"
 	"genroc/internal/model"
+	"genroc/internal/shape"
 	tmpl "genroc/internal/template"
 )
 
@@ -104,40 +105,10 @@ func (e *Engine) buildEnv(inst *model.ProcessInstance, self any, roots expressio
 	return env, nil
 }
 
-// shapeRoots unions the root references of every template-string leaf in a shape.
-func shapeRoots(node any) (expression.Roots, error) {
-	var r expression.Roots
-	var walk func(n any) error
-	walk = func(n any) error {
-		switch v := n.(type) {
-		case string:
-			t, err := tmpl.Get(v)
-			if err != nil {
-				return err
-			}
-			tr := t.RootRefs()
-			r.Input = r.Input || tr.Input
-			r.Error = r.Error || tr.Error
-			r.AllOutputs = r.AllOutputs || tr.AllOutputs
-			r.Outputs = append(r.Outputs, tr.Outputs...)
-			r.SelfPrevious = r.SelfPrevious || tr.SelfPrevious
-			r.SelfResult = r.SelfResult || tr.SelfResult
-		case map[string]any:
-			for _, vv := range v {
-				if err := walk(vv); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	}
-	return r, walk(node)
-}
-
 // evalShapeCtx evaluates a shape against inst's context, resolving only the slots the
 // shape references.
 func (e *Engine) evalShapeCtx(inst *model.ProcessInstance, node any, self any) (any, error) {
-	roots, err := shapeRoots(node)
+	roots, err := shape.Roots(node)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +116,7 @@ func (e *Engine) evalShapeCtx(inst *model.ProcessInstance, node any, self any) (
 	if err != nil {
 		return nil, err
 	}
-	return evalShape(node, env)
+	return shape.Eval(node, env)
 }
 
 func (e *Engine) evalAnyCtx(inst *model.ProcessInstance, expr string) (any, error) {
@@ -212,32 +183,6 @@ func evalAny(expression string, contextData, config map[string]any) (any, error)
 		return nil, fmt.Errorf("param %q: %w", expression, err)
 	}
 	return result, nil
-}
-
-// evalShape recursively evaluates a model.Shape against env: a string leaf as a template
-// (preserving type), an object recursing into each value. The string|object grammar is
-// enforced at unmarshal, so any other node type is an internal error.
-func evalShape(node any, env map[string]any) (any, error) {
-	switch n := node.(type) {
-	case string:
-		t, err := tmpl.Get(n)
-		if err != nil {
-			return nil, err
-		}
-		return t.EvalAny(env)
-	case map[string]any:
-		out := make(map[string]any, len(n))
-		for k, v := range n {
-			ev, err := evalShape(v, env)
-			if err != nil {
-				return nil, fmt.Errorf("%q: %w", k, err)
-			}
-			out[k] = ev
-		}
-		return out, nil
-	default:
-		return nil, fmt.Errorf("invalid shape node %T", node)
-	}
 }
 
 func evalBool(expr string, contextData, config map[string]any, self any) (bool, error) {

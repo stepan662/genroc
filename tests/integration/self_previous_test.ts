@@ -23,8 +23,8 @@ function makeDef(name: string, actionPort?: number) {
   const append: Record<string, unknown> = {
     id: "append",
     output: {
-      text: `{{ (self.previous.text ?? '') + '${CHUNK}' }}`,
-      i: "{{ (self.previous.i ?? 0) + 1 }}",
+      text: `$: (self.previous.text ?? '') + '${CHUNK}'`,
+      i: "$: (self.previous.i ?? 0) + 1",
     },
     switch: [
       { case: "(outputs.append.i ?? 0) < input.n", goto: "$append" },
@@ -47,8 +47,8 @@ function makeDef(name: string, actionPort?: number) {
     },
     tasks: [append],
     output: {
-      text: "{{ outputs.append.text }}",
-      count: "{{ outputs.append.i }}",
+      text: "$: outputs.append.text",
+      count: "$: outputs.append.i",
     },
   };
 }

@@ -12,7 +12,7 @@ async function defineProc() {
         properties: { name: { type: "string" } },
         required: ["name"],
       },
-      output: { greeting: "{{ input.name }}" },
+      output: { greeting: "$: input.name" },
       tasks: [{ id: "work", switch: [{ goto: "end" }] }],
     },
   });

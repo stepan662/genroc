@@ -166,7 +166,7 @@ func TestPrecision_FractionalLiteralIsDecimal(t *testing.T) {
 // --- the digit bound ---
 //
 // A looping task feeds its own output back as self.previous, so an output like
-// `{{ (self.previous.n ?? input.n) * (self.previous.n ?? input.n) }}` doubles the
+// `$: (self.previous.n ?? input.n) * (self.previous.n ?? input.n)` doubles the
 // digit count every tick: a 54-digit id reaches ~55,000 digits in ten iterations.
 // Left unbounded that ran until apd's own exponent limit tripped with "exponent
 // out of range" — after the value had been materialised and pushed to the object

@@ -316,24 +316,15 @@ func inferArray(n *syntax.ArrayNode, ictx inferCtx) (Schema, error) {
 	if len(n.Items) == 0 {
 		return emptyArray(), nil
 	}
-	var joined Schema
+	elems := make([]Schema, len(n.Items))
 	for i, item := range n.Items {
 		it, err := inferNode(item, ictx)
 		if err != nil {
 			return Schema{}, err
 		}
-		it = it.WithoutDefs()
-		switch merged, ok := absorbEmptyArray(joined, it); {
-		case i == 0:
-			joined = it
-		case ok:
-			// [xs, []] — the empty arm would overlap, see absorbEmptyArray.
-			joined = merged
-		default:
-			joined = joined.Join(it)
-		}
+		elems[i] = it
 	}
-	return Array(joined.Canonicalize()).WithDefs(ictx.s.DefsHandle()), nil
+	return ArrayLiteral(elems).WithDefs(ictx.s.DefsHandle()), nil
 }
 
 // inferObject types an object literal as a closed object with every key required,

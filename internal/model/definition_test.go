@@ -260,14 +260,14 @@ func TestProcessDefinition_Validate(t *testing.T) {
 		{
 			name: "valid child_list call",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
-				{ID: "spawn", Action: &Action{Type: ActionTypeChildList, Name: "worker", Over: "{{ input.items }}"}, Switch: SwitchMap{{Goto: GotoEnd}}},
+				{ID: "spawn", Action: &Action{Type: ActionTypeChildList, Name: "worker", Over: "$: input.items"}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
 			wantErr: "",
 		},
 		{
 			name: "child_list call missing name",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
-				{ID: "spawn", Action: &Action{Type: ActionTypeChildList, Over: "{{ input.items }}"}, Switch: SwitchMap{{Goto: GotoEnd}}},
+				{ID: "spawn", Action: &Action{Type: ActionTypeChildList, Over: "$: input.items"}, Switch: SwitchMap{{Goto: GotoEnd}}},
 			}},
 			wantErr: "action.name is required",
 		},

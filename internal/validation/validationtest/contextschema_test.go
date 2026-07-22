@@ -37,8 +37,8 @@ const chargeProcess = `{
 			}
 		},
 		"output":{
-			"receipt":"'{{ self.result.receipt }}'",
-			"cvv":"'{{ self.result.cvv }}'"
+			"receipt":"'${ self.result.receipt }'",
+			"cvv":"'${ self.result.cvv }'"
 		}
 	}]
 }`

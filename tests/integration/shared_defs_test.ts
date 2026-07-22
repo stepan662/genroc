@@ -40,11 +40,11 @@ test("process-level $defs are shared by input_schema and result_schemas", async 
               required: ["buyer"],
             },
           },
-          output: { who: "{{ self.result.buyer.name }}" },
+          output: { who: "$: self.result.buyer.name" },
           switch: [{ goto: "end" }],
         },
       ],
-      output: { who: "{{ outputs.fetch.who }}", requester: "{{ input.requester.name }}" },
+      output: { who: "$: outputs.fetch.who", requester: "$: input.requester.name" },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
   });
@@ -86,8 +86,8 @@ test("input_schema as a bare $ref to a def named 'input' works", async () => {
         },
       },
       input_schema: { $ref: "#/$defs/input" },
-      tasks: [{ id: "route", output: "{{ input.blob }}", switch: "end" }],
-      output: "{{ outputs.route }}",
+      tasks: [{ id: "route", output: "$: input.blob", switch: "end" }],
+      output: "$: outputs.route",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
   });
@@ -133,11 +133,11 @@ test("$defs colliding with generated schema names are safely renamed", async () 
               required: ["d"],
             },
           },
-          output: { num: "{{ self.result.d.n }}" },
+          output: { num: "$: self.result.d.n" },
           switch: [{ goto: "end" }],
         },
       ],
-      output: { num: "{{ outputs.fetch.num }}" },
+      output: { num: "$: outputs.fetch.num" },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
   });

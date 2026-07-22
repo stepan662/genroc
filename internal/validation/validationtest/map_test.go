@@ -48,7 +48,7 @@ func TestGenerateMap_ChildListDerivedInputMismatchRejected(t *testing.T) {
 // in mapNullableRowsInput, so `input.rows` is nullable.
 func TestGenerateMap_OverNullableSourceRejected(t *testing.T) {
 	got := mapGenerateErr(t, mapDef("map-nullable-over", mapNullableRowsInput,
-		mapChildListTask("fanout", "map-line-worker", "{{ map(input.rows, r => {sku: r.code}) }}")),
+		mapChildListTask("fanout", "map-line-worker", "$: map(input.rows, r => {sku: r.code})")),
 		"a map over a nullable source")
 	mapErrMentions(t, got, "may be null", "point at the null source")
 	mapErrMentions(t, got, "??", "point at the ?? fix")
@@ -59,7 +59,7 @@ func TestGenerateMap_OverNullableSourceRejected(t *testing.T) {
 // the lambda body still type-checks against the source element.
 func TestGenerateMap_OverNullableSourceWithCoalesceOK(t *testing.T) {
 	out := runGenerate(t, mapDef("map-coalesce-over", mapNullableRowsInput,
-		mapChildListEchoTask("fanout", "map-line-worker", "{{ map(input.rows ?? [], r => {sku: r.code}) }}")))
+		mapChildListEchoTask("fanout", "map-line-worker", "$: map(input.rows ?? [], r => {sku: r.code})")))
 	// The output mirrors `over`, so this pins the element type the ?? [] form
 	// preserves: string, not an unconstrained any.
 	assertJSON(t, defOf(out, "fanout_output"), `{
@@ -76,8 +76,8 @@ func TestGenerateMap_FetchBodyFromMapAndObjectLiterals(t *testing.T) {
 		"type": "fetch",
 		"url": "http://x",
 		"body": {
-			"lines": "{{ map(input.rows, r => {sku: r.code, qty: r.count + 1}) }}",
-			"meta": "{{ {total: 1, kind: \"order\"} }}"
+			"lines": "$: map(input.rows, r => {sku: r.code, qty: r.count + 1})",
+			"meta": "$: {total: 1, kind: \"order\"}"
 		}
 	}`))
 	assertJSON(t, out.Tasks["push"].Input, `{"$ref": "#/$defs/push_input"}`)
@@ -108,13 +108,13 @@ func TestGenerateMap_FetchBodyFromMapAndObjectLiterals(t *testing.T) {
 // *nullable* result and never checked the value could be a URL at all. It now
 // also rejects a result that is certainly an array or object.
 //
-// Not map-specific: a bare "{{ input.rows }}" (array) or "{{ input.obj }}"
-// (object) took the same path. The mixed form "http://x/{{ input.rows }}" was
+// Not map-specific: a bare "$: input.rows" (array) or "$: input.obj"
+// (object) took the same path. The mixed form "http://x/${ input.rows }" was
 // always rejected (template.InferType guards stringification), so only the
 // single-expression form escaped — and map is the easiest way to produce one.
 func TestGenerateMap_FetchURLFromMapRejected(t *testing.T) {
 	got := mapGenerateErr(t, mapRowsFetchDef("map-url",
-		`{"type": "fetch", "url": "{{ map(input.rows, r => r.code) }}"}`),
+		`{"type": "fetch", "url": "$: map(input.rows, r => r.code)"}`),
 		"an array-valued fetch url")
 	mapErrMentions(t, got, "push", "name the offending task")
 }
@@ -124,7 +124,7 @@ func TestGenerateMap_FetchURLFromMapRejected(t *testing.T) {
 // garbage verb "[A B]" on the wire instead of being caught at registration.
 func TestGenerateMap_FetchMethodFromMapRejected(t *testing.T) {
 	got := mapGenerateErr(t, mapRowsFetchDef("map-method",
-		`{"type": "fetch", "url": "http://x", "method": "{{ map(input.rows, r => r.code) }}"}`),
+		`{"type": "fetch", "url": "http://x", "method": "$: map(input.rows, r => r.code)"}`),
 		"an array-valued fetch method")
 	mapErrMentions(t, got, "push", "name the offending task")
 }
@@ -133,7 +133,7 @@ func TestGenerateMap_FetchMethodFromMapRejected(t *testing.T) {
 // runtime in resolveHeaders. The error names the task so the author can find it.
 func TestGenerateMap_FetchHeadersFromMapRejected(t *testing.T) {
 	got := mapGenerateErr(t, mapRowsFetchDef("map-headers",
-		`{"type": "fetch", "url": "http://x", "headers": "{{ map(input.rows, r => r.code) }}"}`),
+		`{"type": "fetch", "url": "http://x", "headers": "$: map(input.rows, r => r.code)"}`),
 		"array-valued headers")
 	mapErrMentions(t, got, `task "push" headers`, "name the task and the headers position")
 }
@@ -149,7 +149,7 @@ func TestGenerateMap_FetchHeadersFromObjectLiteralOK(t *testing.T) {
 	runGenerate(t, mapDef("map-headers-ok", credsInput, mapFetchTask("push", `{
 		"type": "fetch",
 		"url": "http://x",
-		"headers": "{{ {Authorization: input.token, Tenant: input.tenant} }}"
+		"headers": "$: {Authorization: input.token, Tenant: input.tenant}"
 	}`)))
 }
 
@@ -181,7 +181,7 @@ func TestGenerateMap_OutputOverSelfResult(t *testing.T) {
 					}
 				},
 				"switch": "end",
-				"output": {"skus": "{{ map(self.result.items, i => {ref: i.id, cents: i.price * 100}) }}"}
+				"output": {"skus": "$: map(self.result.items, i => {ref: i.id, cents: i.price * 100})"}
 			}
 		]
 	}`)
@@ -208,12 +208,12 @@ func TestGenerateMap_OutputOverOtherTaskOutput(t *testing.T) {
 	out := runGenerate(t, mapRowsDef("map-other-output", `
 		{
 			"id": "load",
-			"output": {"rows": "{{ map(input.rows, r => {code: r.code, n: r.count}) }}"},
+			"output": {"rows": "$: map(input.rows, r => {code: r.code, n: r.count})"},
 			"switch": "next"
 		},
 		{
 			"id": "summarise",
-			"output": {"codes": "{{ map(outputs.load.rows, r => r.code) }}"},
+			"output": {"codes": "$: map(outputs.load.rows, r => r.code)"},
 			"switch": "end"
 		}`))
 	assertJSON(t, defOf(out, "summarise_output"), `{
@@ -227,7 +227,7 @@ func TestGenerateMap_OutputOverOtherTaskOutput(t *testing.T) {
 // produce the same typed array as anywhere else.
 func TestGenerateMap_ProcessOutput(t *testing.T) {
 	out := runGenerate(t, mapProcessOutputDef("map-process-output", mapRowsInput,
-		`{"skus": "{{ map(input.rows, r => {sku: r.code}) }}"}`))
+		`{"skus": "$: map(input.rows, r => {sku: r.code})"}`))
 	assertJSON(t, out.ProcessOutput, `{"$ref": "#/$defs/output"}`)
 	assertJSON(t, defOf(out, "output"), `{
 		"type": "object",
@@ -263,7 +263,7 @@ func TestGenerateMap_ChildMapInputFromMap(t *testing.T) {
 		}`),
 	}
 	def := mapChildMapDef("map-child-map", "map-batch-worker", `{
-		"lines": "{{ map(input.rows, r => {sku: r.code, qty: r.count}) }}",
+		"lines": "$: map(input.rows, r => {sku: r.code, qty: r.count})",
 		"source": "upload"
 	}`)
 	assertMapChildRefsOK(t, def, getter, "mapped child_map input")
@@ -289,7 +289,7 @@ func TestGenerateMap_ChildMapInputFromMapMismatchRejected(t *testing.T) {
 		}`),
 	}
 	def := mapChildMapDef("map-child-map-bad", "map-batch-worker",
-		`{"lines": "{{ map(input.rows, r => {sku: r.code}) }}"}`)
+		`{"lines": "$: map(input.rows, r => {sku: r.code})"}`)
 	assertMapChildRefsIncompatible(t, def, getter, "mapped element is missing qty")
 }
 
@@ -319,7 +319,7 @@ func TestGenerateMap_UnknownFieldInLambdaBodyRejected(t *testing.T) {
 	got := mapGenerateErr(t, mapRowsFetchDef("map-bad-field", `{
 		"type": "fetch",
 		"url": "http://x",
-		"body": {"lines": "{{ map(input.rows, r => {qty: r.total}) }}"}
+		"body": {"lines": "$: map(input.rows, r => {qty: r.total})"}
 	}`), "an unknown field in the lambda body")
 	mapErrMentions(t, got, "total", "name the unknown field")
 	mapErrMentions(t, got, `task "push" body`, "attribute the failure to the task and the body position")
@@ -334,7 +334,7 @@ func TestGenerateMap_UnknownFieldInLambdaBodyRejected(t *testing.T) {
 func TestGenerateMap_ErrorNamesTask_OverPosition(t *testing.T) {
 	got := mapGenerateErr(t, mapDef("map-attr-over", mapNullableRowsInput,
 		mapPrepareTask+","+
-			mapChildListTask("fanout", "map-line-worker", "{{ map(input.rows, r => {sku: r.code}) }}")),
+			mapChildListTask("fanout", "map-line-worker", "$: map(input.rows, r => {sku: r.code})")),
 		"a map over a nullable source in the second task")
 	mapErrMentions(t, got, `task "fanout" over`, "name the task and the over position")
 }
@@ -342,7 +342,7 @@ func TestGenerateMap_ErrorNamesTask_OverPosition(t *testing.T) {
 func TestGenerateMap_ErrorNamesTask_HeadersPosition(t *testing.T) {
 	got := mapGenerateErr(t, mapRowsDef("map-attr-headers",
 		mapPrepareTask+","+mapFetchTask("push",
-			`{"type": "fetch", "url": "http://x", "headers": "{{ map(input.rows, r => r.code) }}"}`)),
+			`{"type": "fetch", "url": "http://x", "headers": "$: map(input.rows, r => r.code)"}`)),
 		"array-valued headers on the second task")
 	mapErrMentions(t, got, `task "push" headers`, "name the task and the headers position")
 }
@@ -368,7 +368,7 @@ func TestGenerateMap_ErrorNamesTask_SwitchPosition(t *testing.T) {
 func TestGenerateMap_OutputMapErrorNamesTask(t *testing.T) {
 	got := mapGenerateErr(t, mapRowsDef("map-attr-output",
 		mapPrepareTask+`,
-		{"id": "shape", "output": {"skus": "{{ map(input.rows, r => r.nope) }}"}, "switch": "end"}`),
+		{"id": "shape", "output": {"skus": "$: map(input.rows, r => r.nope)"}, "switch": "end"}`),
 		"an unknown field in an output map")
 	mapErrMentions(t, got, "nope", "name the unknown field")
 	mapErrMentions(t, got, "shape", `name the offending task "shape"`)
@@ -394,8 +394,8 @@ func TestGenerateMap_SecretOnElementTaintsMappedOutput(t *testing.T) {
 		"required": ["creds"]
 	}`
 	out := runGenerate(t, mapProcessOutputDef("map-secret", credsInput, `{
-		"tokens": "{{ map(input.creds, c => c.token) }}",
-		"hosts": "{{ map(input.creds, c => c.host) }}"
+		"tokens": "$: map(input.creds, c => c.token)",
+		"hosts": "$: map(input.creds, c => c.host)"
 	}`))
 	def := defOf(out, "output")
 	if def.IsZero() {

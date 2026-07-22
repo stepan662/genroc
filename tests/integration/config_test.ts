@@ -28,9 +28,9 @@ test("config resolves from the environment and is usable in expressions", async 
       },
       tasks: [{ id: "route", switch: "end" }],
       output: {
-        url: "{{ config.e2e_url }}",
-        port: "{{ config.e2e_port }}",
-        region: "{{ config.e2e_region }}",
+        url: "$: config.e2e_url",
+        port: "$: config.e2e_port",
+        region: "$: config.e2e_region",
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,

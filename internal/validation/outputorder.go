@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"slices"
 
+	"genroc/internal/expression"
 	"genroc/internal/model"
 	"genroc/internal/schema"
-	"genroc/internal/template"
+	"genroc/internal/shape"
 )
 
 // inferOutputs infers the type of every output-map task's output and writes it
@@ -35,22 +36,24 @@ func inferOutputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proce
 		if err != nil {
 			return fmt.Errorf("task %q: %w", id, err)
 		}
-		// An untyped result (fetch/external with no result_schema) cannot be exported:
-		// give a clear error up front rather than an opaque navigation failure later.
-		if !typed {
-			refs, rerr := shapeRefsSelfResult(s.Output.Raw)
-			if rerr != nil {
-				return fmt.Errorf("task %q output: %w", id, rerr)
-			}
-			if refs {
-				return fmt.Errorf("task %q: output references self.result, but the action has no result_schema — add a result_schema to type the response", id)
-			}
-		}
 		ctx := outputMapContext(base, resultType, typed, id, loops).WithDefs(defs)
 		node := s.Output.Raw
 		label := fmt.Sprintf("task %q output", id)
+		// An untyped result (fetch/external with no result_schema) cannot be exported: the
+		// Roots hook turns a reference to the unavailable self.result into a clear message
+		// rather than an opaque navigation failure.
+		hooks := shape.CheckHooks{}
+		if !typed {
+			hooks.Roots = func(refs expression.Roots) error {
+				if refs.SelfResult {
+					return fmt.Errorf("task %q: output references self.result, but the action has no result_schema — add a result_schema to type the response", id)
+				}
+				return nil
+			}
+		}
 		solver.Declare(id+"_output", func() (schema.Schema, error) {
-			return inferShape(node, ctx, label)
+			shp := shape.Shape{Raw: node, Name: label}
+			return shp.CheckWith(ctx, hooks)
 		})
 		declared = true
 	}
@@ -60,26 +63,3 @@ func inferOutputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proce
 	return solver.Solve()
 }
 
-// shapeRefsSelfResult reports whether any expression in an output shape (a string leaf
-// or a nested object of them) reads self.result.
-func shapeRefsSelfResult(node any) (bool, error) {
-	switch n := node.(type) {
-	case string:
-		t, err := template.Get(n)
-		if err != nil {
-			return false, err
-		}
-		return t.RootRefs().SelfResult, nil
-	case map[string]any:
-		for _, v := range n {
-			ref, err := shapeRefsSelfResult(v)
-			if err != nil {
-				return false, err
-			}
-			if ref {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
-}

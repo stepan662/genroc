@@ -64,7 +64,7 @@ function externalDef(name: string) {
             required: ["approved"],
           },
         },
-        output: "{{ self.result }}",
+        output: "$: self.result",
         switch: [{ goto: "end" }],
       },
     ],

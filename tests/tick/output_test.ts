@@ -14,14 +14,14 @@ test("no-action output map drives a counter via self.previous; switch reads self
       tasks: [
         {
           id: "count",
-          output: { n: "{{ (self.previous.n ?? 0) + 1 }}" },
+          output: { n: "$: (self.previous.n ?? 0) + 1" },
           switch: [
             { case: "self.output.n >= 3", goto: "end" },
             { goto: "$count" }, // loop until the bound
           ],
         },
       ],
-      output: { n: "{{ outputs.count.n }}" },
+      output: { n: "$: outputs.count.n" },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
   });
@@ -45,17 +45,17 @@ test("cross-task mutual recursion (start <-> loop) type-checks and runs", async 
       name: "cross_loop",
       input_schema: { type: "object", properties: { ttl: { type: "integer" } }, required: ["ttl"] },
       tasks: [
-        { id: "start", output: { num: "{{ outputs.loop.num }}" }, switch: "next" },
+        { id: "start", output: { num: "$: outputs.loop.num" }, switch: "next" },
         {
           id: "loop",
-          output: { num: "{{ (outputs.start.num ?? 0) + 1 }}" },
+          output: { num: "$: (outputs.start.num ?? 0) + 1" },
           switch: [
             { case: "self.output.num < input.ttl", goto: "$start" },
             { goto: "end" },
           ],
         },
       ],
-      output: { num: "{{ outputs.start.num }}" },
+      output: { num: "$: outputs.start.num" },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
   });

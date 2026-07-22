@@ -327,19 +327,41 @@ the price of "expressions allowed anywhere".
 ## Ledger
 
 Done as **one combined change** (grammar + syntax + escaping together), phased so each
-step compiles and tests green:
+step compiles and tests green. **Implementation status (2026-07-22): Phases 1 & 2 landed
+and green (Go + TS); Phases 3 & 4 deferred** — the breaking `{{ }}`→`${ }` retarget forces
+a judgment-based migration of ~239 sites across 81 TS files, so it is a dedicated future
+pass, not blended into the additive work.
 
-**Phase 1 — grammar & inference (pure addition):**
-- Widen `checkShape`/`Shape` to accept arrays + scalar literals + `null`
-  (`wire.go:215-229`); settle the `null`-vs-absent rule.
-- Widen `inferShape` to array-join / scalar-kind (reuse the expression-literal logic);
-  add the `IsSubset` array arm.
+**Phase 1 — grammar & inference (pure addition). ✅ DONE.**
+- Widened `checkShape`/`Shape` to accept arrays + scalar literals + `null`
+  (`wire.go`); `null` handled by pointer-nil = absent (no root-null representation needed),
+  nested null accepted.
+- Widened `inferShape` to array-join / scalar-kind; added `schema.ArrayLiteral` as the
+  shared join helper (also refactored `inferArray` onto it); `IsSubset` array arm already
+  existed, added the provably-empty (`maxItems:0`) case. All six Shape-walkers
+  (`checkShape`, `Shape.Strings`, `inferShape`, `shapeRefsSelfResult`, `shapeRoots`,
+  `evalShape`) descend into arrays. Numeric kind uses a whole-number→integer heuristic on
+  `float64` (JSON's only numeric decode).
 
-**Phase 2 — the `$:` typed leaf (additive):**
-- Detect a leaf-leading `$:` (whitespace-tolerant); route its body to
-  `expression.Parse`/`Eval`/`Infer`, bypassing `template`.
+**Phase 2 — the `$:` typed leaf (additive). ✅ DONE.**
+- `template.Parse` detects a leaf-leading `$:` (whitespace-tolerant, `strings.CutPrefix`)
+  and parses the body as one expression, reusing the `single` (type-preserving) path so it
+  flows through every walker unchanged. `\`-escaping of the marker is deferred to Phase 3.
 
-**Phase 3 — retarget templates & escaping (the breaking step, last):**
+**Phase 3 — retarget templates & escaping (the breaking step, last). ✅ DONE.** Retarget +
+kill-single + full site migration + escaping all landed; the whole suite is green. Escaping
+uses **`$`-doubling, not a backslash** — `\` would collide with JSON/YAML string escaping
+(`\$` is an *invalid* escape in JSON and double-quoted YAML, so `\${` breaks there; it only
+works in YAML plain/single-quoted). `$` is not an escape char in either host, so `$$` is
+collision-free in every quoting style. In `scanTemplate`: `$$`→literal `$` (so `$${`→literal
+`${`, leaf-leading `$$:`→literal `$:`), staying out of expression bodies (two-layer split);
+covered by `template_escape_test.go`. The migration was
+mechanical and behaviour-preserving — a lone `"{{ x }}"` (old type-preserving) → `"$: x"`,
+a mixed one → `"${ x }"` — done with a parse-aware tool (real expression parser for
+block-end detection). ~166 TS sites + Go fixtures + example/bench YAML migrated; the
+template package + its tests rewritten; the R2 fault-literal guard retargeted `{{`→`${`.
+The one hazard (JS `${}` in TS backtick strings) was a non-issue: the single backtick case
+was lone → `$:`, which JS doesn't touch.
 - `{{`/`}}` → `${`/`}` in `Parse`/`parseBlock` (`template.go:55-111`).
 - Delete `Template.single` and both `if t.single` branches — templates always
   stringify (`EvalAny` `:119-145`, `InferType` `:147-176`).
@@ -347,7 +369,11 @@ step compiles and tests green:
   expression-internal escapes.
 - Migrate all example definitions (`examples/`) off `{{ }}` → `${}`/`$:`.
 
-**Phase 4 — editor JSON Schema (ships with the grammar):**
+**Phase 4 — editor JSON Schema (ships with the grammar). ◐ PARTIAL** — the `${}`/`$:`
+description sweep landed with Phase 3 (url/method/over/ms/headers descriptions + the
+`ModelShape` string-branch text). Still remaining: widen `Shape.JSONSchemaBytes()` to the
+generic `Value` `anyOf` (arrays/scalars/null) and inline `relax(object<string>)` for
+headers — editor-hint improvements, not functional (registration uses `checkShape`).
 - Widen `Shape.JSONSchemaBytes()` to the generic `Value` `anyOf` (arrays/scalars/null),
   string branch preserved (`wire.go:200-211`).
 - Inline `relax(object<string>)` for `headers` in `Action.JSONSchemaBytes()`.

@@ -81,7 +81,7 @@ func childActionParentRS(t *testing.T, childName string, rs *schema.Schema) *mod
 
 func TestChildOutputType_ChildAction_MatchingObjectAccepted(t *testing.T) {
 	child := outputtingChild(t, "obj-child2",
-		map[string]any{"ok": "{{ true }}"}, "{{ outputs.compute }}")
+		map[string]any{"ok": "$: true"}, "$: outputs.compute")
 	rs := normalizedSchema(t, `{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
 	assertValidateOK(t, childActionParentRS(t, "obj-child2", rs), stubGetter{"obj-child2": child})
 }
@@ -89,7 +89,7 @@ func TestChildOutputType_ChildAction_MatchingObjectAccepted(t *testing.T) {
 func TestChildOutputType_ChildAction_StringVsObjectRejected(t *testing.T) {
 	// The child's process output is a plain string against an object result_schema — the
 	// same static mismatch child_map rejects, checked here for the standalone `child`.
-	child := outputtingChild(t, "str-child2", nil, `{{ "hello" }}`)
+	child := outputtingChild(t, "str-child2", nil, `$: "hello"`)
 	rs := normalizedSchema(t, `{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
 	assertValidateErr(t, childActionParentRS(t, "str-child2", rs),
 		stubGetter{"str-child2": child}, "result_schema")
@@ -98,7 +98,7 @@ func TestChildOutputType_ChildAction_StringVsObjectRejected(t *testing.T) {
 func TestChildOutputType_MatchingObjectAccepted(t *testing.T) {
 	// Child outputs { ok: boolean }; result_schema expects the same.
 	child := outputtingChild(t, "obj-child",
-		map[string]any{"ok": "{{ true }}"}, "{{ outputs.compute }}")
+		map[string]any{"ok": "$: true"}, "$: outputs.compute")
 	rs := normalizedSchema(t, `{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
 	assertValidateOK(t, childMapParentRS(t, "obj-child", rs), stubGetter{"obj-child": child})
 }
@@ -106,7 +106,7 @@ func TestChildOutputType_MatchingObjectAccepted(t *testing.T) {
 func TestChildOutputType_StringVsObjectRejected(t *testing.T) {
 	// The playground bug: child's process output is a plain string, result_schema is an
 	// object — a static mismatch the check must reject.
-	child := outputtingChild(t, "str-child", nil, `{{ "hello" }}`)
+	child := outputtingChild(t, "str-child", nil, `$: "hello"`)
 	rs := normalizedSchema(t, `{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
 	assertValidateErr(t, childMapParentRS(t, "str-child", rs),
 		stubGetter{"str-child": child}, "result_schema")
@@ -115,7 +115,7 @@ func TestChildOutputType_StringVsObjectRejected(t *testing.T) {
 func TestChildOutputType_MissingRequiredFieldRejected(t *testing.T) {
 	// Child outputs { ok: boolean } but result_schema requires a field it never produces.
 	child := outputtingChild(t, "partial-child",
-		map[string]any{"ok": "{{ true }}"}, "{{ outputs.compute }}")
+		map[string]any{"ok": "$: true"}, "$: outputs.compute")
 	rs := normalizedSchema(t, `{"type":"object","properties":{"missing":{"type":"string"}},"required":["missing"]}`)
 	assertValidateErr(t, childMapParentRS(t, "partial-child", rs),
 		stubGetter{"partial-child": child}, "result_schema")
@@ -126,7 +126,7 @@ func TestChildOutputType_MissingRequiredFieldRejected(t *testing.T) {
 // parent simply reads the subset it declared.
 func TestChildOutputType_ChildReturnsMoreAccepted(t *testing.T) {
 	child := outputtingChild(t, "rich-child",
-		map[string]any{"a": `{{ "x" }}`, "b": `{{ "y" }}`}, "{{ outputs.compute }}")
+		map[string]any{"a": `$: "x"`, "b": `$: "y"`}, "$: outputs.compute")
 	rs := normalizedSchema(t, `{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}`)
 	assertValidateOK(t, childMapParentRS(t, "rich-child", rs), stubGetter{"rich-child": child})
 }
@@ -136,14 +136,14 @@ func TestChildOutputType_ChildReturnsMoreAccepted(t *testing.T) {
 // *required* field is a real incompatibility.
 func TestChildOutputType_OptionalNotYetProducedAccepted(t *testing.T) {
 	child := outputtingChild(t, "lean-child",
-		map[string]any{"a": `{{ "x" }}`}, "{{ outputs.compute }}")
+		map[string]any{"a": `$: "x"`}, "$: outputs.compute")
 	rs := normalizedSchema(t, `{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a"]}`)
 	assertValidateOK(t, childMapParentRS(t, "lean-child", rs), stubGetter{"lean-child": child})
 }
 
 func TestChildOutputType_NoResultSchemaSkipped(t *testing.T) {
 	// No result_schema declared: nothing to check against, any output is fine.
-	child := outputtingChild(t, "any-out", nil, `{{ "whatever" }}`)
+	child := outputtingChild(t, "any-out", nil, `$: "whatever"`)
 	parent := &model.ProcessDefinition{
 		Name: "parent",
 		Tasks: []*model.Task{

@@ -18,7 +18,7 @@ func TestSecretFlowsToOutput(t *testing.T) {
 		"tasks": [
 			{ "id": "t", "action": { "type": "fetch", "url": "http://x" }, "switch": "end" }
 		],
-		"output": { "token": "{{ config.api_key }}", "name": "static" }
+		"output": { "token": "$: config.api_key", "name": "static" }
 	}`)
 	def := defOf(out, "output")
 	if def.IsZero() {
@@ -44,7 +44,7 @@ func TestConfigNullableEndpointRejected(t *testing.T) {
 		"tasks": [
 			{
 				"id": "call",
-				"action": { "type": "fetch", "url": "{{ config.server_url }}/second" },
+				"action": { "type": "fetch", "url": "${ config.server_url }/second" },
 				"switch": "end"
 			}
 		]
@@ -67,7 +67,7 @@ func TestConfigRequiredEndpointOK(t *testing.T) {
 		"tasks": [
 			{
 				"id": "call",
-				"action": { "type": "fetch", "url": "{{ config.server_url }}/second" },
+				"action": { "type": "fetch", "url": "${ config.server_url }/second" },
 				"switch": "end"
 			}
 		]
@@ -88,7 +88,7 @@ func TestConfigNullableHeaderRejected(t *testing.T) {
 				"action": {
 					"type": "fetch",
 					"url": "http://x",
-					"headers": { "Authorization": "Bearer {{ config.api_key }}" }
+					"headers": { "Authorization": "Bearer ${ config.api_key }" }
 				},
 				"switch": "end"
 			}
@@ -114,7 +114,7 @@ func TestConfigRequiredHeaderOK(t *testing.T) {
 				"action": {
 					"type": "fetch",
 					"url": "http://x",
-					"headers": { "Authorization": "Bearer {{ config.api_key }}" }
+					"headers": { "Authorization": "Bearer ${ config.api_key }" }
 				},
 				"switch": "end"
 			}
@@ -133,7 +133,7 @@ func TestConfigDefaultedEndpointOK(t *testing.T) {
 		"tasks": [
 			{
 				"id": "call",
-				"action": { "type": "fetch", "url": "{{ config.server_url }}/second" },
+				"action": { "type": "fetch", "url": "${ config.server_url }/second" },
 				"switch": "end"
 			}
 		]
@@ -152,7 +152,7 @@ func TestConfigNullableEndpointWithCoalesceOK(t *testing.T) {
 		"tasks": [
 			{
 				"id": "call",
-				"action": { "type": "fetch", "url": "{{ config.server_url ?? \"http://localhost\" }}/second" },
+				"action": { "type": "fetch", "url": "${ config.server_url ?? \"http://localhost\" }/second" },
 				"switch": "end"
 			}
 		]

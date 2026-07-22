@@ -14,7 +14,7 @@ func TestGenerate_OutputOfUntypedResult_Errors(t *testing.T) {
 	err := runGenerateErr(t, `{
 		"name": "p",
 		"tasks": [
-			{ "id": "call", "action": { "type": "fetch", "url": "http://x" }, "output": "{{ self.result }}", "switch": "end" }
+			{ "id": "call", "action": { "type": "fetch", "url": "http://x" }, "output": "$: self.result", "switch": "end" }
 		]
 	}`)
 	if err == nil {
@@ -26,14 +26,14 @@ func TestGenerate_OutputOfUntypedResult_Errors(t *testing.T) {
 
 	// A member access under an output map is the same error.
 	if err := runGenerateErr(t, `{"name":"p","tasks":[
-		{"id":"call","action":{"type":"fetch","url":"http://x"},"output":{"v":"{{ self.result.x }}"},"switch":"end"}
+		{"id":"call","action":{"type":"fetch","url":"http://x"},"output":{"v":"$: self.result.x"},"switch":"end"}
 	]}`); err == nil {
 		t.Error("expected an error exporting self.result.x without a result_schema")
 	}
 
 	// With a result_schema the output is well-typed and accepted.
 	if err := runGenerateErr(t, `{"name":"p","tasks":[
-		{"id":"call","action":{"type":"fetch","url":"http://x","result_schema":{"type":"object","properties":{"ok":{"type":"boolean"}}}},"output":"{{ self.result }}","switch":"end"}
+		{"id":"call","action":{"type":"fetch","url":"http://x","result_schema":{"type":"object","properties":{"ok":{"type":"boolean"}}}},"output":"$: self.result","switch":"end"}
 	]}`); err != nil {
 		t.Errorf("exporting self.result with a result_schema should be valid: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestGenerate_OutputOfUntypedResult_Errors(t *testing.T) {
 func TestGenerate_ExternalUntypedResult_Errors(t *testing.T) {
 	// Output export of the raw result → error.
 	if err := runGenerateErr(t, `{"name":"p","tasks":[
-		{"id":"wait","action":{"type":"external"},"output":"{{ self.result }}","switch":"end"}
+		{"id":"wait","action":{"type":"external"},"output":"$: self.result","switch":"end"}
 	]}`); err == nil {
 		t.Error("expected an error exporting an external self.result without a result_schema")
 	}
@@ -68,7 +68,7 @@ func TestGenerate_ExternalUntypedResult_Errors(t *testing.T) {
 	// With a result_schema the result is well-typed and accessible in both.
 	if err := runGenerateErr(t, `{"name":"p","tasks":[
 		{"id":"wait","action":{"type":"external","result_schema":{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}},
-		 "output":"{{ self.result }}","switch":[{"case":"self.result.ok","goto":"end"},{"goto":"end"}]}
+		 "output":"$: self.result","switch":[{"case":"self.result.ok","goto":"end"},{"goto":"end"}]}
 	]}`); err != nil {
 		t.Errorf("external self.result with a result_schema should be accepted: %v", err)
 	}

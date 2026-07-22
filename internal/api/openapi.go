@@ -25,10 +25,22 @@ var (
 	processSchemaBytes []byte
 )
 
+// shapeDefName keeps the Shape type's generated def name stable as ModelShape after the
+// type moved from package model to package shape (swaggest would otherwise name it
+// ShapeShape). Hand-written $refs — the Action schema and Shape's own self-recursion —
+// point at ModelShape, so this mapping lets them resolve without edits.
+func shapeDefName(_ reflect.Type, defaultDefName string) string {
+	if defaultDefName == "ShapeShape" {
+		return "ModelShape"
+	}
+	return defaultDefName
+}
+
 func buildProcessDefinitionSchema() []byte {
 	processSchemaOnce.Do(func() {
 		r := jsonschema.Reflector{}
 		r.DefaultOptions = append(r.DefaultOptions,
+			jsonschema.InterceptDefName(shapeDefName),
 			jsonschema.InterceptProp(func(params jsonschema.InterceptPropParams) error {
 				if !params.Processed || params.Field.Type == nil || params.ParentSchema == nil {
 					return nil
@@ -114,6 +126,8 @@ func buildSpec() []byte {
 		r.Spec.Info.Title = "genroc"
 		r.Spec.Info.Description = &desc
 		r.Spec.Info.Version = "1.0.0"
+
+		r.DefaultOptions = append(r.DefaultOptions, jsonschema.InterceptDefName(shapeDefName))
 
 		// Fields are required by default; add json:",omitempty" or use a pointer type to opt out.
 		r.DefaultOptions = append(r.DefaultOptions, jsonschema.InterceptProp(func(params jsonschema.InterceptPropParams) error {

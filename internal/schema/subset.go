@@ -212,6 +212,11 @@ func (ctx *subsetCtx) checkArray(sub, super *node) bool {
 	if super.Items == nil {
 		return true
 	}
+	// A provably-empty array (maxItems 0, e.g. a literal `[]`) holds no element that
+	// could violate super's item type, so it is a subset of any array<T>.
+	if sub.MaxItems != nil && *sub.MaxItems == 0 {
+		return true
+	}
 	if sub.Items == nil {
 		return false
 	}

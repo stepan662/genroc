@@ -32,7 +32,7 @@ func Eval(expression string, context map[string]any) (any, error) {
 }
 
 // EvalNode evaluates an already-parsed expression against context. Callers that
-// hold a parsed tree — internal/template, which parses each {{ }} block once —
+// hold a parsed tree — internal/template, which parses each ${ } block once —
 // use this to avoid re-parsing the source on every evaluation.
 func EvalNode(node syntax.Node, context map[string]any) (any, error) {
 	return evalNode(node, env{ctx: context})

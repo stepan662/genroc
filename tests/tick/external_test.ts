@@ -44,7 +44,7 @@ test("external parks, is queued, and resumes when resolved", async () => {
     {
       id: "approval",
       action: { type: "external", input: { msg: "approve me" }, result_schema: approvedSchema },
-      output: "{{ self.result }}",
+      output: "$: self.result",
       switch: "end",
     },
   ]);

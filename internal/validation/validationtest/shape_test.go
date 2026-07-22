@@ -16,7 +16,7 @@ func TestGenerate_OutputSingleExpressionPassthrough(t *testing.T) {
 					"properties":{"charged":{"type":"boolean"}},
 					"required":["charged"]
 				}},
-				"output": "{{ self.result }}",
+				"output": "$: self.result",
 				"switch": "end"
 			}
 		]
@@ -41,7 +41,7 @@ func TestGenerate_OutputNestedObject(t *testing.T) {
 					"properties":{"charged":{"type":"boolean"}},
 					"required":["charged"]
 				}},
-				"output": {"data": {"flag": "{{ self.result.charged }}"}},
+				"output": {"data": {"flag": "$: self.result.charged"}},
 				"switch": "end"
 			}
 		]
@@ -82,10 +82,10 @@ func TestGenerate_ProcessOutputSingleExpressionScalar(t *testing.T) {
         }
       },
       "switch": "end",
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     }
   ],
-  "output": "{{ outputs.charge.charged }}"
+  "output": "$: outputs.charge.charged"
 }`)
 	assertJSON(t, out.ProcessOutput, `{"$ref": "#/$defs/output"}`)
 	assertJSON(t, defOf(out, "output"), `{"type":"boolean"}`)
@@ -100,7 +100,7 @@ func TestGenerate_OutputRecursiveSingleExpression(t *testing.T) {
 		"tasks": [
 			{
 				"id": "loop",
-				"output": "{{ (self.previous ?? input.seed) + 1 }}",
+				"output": "$: (self.previous ?? input.seed) + 1",
 				"switch": [{"case":"self.output < 10","goto":"$loop"},{"goto":"end"}]
 			}
 		]

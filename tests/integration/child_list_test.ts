@@ -16,12 +16,12 @@ async function defineDoubler(name: string) {
       tasks: [
         {
           id: "wait",
-          action: { type: "delay" as const, ms: "{{ (6 - input.n) * 30 }}" },
+          action: { type: "delay" as const, ms: "$: (6 - input.n) * 30" },
           switch: [{ goto: "next" }],
         },
         { id: "done", switch: [{ goto: "end" }] },
       ],
-      output: { doubled: "{{ input.n * 2 }}", original: "{{ input.n }}" },
+      output: { doubled: "$: input.n * 2", original: "$: input.n" },
     },
   });
 }
@@ -55,18 +55,18 @@ test("child_list — result is an array in input order despite out-of-order comp
           action: {
             type: "child_list" as const,
             name: leaf,
-            over: "{{ input.items }}",
+            over: "$: input.items",
             result_schema: {
               type: "object",
               properties: { doubled: { type: "number" }, original: { type: "number" } },
               required: ["doubled", "original"],
             },
           },
-          output: "{{ self.result }}",
+          output: "$: self.result",
           switch: [{ goto: "end" }],
         },
       ],
-      output: { results: "{{ outputs.spread }}" },
+      output: { results: "$: outputs.spread" },
     },
   });
 
@@ -125,18 +125,18 @@ test("child_list — empty array spawns no children and yields an empty array", 
           action: {
             type: "child_list" as const,
             name: leaf,
-            over: "{{ input.items }}",
+            over: "$: input.items",
             result_schema: {
               type: "object",
               properties: { doubled: { type: "number" }, original: { type: "number" } },
               required: ["doubled", "original"],
             },
           },
-          output: "{{ self.result }}",
+          output: "$: self.result",
           switch: [{ goto: "end" }],
         },
       ],
-      output: { results: "{{ outputs.spread }}" },
+      output: { results: "$: outputs.spread" },
     },
   });
 
@@ -176,7 +176,7 @@ test("child_list — registration rejects an element type incompatible with the 
           action: {
             type: "child_list" as const,
             name: leaf,
-            over: "{{ input.nums }}",
+            over: "$: input.nums",
           },
           switch: [{ goto: "end" }],
         },
@@ -215,7 +215,7 @@ test("child_list — rejects `over` that does not evaluate to an array", async (
   // input.n is an integer, not an array.
   const error = await overError(
     { type: "object", properties: { n: { type: "integer" } }, required: ["n"] },
-    "{{ input.n }}",
+    "$: input.n",
     leaf,
   );
   expect(error).toBeDefined();
@@ -236,7 +236,7 @@ test("child_list — rejects `over` that may be null", async () => {
         },
       },
     },
-    "{{ input.items }}",
+    "$: input.items",
     leaf,
   );
   expect(error).toBeDefined();
@@ -249,7 +249,7 @@ test("child_list — rejects `over` array with no declared element type", async 
   // `items` is an array but declares no item schema → element type is unknown.
   const error = await overError(
     { type: "object", properties: { items: { type: "array" } }, required: ["items"] },
-    "{{ input.items }}",
+    "$: input.items",
     leaf,
   );
   expect(error).toBeDefined();
@@ -261,7 +261,7 @@ test("child_list — rejects `over` referencing an unknown field", async () => {
   await defineDoubler(leaf);
   const error = await overError(
     { type: "object", properties: { items: { type: "array", items: { type: "object" } } }, required: ["items"] },
-    "{{ input.nope }}",
+    "$: input.nope",
     leaf,
   );
   expect(error).toBeDefined();
@@ -297,7 +297,7 @@ test("child_list — a result_schema the child's output can't satisfy is rejecte
           action: {
             type: "child_list" as const,
             name: leaf,
-            over: "{{ input.items }}",
+            over: "$: input.items",
             result_schema: {
               type: "object",
               properties: { missing: { type: "string" } },
@@ -339,21 +339,21 @@ test("child_list — the collected array is usable downstream by index", async (
           action: {
             type: "child_list" as const,
             name: leaf,
-            over: "{{ input.items }}",
+            over: "$: input.items",
             result_schema: {
               type: "object",
               properties: { doubled: { type: "number" }, original: { type: "number" } },
               required: ["doubled", "original"],
             },
           },
-          output: "{{ self.result }}",
+          output: "$: self.result",
           switch: [{ goto: "end" }],
         },
       ],
       // Read specific elements of the collected array by index.
       output: {
-        first: "{{ outputs.spread[0].doubled }}",
-        third: "{{ outputs.spread[2].doubled }}",
+        first: "$: outputs.spread[0].doubled",
+        third: "$: outputs.spread[2].doubled",
       },
     },
   });

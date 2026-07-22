@@ -88,8 +88,8 @@ func (Action) JSONSchemaBytes() ([]byte, error) {
 				"description": "HTTP call — sends a request to a URL, like a fetch(). URL, method, headers, and body are all expressions/shapes, so the whole request can be driven from the context.",
 				"properties": {
 					"type":            {"type": "string", "const": "fetch"},
-					"url":             {"type": "string", "description": "Request URL. May contain {{ }} expressions evaluated against the current context (e.g. {{ config.server_url }}/path)."},
-					"method":          {"type": "string", "description": "HTTP method, as an expression (e.g. GET, POST, {{ input.method }}). Defaults to POST."},
+					"url":             {"type": "string", "description": "Request URL. May contain ${ } interpolations evaluated against the current context (e.g. ${ config.server_url }/path)."},
+					"method":          {"type": "string", "description": "HTTP method, a template (e.g. GET, POST, ${ input.method }). Defaults to POST."},
 					"headers":         {"$ref": "#/$defs/ModelShape", "description": "Request headers: a shape evaluating to an object of string values (a literal map of templated values, or a single expression yielding a map)."},
 					"accepted_status": {"type": "array", "items": {"type": "string"}, "description": "HTTP status patterns accepted as non-errors, e.g. \"2xx\" or \"404\". Defaults to any 2xx."},
 					"body":            {"$ref": "#/$defs/ModelShape", "description": "Templated value (string expression or nested object) evaluated against the current context to build the request body. An object is sent as JSON."},
@@ -143,7 +143,7 @@ func (Action) JSONSchemaBytes() ([]byte, error) {
 					"type":          {"type": "string", "const": "child_list"},
 					"name":          {"type": "string", "description": "Name of the child process to invoke for every element."},
 					"version":       {"type": "integer", "description": "Version to run; 0 means latest published version."},
-					"over":          {"type": "string", "description": "Expression ({{ ... }}) evaluating to an array; the engine spawns one child per element, passing the element as that child's input. An empty array spawns no children and yields an empty-array result."},
+					"over":          {"type": "string", "description": "A $: expression evaluating to an array (e.g. \"$: input.items\"); the engine spawns one child per element, passing the element as that child's input. An empty array spawns no children and yields an empty-array result."},
 					"result_schema": {"type": "object", "additionalProperties": true, "description": "JSON Schema to validate and expose EACH child's output. The collected result is an array of values conforming to this schema."}
 				},
 				"required": ["type", "name", "over"],
@@ -154,7 +154,7 @@ func (Action) JSONSchemaBytes() ([]byte, error) {
 				"description": "Delay action — pauses the instance for a duration without holding a worker, then routes via switch.",
 				"properties": {
 					"type": {"type": "string", "const": "delay"},
-					"ms":   {"type": "string", "description": "Milliseconds to pause, as an expression: a literal such as 30000 or a template such as {{ outputs.x.retry_after }}."}
+					"ms":   {"type": "string", "description": "Milliseconds to pause, as an expression: a literal such as \"30000\" or a $: expression such as \"$: outputs.x.retry_after\"."}
 				},
 				"required": ["type", "ms"],
 				"additionalProperties": false

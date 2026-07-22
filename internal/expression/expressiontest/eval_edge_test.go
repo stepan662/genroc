@@ -678,7 +678,7 @@ func TestEvalEdge_ArrayLiteralErrorPropagates(t *testing.T) {
 // process down rather than failing one instance.
 //
 // Inference did not block it either: "==" was alwaysBoolean for every operand
-// type, so `{{ input.a == input.b }}` over two lists registered cleanly and
+// type, so `$: input.a == input.b` over two lists registered cleanly and
 // panicked on the first tick. Both halves now reject the pairing — inferEquality
 // at registration and equalValues at runtime — so a structured comparison is a
 // clear error rather than a crash. This assertion stays deliberately loose

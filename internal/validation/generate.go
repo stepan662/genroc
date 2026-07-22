@@ -8,6 +8,7 @@ import (
 
 	"genroc/internal/model"
 	"genroc/internal/schema"
+	"genroc/internal/shape"
 )
 
 // TaskSchemas holds the schemas associated with a single task.
@@ -152,7 +153,8 @@ func Generate(def *model.ProcessDefinition) (SchemaFile, error) {
 func inferProcessOutput(def *model.ProcessDefinition, tasks map[string]TaskSchemas, processInput, configSchema schema.Schema, defs schema.Defs) (schema.Schema, error) {
 	req, opt, errReq, errOpt := outputContextSets(def)
 	ctx := contextSchema(req, opt, tasks, processInput, configSchema, errReq, errOpt).WithDefs(defs)
-	return inferShape(def.Output.Raw, ctx, "output")
+	shp := shape.Shape{Raw: def.Output.Raw, Name: "output"}
+	return shp.Check(ctx)
 }
 
 func collectNamedOutputs(tasks []*model.Task, named map[string]schema.Schema) {

@@ -1,24 +1,32 @@
-// Package template parses and evaluates {{ }} template strings.
+// Package template parses and evaluates template strings.
 //
-// Three modes:
-//   - Plain string (no {{ }}): returned as a string literal.
-//   - Single expression "{{expr}}": evaluated and returned as-is (preserves type).
-//   - Mixed "text{{expr}}text": each {{expr}} is evaluated, must be string/number/bool,
-//     results are stringified and concatenated with the surrounding literal text.
+// Modes:
+//   - Typed expression "$: expr": the leaf is one expression whose result type is
+//     preserved (leading whitespace before the marker is tolerated). Bypasses block
+//     splitting; this is the type-preserving form for a data leaf.
+//   - Plain string (no ${ }): returned as a string literal.
+//   - Interpolation "text${expr}text": each ${expr} is evaluated, must be
+//     string/number/bool, and is stringified and concatenated with the literal text.
+//     Interpolation always yields a string — to preserve a value's type use $:.
+//
+// Escaping uses $-doubling (never a backslash, so it does not collide with JSON/YAML
+// string escaping): in literal text "$$" is a literal "$", so "$${" is a literal "${" and
+// a leaf-leading "$$:" is a literal "$:". Escaping is a template-layer concern — inside a
+// ${ } or $: body the raw source is handed to the expression lexer, which does its own.
 //
 // A template is parsed once into a Template — literal chunks interleaved with
 // parsed expression ASTs — and then evaluated or type-inferred against a context
-// any number of times. Which of the three modes applies is fixed at parse time
-// rather than re-derived per call. Get memoises parsing, since templates are
-// static strings carried on process definitions.
+// any number of times. Which mode applies is fixed at parse time rather than
+// re-derived per call. Get memoises parsing, since templates are static strings
+// carried on process definitions.
 //
-// Where an expression ends is decided by the expression parser, not by scanning
-// for the next "}}": at each "{{" the candidate terminators are tried in order
-// and the first body that parses wins. A "}}" nested inside an object literal
-// ({{ {a: {b: 1}} }}) or inside a string literal ({{ "x}}y" }}) therefore does
-// not end the block, because a candidate that cuts through either fails to
-// parse. That keeps the lexical rules in one place instead of duplicating a
-// string-and-bracket scanner here, where it could silently drift.
+// Where an interpolation ends is decided by the expression parser, not by scanning
+// for the next "}": at each "${" the candidate terminators are tried in order and
+// the first body that parses wins. A "}" nested inside an object literal
+// (${ {a: {b: 1}} }) or inside a string literal (${ "x}y" }) therefore does not end
+// the block, because a candidate that cuts through either fails to parse. That keeps
+// the lexical rules in one place instead of duplicating a string-and-bracket scanner
+// here, where it could silently drift.
 package template
 
 import (
@@ -34,14 +42,15 @@ import (
 	"genroc/internal/schema"
 )
 
-// Template is a parsed {{ }} template. The zero value is not usable; obtain one
-// from Parse or Get. A Template is immutable and safe for concurrent use.
+// Template is a parsed template. The zero value is not usable; obtain one from Parse
+// or Get. A Template is immutable and safe for concurrent use.
 type Template struct {
 	src    string
 	chunks []chunk
-	// single marks a template that is exactly one expression and no literal text,
-	// so evaluation returns the raw value instead of stringifying it.
-	single bool
+	// expr marks a $: leaf — one typed expression — so evaluation returns the raw
+	// value (preserving its type) instead of stringifying it. Interpolation (${ })
+	// always stringifies, so it never sets this.
+	expr bool
 }
 
 // chunk is either literal text (node == nil) or a parsed expression, in which
@@ -51,48 +60,96 @@ type chunk struct {
 	node syntax.Node
 }
 
-// Parse splits s into literal and expression chunks, parsing each expression.
-func Parse(s string) (*Template, error) {
-	t := &Template{src: s}
-	rest := s
-	for {
-		start := strings.Index(rest, "{{")
-		if start == -1 {
-			if rest != "" {
-				t.chunks = append(t.chunks, chunk{text: rest})
-			}
-			break
-		}
-		if start > 0 {
-			t.chunks = append(t.chunks, chunk{text: rest[:start]})
-		}
-		expr, node, after, err := parseBlock(rest[start+2:])
-		if err != nil {
-			return nil, fmt.Errorf("template %q: %w", s, err)
-		}
-		t.chunks = append(t.chunks, chunk{text: expr, node: node})
-		rest = after
+// exprMarker prefixes a leaf that is a single typed expression: everything after it
+// (trimmed) is one expression whose result type is preserved, bypassing block
+// splitting and stringification. A leaf is a $: expression when its first
+// non-whitespace content is this marker (unescaped).
+const exprMarker = "$:"
+
+// leadingWS returns the byte length of s's leading ASCII whitespace.
+func leadingWS(s string) int {
+	i := 0
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n') {
+		i++
 	}
-	t.single = len(t.chunks) == 1 && t.chunks[0].node != nil
+	return i
+}
+
+// Parse splits s into literal and expression chunks. A leaf whose first non-whitespace
+// content is an unescaped "$:" is one typed expression (type-preserving); everything else
+// is a template whose ${ } interpolations are stringified into the surrounding text.
+//
+// Escaping uses $-doubling, not a backslash, so it never collides with JSON or YAML string
+// escaping ('$' is not an escape character in either, in any quoting style). In literal
+// text "$$" renders one literal "$": thus "$${" is a literal "${", and a leaf-leading
+// "$$:" is a literal "$:". A single "$" not forming a marker is already literal, so no
+// escape is needed there. Escaping applies only to literal text — inside a ${ } or $: body
+// the raw source is handed to the expression lexer, which does its own escapes.
+func Parse(s string) (*Template, error) {
+	ws := leadingWS(s)
+	if body, ok := strings.CutPrefix(s[ws:], exprMarker); ok {
+		body = strings.TrimSpace(body)
+		node, err := syntax.Parse(body)
+		if err != nil {
+			return nil, fmt.Errorf("expression %q: %w", body, err)
+		}
+		return &Template{src: s, chunks: []chunk{{text: body, node: node}}, expr: true}, nil
+	}
+	return scanTemplate(s)
+}
+
+// scanTemplate splits a template into literal and ${ } expression chunks, collapsing a
+// doubled "$$" in literal text to a single literal "$" (see Parse).
+func scanTemplate(s string) (*Template, error) {
+	t := &Template{src: s}
+	var lit []byte
+	flush := func() {
+		if len(lit) > 0 {
+			t.chunks = append(t.chunks, chunk{text: string(lit)})
+			lit = lit[:0]
+		}
+	}
+	for i := 0; i < len(s); {
+		if s[i] == '$' && i+1 < len(s) {
+			switch s[i+1] {
+			case '$':
+				lit = append(lit, '$') // $$ -> literal $ (so $${ is a literal ${)
+				i += 2
+				continue
+			case '{':
+				flush()
+				body, node, after, err := parseBlock(s[i+2:])
+				if err != nil {
+					return nil, fmt.Errorf("template %q: %w", s, err)
+				}
+				t.chunks = append(t.chunks, chunk{text: body, node: node})
+				i = len(s) - len(after) // after is a suffix of s; advance past the block
+				continue
+			}
+		}
+		lit = append(lit, s[i])
+		i++
+	}
+	flush()
 	return t, nil
 }
 
-// parseBlock splits one {{ }} block off the front of s, which starts just past the
-// opening "{{". Each "}}" is tried as the terminator in order and the first body
-// that parses wins, so a "}}" inside a nested literal or a string does not end the
+// parseBlock splits one ${ } interpolation off the front of s, which starts just past
+// the opening "${". Each "}" is tried as the terminator in order and the first body
+// that parses wins, so a "}" inside a nested literal or a string does not end the
 // block: a candidate that cuts mid-string leaves the string unterminated, which is
 // itself a parse error, and the scan moves on.
 //
 // Shortest-match is sound. For a longer body to have been intended it would have to
-// parse too, which requires the intervening "}}" to sit inside brackets or a string
+// parse too, which requires the intervening "}" to sit inside brackets or a string
 // — and in both cases the shorter candidate fails to parse.
 func parseBlock(s string) (expr string, node syntax.Node, rest string, err error) {
 	var longest error
 	for at := 0; ; {
-		end := strings.Index(s[at:], "}}")
+		end := strings.Index(s[at:], "}")
 		if end == -1 {
 			if longest == nil {
-				return "", nil, "", errors.New("unclosed {{")
+				return "", nil, "", errors.New("unclosed ${")
 			}
 			// Every candidate failed. Report the longest one's error: a truncated
 			// candidate dies with an uninformative "unexpected EOF", while the full
@@ -103,7 +160,7 @@ func parseBlock(s string) (expr string, node syntax.Node, rest string, err error
 		body := s[:end]
 		node, perr := syntax.Parse(body)
 		if perr == nil {
-			return body, node, s[end+2:], nil
+			return body, node, s[end+1:], nil
 		}
 		longest = fmt.Errorf("expression %q: %w", body, perr)
 		at = end + 1
@@ -113,11 +170,11 @@ func parseBlock(s string) (expr string, node syntax.Node, rest string, err error
 // Source returns the template string this was parsed from.
 func (t *Template) Source() string { return t.src }
 
-// EvalAny evaluates the template against ctx. A single-expression template returns
-// the raw value, preserving its type; anything else stringifies each expression and
-// concatenates it with the literal text.
+// EvalAny evaluates the template against ctx. A $: expression returns the raw value,
+// preserving its type; a template stringifies each ${ } interpolation and concatenates
+// it with the literal text.
 func (t *Template) EvalAny(ctx map[string]any) (any, error) {
-	if t.single {
+	if t.expr {
 		val, err := expression.EvalNode(t.chunks[0].node, ctx)
 		if err != nil {
 			return nil, fmt.Errorf("template %q: %w", t.src, err)
@@ -145,11 +202,11 @@ func (t *Template) EvalAny(ctx map[string]any) (any, error) {
 
 // InferType returns the static type of the template's result against sc.
 func (t *Template) InferType(sc schema.Schema) (schema.Schema, error) {
-	if t.single {
+	if t.expr {
 		return sc.InferNode(t.chunks[0].node)
 	}
-	// A mixed template always yields a string, but a null interpolation would
-	// silently stringify to "null" — reject it so the author adds a ?? default.
+	// A template always yields a string, but a null interpolation would silently
+	// stringify to "null" — reject it so the author adds a ?? default.
 	for _, c := range t.chunks {
 		if c.node == nil {
 			continue
@@ -268,6 +325,6 @@ func stringify(v any) (string, error) {
 		}
 		return "false", nil
 	default:
-		return "", fmt.Errorf("cannot stringify %T in mixed template (only string, number, bool allowed)", v)
+		return "", fmt.Errorf("cannot stringify %T in interpolation (only string, number, bool allowed)", v)
 	}
 }

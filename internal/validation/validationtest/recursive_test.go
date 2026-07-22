@@ -67,31 +67,31 @@ func TestInferRecursiveOutput(t *testing.T) {
 	}{
 		{
 			name:   "counter via outputs.<self>",
-			exprs:  map[string]string{"n": "{{ (outputs.count.n ?? 0) + 1 }}"},
+			exprs:  map[string]string{"n": "$: (outputs.count.n ?? 0) + 1"},
 			selfID: "count",
 			want:   sobj(map[string]string{"n": "integer"}, "n"),
 		},
 		{
 			name:   "counter via self.previous",
-			exprs:  map[string]string{"n": "{{ (self.previous.n ?? 0) + 1 }}"},
+			exprs:  map[string]string{"n": "$: (self.previous.n ?? 0) + 1"},
 			selfID: "count",
 			want:   sobj(map[string]string{"n": "integer"}, "n"),
 		},
 		{
 			name:   "string accumulator",
-			exprs:  map[string]string{"s": `{{ (outputs.cat.s ?? "") + "x" }}`},
+			exprs:  map[string]string{"s": `$: (outputs.cat.s ?? "") + "x"`},
 			selfID: "cat",
 			want:   sobj(map[string]string{"s": "string"}, "s"),
 		},
 		{
 			name:   "boolean toggle via self.previous",
-			exprs:  map[string]string{"f": "{{ !(self.previous.f ?? false) }}"},
+			exprs:  map[string]string{"f": "$: !(self.previous.f ?? false)"},
 			selfID: "tog",
 			want:   sobj(map[string]string{"f": "boolean"}, "f"),
 		},
 		{
 			name:     "sum folding a sibling output",
-			exprs:    map[string]string{"total": "{{ (outputs.acc.total ?? 0) + outputs.item.value }}"},
+			exprs:    map[string]string{"total": "$: (outputs.acc.total ?? 0) + outputs.item.value"},
 			siblings: map[string]string{"item": sobj(map[string]string{"value": "number"}, "value")},
 			selfID:   "acc",
 			want:     sobj(map[string]string{"total": "number"}, "total"),
@@ -99,15 +99,15 @@ func TestInferRecursiveOutput(t *testing.T) {
 		{
 			name: "multiple fields mixing both self references",
 			exprs: map[string]string{
-				"n": "{{ (outputs.s.n ?? 0) + 1 }}",
-				"f": "{{ !(self.previous.f ?? false) }}",
+				"n": "$: (outputs.s.n ?? 0) + 1",
+				"f": "$: !(self.previous.f ?? false)",
 			},
 			selfID: "s",
 			want:   sobj(map[string]string{"n": "integer", "f": "boolean"}, "f", "n"),
 		},
 		{
 			name:    "no base case (no ?? default) is rejected",
-			exprs:   map[string]string{"n": "{{ outputs.c.n + 1 }}"},
+			exprs:   map[string]string{"n": "$: outputs.c.n + 1"},
 			selfID:  "c",
 			wantErr: true,
 		},

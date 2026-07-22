@@ -10,7 +10,7 @@ tasks:
         properties:
           test:
             type: boolean
-    output: "{{ self.result }}"
+    output: "$: self.result"
     switch:
       - panic:
           code: test
@@ -18,4 +18,4 @@ tasks:
     on_error:
       - code: ["fourth_%"]
         goto: end
-output: "{{ error }}"
+output: "$: error"

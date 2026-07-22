@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// A bare `{{self.previous ?? input}}` output is the coinductive tautology
+// A bare `$: self.previous ?? input` output is the coinductive tautology
 // X = X ∨ I: it collapses to the input type exactly — no fixpoint widening, no
 // recursive wrapper. The input itself was passed through whole, so the
 // collapsed type is the reference to the input definition.
@@ -19,7 +19,7 @@ func TestGenerate_DegenerateSelfOutputCollapsesToInput(t *testing.T) {
 		"tasks": [
 			{
 				"id": "loop",
-				"output": "{{ self.previous ?? input }}",
+				"output": "$: self.previous ?? input",
 				"switch": [{"case":"(self.output.seed ?? 0) < 10","goto":"$loop"},{"goto":"end"}]
 			}
 		]
@@ -29,7 +29,7 @@ func TestGenerate_DegenerateSelfOutputCollapsesToInput(t *testing.T) {
 		`{"type":"object","properties":{"seed":{"type":"integer"}},"required":["seed"]}`)
 }
 
-// A bare `{{self.previous}}` with no base case is X = X ∨ null (the wrapper
+// A bare `$: self.previous` with no base case is X = X ∨ null (the wrapper
 // adds the null of "no previous iteration"), which collapses to exactly null —
 // the value it will always hold at runtime.
 func TestGenerate_PureSelfOutputCollapsesToNull(t *testing.T) {
@@ -39,7 +39,7 @@ func TestGenerate_PureSelfOutputCollapsesToNull(t *testing.T) {
 		"tasks": [
 			{
 				"id": "loop",
-				"output": "{{ self.previous }}",
+				"output": "$: self.previous",
 				"switch": [{"case":"input.n < 10","goto":"$loop"},{"goto":"end"}]
 			}
 		]
@@ -57,8 +57,8 @@ func TestGenerate_MixedComputationalAndStructuralRecursion(t *testing.T) {
 			{
 				"id": "loop",
 				"output": {
-					"count": "{{ (self.previous.count ?? 0) + 1 }}",
-					"trail": "{{ self.previous }}"
+					"count": "$: (self.previous.count ?? 0) + 1",
+					"trail": "$: self.previous"
 				},
 				"switch": [{"case":"self.output.count < 10","goto":"$loop"},{"goto":"end"}]
 			}
@@ -83,12 +83,12 @@ func TestGenerate_MutualStructuralRecursionKept(t *testing.T) {
 		"tasks": [
 			{
 				"id": "a",
-				"output": {"prev_b": "{{ outputs.b }}", "n": "{{ (self.previous.n ?? 0) + 1 }}"},
+				"output": {"prev_b": "$: outputs.b", "n": "$: (self.previous.n ?? 0) + 1"},
 				"switch": "next"
 			},
 			{
 				"id": "b",
-				"output": {"prev_a": "{{ outputs.a }}"},
+				"output": {"prev_a": "$: outputs.a"},
 				"switch": [{"case":"(outputs.a.n ?? 0) < input.n","goto":"$a"},{"goto":"end"}]
 			}
 		]
@@ -113,9 +113,9 @@ func TestGenerate_RecursiveGenerationDeterministic(t *testing.T) {
 			{
 				"id": "loop",
 				"output": {
-					"count": "{{ (self.previous.count ?? 0) + 1 }}",
-					"trail": "{{ self.previous }}",
-					"snap":  "{{ self.previous ?? input }}"
+					"count": "$: (self.previous.count ?? 0) + 1",
+					"trail": "$: self.previous",
+					"snap":  "$: self.previous ?? input"
 				},
 				"switch": [{"case":"self.output.count < 10","goto":"$loop"},{"goto":"end"}]
 			}
@@ -138,7 +138,7 @@ func TestGenerate_EmittedRecursiveDefsPassCheckDoc(t *testing.T) {
 		"tasks": [
 			{
 				"id": "loop",
-				"output": {"count": "{{ (self.previous.count ?? 0) + 1 }}", "trail": "{{ self.previous }}"},
+				"output": {"count": "$: (self.previous.count ?? 0) + 1", "trail": "$: self.previous"},
 				"switch": [{"case":"self.output.count < 10","goto":"$loop"},{"goto":"end"}]
 			}
 		]

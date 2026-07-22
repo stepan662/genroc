@@ -424,7 +424,7 @@ func TestInferLiteral_EmptyArray_AsCoalesceDefault(t *testing.T) {
 // Schema reads as EXACTLY one variant. An empty array satisfies both
 // `{array, maxItems:0}` and `{array, items:T}` — items constrains nothing at zero
 // length — so the schema inferred for `xs ?? []` rejected the very empty value the
-// idiom exists to produce, and `over: "{{ xs ?? [] }}"` failed registration because
+// idiom exists to produce, and `over: "$: xs ?? []"` failed registration because
 // Items() is not reachable through a union. Every path that could build that union
 // now absorbs the provably-empty arm.
 func TestInferLiteral_EmptyArrayUnionsValidateTheirOwnValue(t *testing.T) {

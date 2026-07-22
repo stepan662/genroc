@@ -19,7 +19,7 @@ test("map — child_list fans out over a reshaped array", async () => {
         required: ["sku", "qty"],
       },
       tasks: [{ id: "done", switch: [{ goto: "end" }] }],
-      output: { line: "{{ input.sku }}x{{ input.qty }}" },
+      output: { line: "${ input.sku }x${ input.qty }" },
     },
   });
 
@@ -50,7 +50,7 @@ test("map — child_list fans out over a reshaped array", async () => {
             type: "child_list" as const,
             name: leaf,
             // Rename code->sku and count->qty, and derive a value per element.
-            over: "{{ map(input.rows, r => {sku: r.code, qty: r.count + 1}) }}",
+            over: "$: map(input.rows, r => {sku: r.code, qty: r.count + 1})",
             result_schema: {
               type: "object",
               properties: { line: { type: "string" } },
@@ -58,10 +58,10 @@ test("map — child_list fans out over a reshaped array", async () => {
             },
           },
           switch: [{ goto: "end" }],
-          output: { lines: "{{ map(self.result, c => c.line) }}" },
+          output: { lines: "$: map(self.result, c => c.line)" },
         },
       ],
-      output: { lines: "{{ outputs.spread.lines }}" },
+      output: { lines: "$: outputs.spread.lines" },
     },
   });
 
@@ -109,7 +109,7 @@ test("map — a bad field in the lambda body is rejected at registration", async
         required: ["rows"],
       },
       tasks: [{ id: "done", switch: [{ goto: "end" }] }],
-      output: { bad: "{{ map(input.rows, r => r.code + r.nope) }}" },
+      output: { bad: "$: map(input.rows, r => r.code + r.nope)" },
     },
   });
   expect(res.response.status).toBe(400);
@@ -139,7 +139,7 @@ test("map — a nullable source is rejected, and ?? [] fixes it", async () => {
       name: `map_nullsrc_${uid}`,
       input_schema: inputSchema,
       tasks: [{ id: "done", switch: [{ goto: "end" }] }],
-      output: { codes: "{{ map(input.rows, r => r.code) }}" },
+      output: { codes: "$: map(input.rows, r => r.code)" },
     },
   });
   expect(bad.response.status).toBe(400);
@@ -149,7 +149,7 @@ test("map — a nullable source is rejected, and ?? [] fixes it", async () => {
       name: `map_nullsrc_ok_${uid}`,
       input_schema: inputSchema,
       tasks: [{ id: "done", switch: [{ goto: "end" }] }],
-      output: { codes: "{{ map(input.rows ?? [], r => r.code) }}" },
+      output: { codes: "$: map(input.rows ?? [], r => r.code)" },
     },
   });
   expect(good.response.status).toBe(200);

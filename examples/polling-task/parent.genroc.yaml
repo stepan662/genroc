@@ -21,10 +21,10 @@ tasks:
       type: child
       name: poll-until-done
       input:
-        url: "{{ input.url }}"
-        headers: "{{ input.headers }}"
-        poll_interval_ms: "{{ input.poll_interval_ms }}"
-        max_attempts: "{{ input.max_attempts }}"
+        url: "$: input.url"
+        headers: "$: input.headers"
+        poll_interval_ms: "$: input.poll_interval_ms"
+        max_attempts: "$: input.max_attempts"
       result_schema:
         type: object
         properties:
@@ -33,11 +33,11 @@ tasks:
     on_error:
       - code: [cancelled, poll_timeout]
         goto: $report
-    output: "{{ self.result }}"
+    output: "$: self.result"
     switch: end
 
   - id: report
     output:
-      outcome: "{{ error.code }}"
-      detail: "{{ error.message }}"
+      outcome: "$: error.code"
+      detail: "$: error.message"
     switch: end

@@ -6,7 +6,7 @@ import (
 
 	"genroc/internal/model"
 	"genroc/internal/schema"
-	"genroc/internal/template"
+	"genroc/internal/shape"
 )
 
 func buildInputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, processInput, configSchema schema.Schema, defs schema.Defs) error {
@@ -91,12 +91,15 @@ func buildInputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proces
 				if c.Case == "" {
 					continue
 				}
-				inferred, err := switchCtx.Infer(c.Case)
-				if err != nil {
-					return fmt.Errorf("task %q switch case %q: %w", s.ID, c.Case, err)
-				}
-				if !inferred.IsType("boolean") {
-					return fmt.Errorf("task %q switch case %q: expression must evaluate to boolean, got %q", s.ID, c.Case, inferred.TypeName())
+				// A case is an expression-only shape: a bare boolean expression, checked
+				// through the same object API so it shares the roots machinery.
+				shp := shape.Shape{Raw: c.Case, Schema: &boolSchema, Name: fmt.Sprintf("task %q switch case %q", s.ID, c.Case), Expr: true}
+				if _, err := shp.CheckWith(switchCtx, shape.CheckHooks{
+					Result: func(inferred, _ schema.Schema) error {
+						return fmt.Errorf("task %q switch case %q: expression must evaluate to boolean, got %q", s.ID, c.Case, inferred.TypeName())
+					},
+				}); err != nil {
+					return err
 				}
 			}
 		}
@@ -104,124 +107,75 @@ func buildInputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proces
 	return nil
 }
 
-// checkNonNullTemplate infers a template string (a rest endpoint or header value)
-// against ctx and returns an error if it fails to type-check or may be null — a
-// null URL or header value would silently stringify to "null".
+// The per-slot required structures a fetch slot must produce: a stringifiable scalar for
+// url/method (rendered with %v, so a null or a struct would corrupt the request), an array
+// for child_list `over`, and an object for headers. Each slot builds a shape.Shape carrying
+// one of these and lets shape.CheckWith run the conformance, turning a mismatch into the
+// slot's tailored message via the Result hook.
+var (
+	scalarSchema = schema.Type("string", "number", "boolean")
+	arraySchema  = schema.Array(schema.Schema{})
+	objectSchema = schema.Object()
+	boolSchema   = schema.Type("boolean")
+)
+
+// checkNonNullTemplate type-checks a fetch url/method against ctx: it must produce a
+// non-null scalar, or the %v-rendered request would carry "null" or "[a b c]".
 func checkNonNullTemplate(expr string, ctx schema.Schema, label string) error {
-	inferred, err := inferShape(expr, ctx, label)
-	if err != nil {
-		return err
-	}
-	if inferred.HasNull() {
-		return fmt.Errorf("%s may be null; use ?? to provide a default value", label)
-	}
-	// The engine renders these with fmt.Sprintf("%v", …), so an array or object
-	// would silently become "[a b c]" in a real request URL or HTTP verb. A mixed
-	// template already rejects this inside template.InferType; a single-expression
-	// template returns the raw type, so the same rule has to be applied here.
-	// IsType means "resolves uniformly to", so this only fires when the value
-	// certainly cannot render as text.
-	if inferred.IsType("array") || inferred.IsType("object") {
-		return fmt.Errorf("%s is %s; it must be a string, number or boolean", label, inferred.TypeName())
-	}
-	return nil
+	shp := shape.Shape{Raw: expr, Schema: &scalarSchema, Name: label}
+	_, err := shp.CheckWith(ctx, shape.CheckHooks{
+		Result: func(inferred, _ schema.Schema) error {
+			if inferred.HasNull() {
+				return fmt.Errorf("%s may be null; use ?? to provide a default value", label)
+			}
+			return fmt.Errorf("%s is %s; it must be a string, number or boolean", label, inferred.TypeName())
+		},
+	})
+	return err
 }
 
-// checkArrayTemplate infers a child_list `over` expression against ctx and
-// requires it to evaluate to a non-null array — the source of the per-child inputs.
-// It returns the inferred array schema so callers can extract its element type.
+// checkArrayTemplate type-checks a child_list `over` against ctx: it must produce a
+// non-null array, the source of the per-child inputs.
 func checkArrayTemplate(expr string, ctx schema.Schema, taskID string) (schema.Schema, error) {
-	t, err := template.Get(expr)
-	if err != nil {
-		return schema.Schema{}, fmt.Errorf("task %q over: %w", taskID, err)
-	}
-	inferred, err := t.InferType(ctx)
-	if err != nil {
-		return schema.Schema{}, fmt.Errorf("task %q over: %w", taskID, err)
-	}
-	if inferred.HasNull() {
-		return schema.Schema{}, fmt.Errorf("task %q over may be null; use ?? to provide a default array", taskID)
-	}
-	if !inferred.IsType("array") {
-		return schema.Schema{}, fmt.Errorf("task %q over must evaluate to an array, got %q", taskID, inferred.TypeName())
-	}
-	return inferred, nil
+	shp := shape.Shape{Raw: expr, Schema: &arraySchema, Name: fmt.Sprintf("task %q over", taskID)}
+	return shp.CheckWith(ctx, shape.CheckHooks{
+		Result: func(inferred, _ schema.Schema) error {
+			if inferred.HasNull() {
+				return fmt.Errorf("task %q over may be null; use ?? to provide a default array", taskID)
+			}
+			return fmt.Errorf("task %q over must evaluate to an array, got %q", taskID, inferred.TypeName())
+		},
+	})
 }
 
 // inferActionPayload infers the schema of an action's payload shape — the fetch request
-// body (Body) or the external snapshot (Input).
+// body (Body) or the external snapshot (Input). Free projection: no required structure.
 func inferActionPayload(s *model.Task, ctx schema.Schema) (schema.Schema, error) {
-	shape := s.Action.Input
+	sh := s.Action.Input
 	label := "input"
 	if s.Action.Type == model.ActionTypeFetch {
-		shape = s.Action.Body
+		sh = s.Action.Body
 		label = "body"
 	}
-	if !shape.Present() {
+	if !sh.Present() {
 		return schema.Object(), nil
 	}
-	return inferShape(shape.Raw, ctx, fmt.Sprintf("task %q %s", s.ID, label))
+	shp := shape.Shape{Raw: sh.Raw, Name: fmt.Sprintf("task %q %s", s.ID, label)}
+	return shp.Check(ctx)
 }
 
-// checkHeadersShape verifies the fetch Headers shape infers to a non-null object (a
-// literal map of templated values, or an expression yielding a map).
+// checkHeadersShape verifies the fetch Headers shape produces a non-null object (a literal
+// map of templated values, or an expression yielding a map).
 func checkHeadersShape(raw any, ctx schema.Schema, taskID string) error {
-	hdr, err := inferShape(raw, ctx, fmt.Sprintf("task %q headers", taskID))
-	if err != nil {
-		return err
-	}
-	if hdr.HasNull() || !hdr.IsType("object") {
-		return fmt.Errorf("task %q headers must evaluate to a non-null object", taskID)
-	}
-	return nil
+	shp := shape.Shape{Raw: raw, Schema: &objectSchema, Name: fmt.Sprintf("task %q headers", taskID)}
+	_, err := shp.CheckWith(ctx, shape.CheckHooks{
+		Result: func(_, _ schema.Schema) error {
+			return fmt.Errorf("task %q headers must evaluate to a non-null object", taskID)
+		},
+	})
+	return err
 }
 
-// inferShape infers the JSON Schema of a model.Shape value: a string leaf yields
-// its template's inferred type (which may be any shape), and an object yields an
-// object schema whose values are inferred recursively (all keys required). label
-// prefixes errors. The string|object grammar is enforced at unmarshal.
-func inferShape(node any, ctx schema.Schema, label string) (schema.Schema, error) {
-	switch n := node.(type) {
-	case string:
-		t, err := template.Get(n)
-		if err != nil {
-			return schema.Schema{}, fmt.Errorf("%s: %w", label, err)
-		}
-		inferred, err := t.InferType(ctx)
-		if err != nil {
-			return schema.Schema{}, fmt.Errorf("%s: %w", label, err)
-		}
-		// The inferred sub-schema carries the context's root $defs for its own
-		// resolvability; the leaf is embedded into a structure whose root owns the
-		// defs, so re-root it bare (also keeps generated schema files and the
-		// recursive-fixpoint size bound free of per-leaf defs copies).
-		out := inferred.WithoutDefs()
-		// Taint the leaf if its expression reads a secret. Structural secrets (a
-		// passed-through secret node) are already carried on `out`; this adds the
-		// reference-taint that survives any transformation the expression applies.
-		if t.ReferencesSecret(ctx) {
-			out = out.Taint()
-		}
-		return out, nil
-	case map[string]any:
-		names := make([]string, 0, len(n))
-		for name := range n {
-			names = append(names, name)
-		}
-		slices.Sort(names)
-		out := schema.Object()
-		for _, name := range names {
-			p, err := inferShape(n[name], ctx, fmt.Sprintf("%s.%s", label, name))
-			if err != nil {
-				return schema.Schema{}, err
-			}
-			out = out.WithProperty(name, p, true)
-		}
-		return out, nil
-	default:
-		return schema.Schema{}, fmt.Errorf("%s: invalid shape node %T", label, node)
-	}
-}
 
 func contextSchema(preceding []string, optional []string, tasks map[string]TaskSchemas, processInput, configSchema schema.Schema, errRequired, errOptional bool) schema.Schema {
 	ctx := schema.Object()

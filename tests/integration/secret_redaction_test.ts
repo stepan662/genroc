@@ -18,7 +18,7 @@ test("a secret config value is redacted from the API context", async () => {
       tasks: [{ id: "route", switch: "end" }],
       output: {
         // Even concatenated / transformed, the secret must not leak.
-        auth: "Bearer {{ config.api_key }}",
+        auth: "Bearer ${ config.api_key }",
         note: "public value",
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

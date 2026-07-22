@@ -197,7 +197,7 @@ func (e *Engine) runExternal(ctx context.Context, inst *model.ProcessInstance, t
 
 // evalDurationMs evaluates a delay expression to a non-negative millisecond count. It is
 // a template, so a bare literal ("30000") comes back as a string (parsed here); a
-// "{{ … }}" expression comes back as a number.
+// "$: …" expression comes back as a number.
 func evalDurationMs(expr string, ctx, config map[string]any) (int64, error) {
 	v, err := evalAny(expr, ctx, config)
 	if err != nil {
@@ -247,7 +247,7 @@ func durationFromValue(expr string, v any) (int64, error) {
 }
 
 // resolveURL evaluates the fetch URL as a template so a base URL can come from config or
-// input (e.g. "{{ config.server_url }}/path"). Returns "" for actions without a URL;
+// input (e.g. "${ config.server_url }/path"). Returns "" for actions without a URL;
 // secrets it carries are scrubbed from logged URLs/errors by audit().
 func (e *Engine) resolveURL(inst *model.ProcessInstance, call *model.Action) (string, error) {
 	if call.URL == "" {

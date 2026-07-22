@@ -17,8 +17,8 @@ tasks:
   - id: kickstart
     action:
       type: fetch
-      url: "{{ input.url }}/jobs"
-      headers: "{{ input.headers }}"
+      url: "${ input.url }/jobs"
+      headers: "$: input.headers"
       body:
         command: compute-answer
       result_schema:
@@ -26,17 +26,17 @@ tasks:
         properties:
           job_id: { type: string }
         required: [job_id]
-    output: "{{ self.result }}"
+    output: "$: self.result"
     timeout_ms: 2000
     switch: next
 
   - id: check
     action:
       type: fetch
-      url: "{{ input.url }}/status"
-      headers: "{{ input.headers }}"
+      url: "${ input.url }/status"
+      headers: "$: input.headers"
       body:
-        job_id: "{{ outputs.kickstart.job_id }}"
+        job_id: "$: outputs.kickstart.job_id"
       result_schema:
         type: object
         properties:
@@ -48,8 +48,8 @@ tasks:
             required: [answer]
         required: [status]
     output:
-      result: "{{ self.result.result }}"
-      attempt: "{{ (self.previous.attempt ?? 0) + 1 }}"
+      result: "$: self.result.result"
+      attempt: "$: (self.previous.attempt ?? 0) + 1"
     timeout_ms: 2000
     switch:
       - case: "self.result.status == 'done'"
@@ -78,17 +78,17 @@ tasks:
   - id: backoff
     action:
       type: delay
-      ms: "{{ input.poll_interval_ms }}"
+      ms: "$: input.poll_interval_ms"
     switch: $check
 
   # Both failure paths clean up the remote job, then raise for the parent to catch.
   - id: cancel
     action:
       type: fetch
-      url: "{{ input.url }}/cancel"
-      headers: "{{ input.headers }}"
+      url: "${ input.url }/cancel"
+      headers: "$: input.headers"
       body:
-        job_id: "{{ outputs.kickstart.job_id }}"
+        job_id: "$: outputs.kickstart.job_id"
       result_schema:
         type: object
         properties:
@@ -103,10 +103,10 @@ tasks:
   - id: give_up
     action:
       type: fetch
-      url: "{{ input.url }}/cancel"
-      headers: "{{ input.headers }}"
+      url: "${ input.url }/cancel"
+      headers: "$: input.headers"
       body:
-        job_id: "{{ outputs.kickstart.job_id }}"
+        job_id: "$: outputs.kickstart.job_id"
       result_schema:
         type: object
         properties:
@@ -122,4 +122,4 @@ tasks:
     switch: end
 
 output:
-  answer: "{{ (outputs.check.result.answer) ?? 0 }}"
+  answer: "$: (outputs.check.result.answer) ?? 0"

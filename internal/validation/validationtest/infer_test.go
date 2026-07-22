@@ -68,7 +68,7 @@ func TestGenerate_Input_Params(t *testing.T) {
 		inferTask{
 			id:     "charge",
 			result: inferObjSchema(`"ok":{"type":"boolean"}`),
-			body:   `{"id":"{{input.order_id}}","sum":"{{input.amount}}"}`,
+			body:   `{"id":"$: input.order_id","sum":"$: input.amount"}`,
 			output: inferSelfResult,
 		},
 	))
@@ -86,7 +86,7 @@ func TestGenerate_Input_Params(t *testing.T) {
 
 func TestGenerate_Input_InputOnlyTask(t *testing.T) {
 	out := runGenerate(t, inferDef(inferObjSchema(`"user_id":{"type":"string"}`, "user_id"),
-		inferTask{id: "log", body: `{"uid":"{{input.user_id}}"}`},
+		inferTask{id: "log", body: `{"uid":"$: input.user_id"}`},
 	))
 	if _, ok := out.Tasks["log"]; !ok {
 		t.Fatal("task with action input but no result_schema should appear in tasks")
@@ -107,7 +107,7 @@ func TestGenerate_Input_OneOfOutputPropertyAccess(t *testing.T) {
 			sw:     inferNext,
 			output: inferSelfResult,
 		},
-		inferTask{id: "check_fraud", body: `{"result":"{{outputs.save_order.valid}}"}`, sw: inferEnd},
+		inferTask{id: "check_fraud", body: `{"result":"$: outputs.save_order.valid"}`, sw: inferEnd},
 	))
 	assertJSON(t, out.Tasks["check_fraud"].Input, `{"$ref": "#/$defs/check_fraud_input"}`)
 	cfInput := defOf(out, "check_fraud_input")
@@ -122,7 +122,7 @@ func TestGenerate_RecursiveStep_OwnOutputOptionalInParams(t *testing.T) {
 		inferTask{
 			id:     "loop",
 			result: inferObjSchema(`"finished_index":{"type":"number"},"done":{"type":"boolean"}`, "finished_index", "done"),
-			body:   `{"tasks":"{{input.tasks}}","task_index":"{{outputs.loop.finished_index ? outputs.loop.finished_index : 0}}"}`,
+			body:   `{"tasks":"$: input.tasks","task_index":"$: outputs.loop.finished_index ? outputs.loop.finished_index : 0"}`,
 			sw:     `[{"case":"!self.result.done","goto":"$loop"},{"goto":"end"}]`,
 			output: inferSelfResult,
 		},
@@ -151,7 +151,7 @@ func TestGenerate_SwitchStep_NextStepNotReachableViaFallthrough(t *testing.T) {
 		inferTask{
 			id:     "work",
 			result: inferObjSchema(`"done":{"type":"boolean"}`),
-			body:   `{"flag":"{{outputs.decide.ok}}"}`,
+			body:   `{"flag":"$: outputs.decide.ok"}`,
 			output: inferSelfResult,
 		},
 	))
@@ -170,7 +170,7 @@ func TestGenerate_MixedTemplate_NullableExpressionRejected(t *testing.T) {
 	// Using it in a mixed template would silently produce "null_null" at runtime.
 	err := runGenerateErr(t, inferDef("",
 		inferTask{id: "start", fetch: true, onError: `[{"goto":"$finale"}]`, sw: inferNext},
-		inferTask{id: "finale", body: `{"msg":"{{error.code}}_{{error.message}}"}`, sw: inferEnd},
+		inferTask{id: "finale", body: `{"msg":"${ error.code }_${ error.message }"}`, sw: inferEnd},
 	))
 	if err == nil {
 		t.Fatal("expected error for nullable expression in mixed template, got nil")
@@ -184,7 +184,7 @@ func TestGenerate_MixedTemplate_NonNullableExpressionAccepted(t *testing.T) {
 	// error is required (exclusive error path), so using it in a mixed template is fine.
 	runGenerate(t, inferDef("",
 		inferTask{id: "worker", fetch: true, sw: inferEnd, onError: `[{"goto":"$handler"}]`},
-		inferTask{id: "handler", body: `{"msg":"{{error.code}}_{{error.message}}"}`, sw: inferEnd},
+		inferTask{id: "handler", body: `{"msg":"${ error.code }_${ error.message }"}`, sw: inferEnd},
 	))
 }
 
@@ -224,7 +224,7 @@ func TestGenerate_Self_OutputInOutputMapRejected(t *testing.T) {
 	def := inferDef("", inferTask{
 		id:     "s",
 		result: inferObjSchema(`"x":{"type":"boolean"}`, "x"),
-		output: `{"y":"{{ self.output.x }}"}`,
+		output: `{"y":"$: self.output.x"}`,
 		sw:     `[{"goto":"end"}]`,
 	})
 	if err := runGenerateErr(t, def); err == nil {
@@ -236,7 +236,7 @@ func TestGenerate_Self_ResultFieldWithoutResultSchemaRejected(t *testing.T) {
 	def := inferDef("", inferTask{
 		id:     "s",
 		fetch:  true,
-		output: `{"id":"{{ self.result.job_id }}"}`,
+		output: `{"id":"$: self.result.job_id"}`,
 		sw:     `[{"goto":"end"}]`,
 	})
 	if err := runGenerateErr(t, def); err == nil {
@@ -248,7 +248,7 @@ func TestGenerate_Self_PreviousInNonLoopingSwitchRejected(t *testing.T) {
 	def := inferDef("", inferTask{
 		id:     "s",
 		result: inferObjSchema(`"x":{"type":"boolean"}`, "x"),
-		output: `{"y":"{{ self.result.x }}"}`,
+		output: `{"y":"$: self.result.x"}`,
 		sw:     `[{"case":"self.previous.y","goto":"end"},{"goto":"end"}]`,
 	})
 	if err := runGenerateErr(t, def); err == nil {
@@ -270,7 +270,7 @@ func TestGenerate_Self_ResultInSwitchAccepted(t *testing.T) {
 func TestGenerate_Self_PreviousInLoopingSwitchAccepted(t *testing.T) {
 	def := inferDef("", inferTask{
 		id:     "loop",
-		output: `{"n":"{{ (self.previous.n ?? 0) + 1 }}"}`,
+		output: `{"n":"$: (self.previous.n ?? 0) + 1"}`,
 		sw:     `[{"case":"(self.previous.n ?? 0) < 3","goto":"$loop"},{"goto":"end"}]`,
 	})
 	if err := runGenerateErr(t, def); err != nil {
@@ -286,22 +286,22 @@ func TestGenerate_Self_PreviousInLoopingSwitchAccepted(t *testing.T) {
 func TestGenerate_SelfReferenceViaOutputsRequiresLoop(t *testing.T) {
 	def := inferDef("", inferTask{
 		id:     "loop",
-		output: `{"num":"{{ (outputs.loop.num ?? 0) + 1 }}"}`,
+		output: `{"num":"$: (outputs.loop.num ?? 0) + 1"}`,
 		sw:     `[{"goto":"end"}]`,
 	})
 	if err := runGenerateErr(t, def); err == nil {
-		t.Errorf("expected error for non-looping self-reference %q", "{{ (outputs.loop.num ?? 0) + 1 }}")
+		t.Errorf("expected error for non-looping self-reference %q", "$: (outputs.loop.num ?? 0) + 1")
 	}
 }
 
 func TestGenerate_SelfReferenceViaPreviousRequiresLoop(t *testing.T) {
 	def := inferDef("", inferTask{
 		id:     "loop",
-		output: `{"num":"{{ (self.previous.num ?? 0) + 1 }}"}`,
+		output: `{"num":"$: (self.previous.num ?? 0) + 1"}`,
 		sw:     `[{"goto":"end"}]`,
 	})
 	if err := runGenerateErr(t, def); err == nil {
-		t.Errorf("expected error for non-looping self-reference %q", "{{ (self.previous.num ?? 0) + 1 }}")
+		t.Errorf("expected error for non-looping self-reference %q", "$: (self.previous.num ?? 0) + 1")
 	}
 }
 
@@ -310,8 +310,8 @@ func TestGenerate_ForwardCrossStepRefRequiresCycle(t *testing.T) {
 	// a predecessor of a, so its output is unavailable. The cross-task analogue of
 	// the self-reference-requires-loop rule.
 	def := inferDef("",
-		inferTask{id: "a", output: `{"n":"{{ outputs.b.n }}"}`, sw: inferNext},
-		inferTask{id: "b", output: `{"n":"{{ 1 }}"}`, sw: `[{"goto":"end"}]`},
+		inferTask{id: "a", output: `{"n":"$: outputs.b.n"}`, sw: inferNext},
+		inferTask{id: "b", output: `{"n":"$: 1"}`, sw: `[{"goto":"end"}]`},
 	)
 	if err := runGenerateErr(t, def); err == nil {
 		t.Error("expected error: a cannot read outputs.b when b is not its predecessor")
@@ -324,9 +324,9 @@ func TestGenerate_AcyclicOutputChain(t *testing.T) {
 	// and each finalizes (non-null) before the next reads it.
 	const intN = `{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}`
 	out := runGenerate(t, inferDef("",
-		inferTask{id: "first", output: `{"n":"{{ 1 }}"}`, sw: inferNext},
-		inferTask{id: "second", output: `{"n":"{{ outputs.first.n + 1 }}"}`, sw: inferNext},
-		inferTask{id: "third", output: `{"n":"{{ outputs.second.n + 1 }}"}`, sw: `[{"goto":"end"}]`},
+		inferTask{id: "first", output: `{"n":"$: 1"}`, sw: inferNext},
+		inferTask{id: "second", output: `{"n":"$: outputs.first.n + 1"}`, sw: inferNext},
+		inferTask{id: "third", output: `{"n":"$: outputs.second.n + 1"}`, sw: `[{"goto":"end"}]`},
 	))
 	assertJSON(t, defOf(out, "first_output"), intN)
 	assertJSON(t, defOf(out, "second_output"), intN)
@@ -340,9 +340,9 @@ func TestGenerate_CrossStepMutualRecursion(t *testing.T) {
 	// loop has run on the first pass).
 	out := runGenerate(t, inferDefWithOutput(
 		inferObjSchema(`"ttl":{"type":"integer"}`, "ttl"),
-		`{"num":"{{ outputs.start.num }}"}`,
-		inferTask{id: "start", output: `{"num":"{{ outputs.loop.num }}"}`, sw: inferNext},
-		inferTask{id: "loop", output: `{"num":"{{ (outputs.start.num ?? 0) + 1 }}"}`,
+		`{"num":"$: outputs.start.num"}`,
+		inferTask{id: "start", output: `{"num":"$: outputs.loop.num"}`, sw: inferNext},
+		inferTask{id: "loop", output: `{"num":"$: (outputs.start.num ?? 0) + 1"}`,
 			sw: `[{"case":"self.output.num < input.ttl","goto":"$start"},{"goto":"end"}]`},
 	))
 	assertJSON(t, defOf(out, "loop_output"), `{"type":"object","properties":{"num":{"type":"integer"}},"required":["num"]}`)
@@ -355,9 +355,9 @@ func TestGenerate_ThreeStepMutualRecursion(t *testing.T) {
 	// the base case (?? 0) so resolves to a plain integer; a and b mirror through
 	// the cycle and are nullable (null before the cycle has produced a value).
 	out := runGenerate(t, inferDef(inferObjSchema(`"ttl":{"type":"integer"}`, "ttl"),
-		inferTask{id: "a", output: `{"n":"{{ outputs.c.n }}"}`, sw: inferNext},
-		inferTask{id: "b", output: `{"n":"{{ outputs.a.n }}"}`, sw: inferNext},
-		inferTask{id: "c", output: `{"n":"{{ (outputs.b.n ?? 0) + 1 }}"}`,
+		inferTask{id: "a", output: `{"n":"$: outputs.c.n"}`, sw: inferNext},
+		inferTask{id: "b", output: `{"n":"$: outputs.a.n"}`, sw: inferNext},
+		inferTask{id: "c", output: `{"n":"$: (outputs.b.n ?? 0) + 1"}`,
 			sw: `[{"case":"self.output.n < input.ttl","goto":"$a"},{"goto":"end"}]`},
 	))
 	assertJSON(t, defOf(out, "c_output"), `{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}`)
@@ -378,9 +378,9 @@ func TestGenerate_StructuralRecursionKeptAsRecursiveType(t *testing.T) {
 		  "properties":{"ttl":{"type":"integer"},"rec":{"$ref":"#/$defs/recursive"}},
 		  "required":["ttl"],
 		  "$defs":{"recursive":{"type":"object","properties":{"num":{"type":"number"},"rec":{"$ref":"#/$defs/recursive"}}}}}`,
-		`{"num":"{{ outputs.loop }}"}`,
+		`{"num":"$: outputs.loop"}`,
 		inferTask{id: "start", sw: inferNext},
-		inferTask{id: "loop", output: `{"result":"{{ self.previous ?? input }}"}`,
+		inferTask{id: "loop", output: `{"result":"$: self.previous ?? input"}`,
 			sw: `[{"case":"self.output.result != null","goto":"$start"},{"goto":"end"}]`},
 	)
 

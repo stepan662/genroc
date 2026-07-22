@@ -71,7 +71,7 @@ beforeAll(async () => {
       required: ["n"],
     },
     tasks: [{ id: "done", switch: [{ goto: "end" }] }],
-    output: { doubled: "{{ input.n * 2 }}" },
+    output: { doubled: "$: input.n * 2" },
   });
 
   await put({
@@ -100,18 +100,18 @@ beforeAll(async () => {
         action: {
           type: "child_list",
           name: doubler,
-          over: "{{ input.items }}",
+          over: "$: input.items",
           result_schema: {
             type: "object",
             properties: { doubled: { type: "number" } },
             required: ["doubled"],
           },
         },
-        output: "{{ self.result }}",
+        output: "$: self.result",
         switch: [{ goto: "end" }],
       },
     ],
-    output: { results: "{{ outputs.spread }}" },
+    output: { results: "$: outputs.spread" },
   });
 
   await put({
@@ -120,7 +120,7 @@ beforeAll(async () => {
     tasks: [
       {
         id: "spread",
-        action: { type: "child_list", name: failWorker, over: "{{ input.items }}" },
+        action: { type: "child_list", name: failWorker, over: "$: input.items" },
         switch: [{ goto: "end" }],
       },
     ],

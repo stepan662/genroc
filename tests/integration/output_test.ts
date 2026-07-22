@@ -29,14 +29,14 @@ test("output map remaps an action result — only the projection is exported", a
               required: ["job_id"],
             },
           },
-          output: { id: "{{ self.result.job_id }}" },
+          output: { id: "$: self.result.job_id" },
           switch: [
             { case: `self.output.id == "j-42"`, goto: "end" },
             { goto: "end" },
           ],
         },
       ],
-      output: { id: "{{ outputs.create.id }}" },
+      output: { id: "$: outputs.create.id" },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
   });
@@ -55,7 +55,7 @@ test("output map remaps an action result — only the projection is exported", a
   mock.stop();
 });
 
-// A single-expression output ("{{ self.result }}") passes the action result
+// A single-expression output ("$: self.result") passes the action result
 // through unchanged, with no object wrapper. The process output is also a single
 // expression that forwards the task output.
 test("single-expression output passes the action result through", async () => {
@@ -79,11 +79,11 @@ test("single-expression output passes the action result through", async () => {
               required: ["job_id", "queue"],
             },
           },
-          output: "{{ self.result }}",
+          output: "$: self.result",
           switch: [{ case: `self.output.job_id == "j-7"`, goto: "end" }, { goto: "end" }],
         },
       ],
-      output: "{{ outputs.create }}",
+      output: "$: outputs.create",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
   });
@@ -125,7 +125,7 @@ test("nested output shapes data with nested objects", async () => {
               required: ["job_id", "queue"],
             },
           },
-          output: { meta: { id: "{{ self.result.job_id }}", where: "{{ self.result.queue }}" } },
+          output: { meta: { id: "$: self.result.job_id", where: "$: self.result.queue" } },
           switch: "end",
         },
       ],

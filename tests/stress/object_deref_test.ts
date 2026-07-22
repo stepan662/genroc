@@ -105,7 +105,7 @@ test("a dereferenced, unlogged context object is deleted immediately (not left f
             },
             // A large output that differs every round (distinct hash), so each round
             // dereferences the previous round's object. Not logged ⇒ deleted at once.
-            output: { blob: "{{ input.blob }}-{{ self.result.i }}" },
+            output: { blob: "${ input.blob }-${ self.result.i }" },
             switch: [
               { case: "self.result.done == true", goto: "end" },
               { goto: "$gen" },

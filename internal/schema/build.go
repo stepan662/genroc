@@ -36,6 +36,30 @@ func Ref(name string) Schema {
 	return Schema{&node{Ref: "#/$defs/" + name}}
 }
 
+// ArrayLiteral builds the schema of an array literal from its already-inferred element
+// schemas. An empty slice is the provably-empty array (maxItems 0) — which is what lets
+// a literal `[]` (and the `?? []` idiom) be a subset of any array<T>; a non-empty slice
+// is array<join of elements>, with an empty-array element absorbed so [xs, []] keeps xs's
+// element type. Element root $defs are dropped (WithoutDefs); the caller owns the pool.
+func ArrayLiteral(elems []Schema) Schema {
+	if len(elems) == 0 {
+		return emptyArray()
+	}
+	var joined Schema
+	for i, it := range elems {
+		it = it.WithoutDefs()
+		switch merged, ok := absorbEmptyArray(joined, it); {
+		case i == 0:
+			joined = it
+		case ok:
+			joined = merged
+		default:
+			joined = joined.Join(it)
+		}
+	}
+	return Array(joined.Canonicalize())
+}
+
 func OneOf(variants ...Schema) Schema {
 	return Schema{&node{OneOf: nodesOf(variants)}}
 }

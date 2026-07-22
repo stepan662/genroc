@@ -93,7 +93,7 @@ describe.runIf(!!DSN)("single-worker overwhelm recovery — postgres", () => {
                 children: {
                   first: {
                     name: processName,
-                    input: { ttl: "{{input.ttl - 1}}" },
+                    input: { ttl: "$: input.ttl - 1" },
                     result_schema: {
                       type: "object",
                       properties: { processes: { type: "number" } },
@@ -102,7 +102,7 @@ describe.runIf(!!DSN)("single-worker overwhelm recovery — postgres", () => {
                   },
                   second: {
                     name: processName,
-                    input: { ttl: "{{input.ttl - 1}}" },
+                    input: { ttl: "$: input.ttl - 1" },
                     result_schema: {
                       type: "object",
                       properties: { processes: { type: "number" } },
@@ -111,13 +111,13 @@ describe.runIf(!!DSN)("single-worker overwhelm recovery — postgres", () => {
                   },
                 },
               },
-              output: "{{ self.result }}",
+              output: "$: self.result",
               switch: [{ goto: "end" }],
             },
           ],
           output: {
             processes:
-              "{{(outputs.recursion.first.processes ?? 0) + (outputs.recursion.second.processes ?? 0) + 1}}",
+              "$: (outputs.recursion.first.processes ?? 0) + (outputs.recursion.second.processes ?? 0) + 1",
           },
         },
       });

@@ -191,10 +191,10 @@ func validateFault(f *Fault, taskID, where, clause string) error {
 	// R2: a computed code would make the definition's raise set uncomputable and
 	// error_code unqueryable; a computed message would smuggle data across the process
 	// boundary that a payload-free error design exists to keep closed.
-	if strings.Contains(f.Code, "{{") {
+	if strings.Contains(f.Code, "${") {
 		return fmt.Errorf("task %q %s: %s: code must be a literal, not an expression", taskID, where, clause)
 	}
-	if strings.Contains(f.Message, "{{") {
+	if strings.Contains(f.Message, "${") {
 		return fmt.Errorf("task %q %s: %s: message must be a literal, not an expression", taskID, where, clause)
 	}
 	return nil

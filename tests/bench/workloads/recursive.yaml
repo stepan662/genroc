@@ -40,7 +40,7 @@ process:
         children:
           first:
             name: recursive
-            input: { ttl: "{{ input.ttl - 1 }}" }
+            input: { ttl: "$: input.ttl - 1" }
             result_schema:
               type: object
               properties:
@@ -48,14 +48,14 @@ process:
               required: [processes]
           second:
             name: recursive
-            input: { ttl: "{{ input.ttl - 1 }}" }
+            input: { ttl: "$: input.ttl - 1" }
             result_schema:
               type: object
               properties:
                 processes: { type: number }
               required: [processes]
-      output: "{{ self.result }}"
+      output: "$: self.result"
       switch:
         - goto: end
   output:
-    processes: "{{ (outputs.recursion.first.processes ?? 0) + (outputs.recursion.second.processes ?? 0) + 1 }}"
+    processes: "$: (outputs.recursion.first.processes ?? 0) + (outputs.recursion.second.processes ?? 0) + 1"

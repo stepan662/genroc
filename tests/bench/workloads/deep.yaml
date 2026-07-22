@@ -50,7 +50,7 @@ process:
         children:
           first:
             name: deep
-            input: { ttl: "{{ input.ttl - 1 }}", c: "{{ 12 }}" }
+            input: { ttl: "$: input.ttl - 1", c: "$: 12" }
             result_schema:
               type: object
               properties:
@@ -58,13 +58,13 @@ process:
               required: [processes]
           second:
             name: deep
-            input: { ttl: "{{ input.ttl - 1 }}", c: "{{ 12 }}" }
+            input: { ttl: "$: input.ttl - 1", c: "$: 12" }
             result_schema:
               type: object
               properties:
                 processes: { type: number }
               required: [processes]
-      output: "{{ self.result }}"
+      output: "$: self.result"
       switch:
         - goto: end
     - id: descend
@@ -73,14 +73,14 @@ process:
         children:
           out:
             name: deep
-            input: { ttl: "{{ input.ttl - 1 }}", c: "{{ input.c - 1 }}" }
+            input: { ttl: "$: input.ttl - 1", c: "$: input.c - 1" }
             result_schema:
               type: object
               properties:
                 processes: { type: number }
               required: [processes]
-      output: "{{ self.result.out }}"
+      output: "$: self.result.out"
       switch:
         - goto: end
   output:
-    processes: "{{ (outputs.split.first.processes ?? 0) + (outputs.split.second.processes ?? 0) + (outputs.descend.processes ?? 0) + 1 }}"
+    processes: "$: (outputs.split.first.processes ?? 0) + (outputs.split.second.processes ?? 0) + (outputs.descend.processes ?? 0) + 1"

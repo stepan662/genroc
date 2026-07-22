@@ -112,7 +112,7 @@ func mapChildListEchoTask(id, childName, over string) string {
 // compatible and incompatible children.
 func mapFanoutDef(childName string) string {
 	return mapRowsDef("map-fanout",
-		mapChildListTask("fanout", childName, "{{ map(input.rows, r => {sku: r.code, qty: r.count + 1}) }}"))
+		mapChildListTask("fanout", childName, "$: map(input.rows, r => {sku: r.code, qty: r.count + 1})"))
 }
 
 // mapChildMapDef builds a definition whose single task spawns one child_map
@@ -201,7 +201,7 @@ func assertMapChildRefsIncompatible(t *testing.T, defJSON string, getter validat
 // Raw JSON fragments the inference tests reuse verbatim.
 const (
 	// inferSelfResult exports the raw action result as the task output.
-	inferSelfResult = `"{{ self.result }}"`
+	inferSelfResult = `"$: self.result"`
 	inferNext       = `"next"`
 	inferEnd        = `"end"`
 )

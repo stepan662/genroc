@@ -234,7 +234,7 @@ test("on_error → end computes the process output, like a normal completion", a
       name,
       // Static output (present on both the normal-end and error-end terminals): before
       // the fix an on_error → end completion left it unset; now it is computed.
-      output: '{{ "recovered" }}',
+      output: '$: "recovered"',
       tasks: [
         {
           id: "call",

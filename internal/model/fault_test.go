@@ -70,7 +70,7 @@ func TestFault_R1_CodeShapeAndMessage(t *testing.T) {
 // a computed message would reopen the data channel the design exists to close.
 func TestFault_R2_LiteralsOnly(t *testing.T) {
 	t.Run("expression code rejected", func(t *testing.T) {
-		d := def(raiseTask("t", &Fault{Code: "{{ input.code }}", Message: "m"}))
+		d := def(raiseTask("t", &Fault{Code: "$: input.code", Message: "m"}))
 		err := d.Validate()
 		// Caught by R1 first (braces are not lower_snake_case) — either rejection is
 		// correct, so assert only that it does not register.
@@ -79,7 +79,7 @@ func TestFault_R2_LiteralsOnly(t *testing.T) {
 		}
 	})
 	t.Run("expression message rejected", func(t *testing.T) {
-		d := def(raiseTask("t", &Fault{Code: "declined", Message: "reason: {{ input.why }}"}))
+		d := def(raiseTask("t", &Fault{Code: "declined", Message: "reason: ${ input.why }"}))
 		err := d.Validate()
 		if err == nil || !strings.Contains(err.Error(), "message must be a literal") {
 			t.Fatalf("want literal-message rejection, got %v", err)

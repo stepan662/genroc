@@ -79,7 +79,7 @@ test("catch — a matching rule routes the parent to a recovery task", async () 
         },
         {
           id: "recover",
-          output: "{{ error.code }}",
+          output: "$: error.code",
           switch: "end",
         },
       ],
@@ -116,7 +116,7 @@ test("catch — a rule routes to end, completing the parent (and computes output
       name: parent,
       // A static output (does not read $error, so no reachability complication): its
       // presence in the completed instance proves resolution's goto:end ran computeOutput.
-      output: '{{ "handled" }}',
+      output: '$: "handled"',
       tasks: [
         {
           id: "pay",
@@ -339,12 +339,12 @@ test("batch — the first raised child (by child_index) routes the parent", asyn
           action: {
             type: "child_list" as const,
             name: child,
-            over: "{{ input.items }}",
+            over: "$: input.items",
           },
           on_error: [{ code: ["bad_item"], goto: "$report" }],
           switch: "end",
         },
-        { id: "report", output: "{{ error }}", switch: "end" },
+        { id: "report", output: "$: error", switch: "end" },
       ],
     },
   });

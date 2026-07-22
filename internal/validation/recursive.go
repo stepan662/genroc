@@ -2,6 +2,7 @@ package validation
 
 import (
 	"genroc/internal/schema"
+	"genroc/internal/shape"
 )
 
 // InferRecursiveOutput infers the type of a single self-referential output map.
@@ -22,7 +23,8 @@ func InferRecursiveOutput(exprs map[string]string, ctx schema.Schema, selfDef st
 	}
 	solver := schema.NewSolver(defs)
 	solver.Declare(selfDef, func() (schema.Schema, error) {
-		return inferShape(node, ctx, "output")
+		shp := shape.Shape{Raw: node, Name: "output"}
+		return shp.Check(ctx)
 	})
 	if err := solver.Solve(); err != nil {
 		return schema.Schema{}, err

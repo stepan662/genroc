@@ -5,6 +5,7 @@ import (
 
 	"genroc/internal/model"
 	"genroc/internal/schema"
+	"genroc/internal/shape"
 	"genroc/internal/transport"
 )
 
@@ -166,28 +167,22 @@ func validateChildEntry(taskID string, label string, p model.ChildEntry, ctx sch
 	}
 
 	// Input compatibility is only checkable when the child declares an input schema; the
-	// output check runs regardless, so it is not gated behind the input one.
+	// output check runs regardless, so it is not gated behind the input one. CheckWith
+	// infers the input shape, normalizes it against the shared defs, and subset-checks it
+	// against the child's input_schema; the Result hook names the mismatch with the child's
+	// identity. An absent input is an empty object.
 	if child.InputSchema != nil {
-		var inferred schema.Schema
+		var raw any = map[string]any{}
 		if p.Input.Present() {
-			inferred, err = inferShape(p.Input.Raw, ctx, fmt.Sprintf("%s input", prefix))
-			if err != nil {
-				return err
-			}
-		} else {
-			inferred = schema.Object()
+			raw = p.Input.Raw
 		}
-
-		// Attach the shared defs so the inferred shape's $refs resolve, then normalize:
-		// the flatten inlines/retains exactly the definitions the shape uses, giving a
-		// self-contained schema the subset check can compare against the child's.
-		normalized, err := inferred.WithDefs(defs).Normalize()
-		if err != nil {
-			return fmt.Errorf("%s: normalize inferred input: %w", prefix, err)
-		}
-
-		if !normalized.IsSubset(*child.InputSchema) {
-			return fmt.Errorf("%s: input is not compatible with %q v%d input_schema", prefix, p.Name, childVersion)
+		shp := shape.Shape{Raw: raw, Schema: child.InputSchema, Name: fmt.Sprintf("%s input", prefix)}
+		if _, err := shp.CheckWith(ctx.WithDefs(defs), shape.CheckHooks{
+			Result: func(_, _ schema.Schema) error {
+				return fmt.Errorf("%s: input is not compatible with %q v%d input_schema", prefix, p.Name, childVersion)
+			},
+		}); err != nil {
+			return err
 		}
 	}
 

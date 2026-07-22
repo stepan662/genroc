@@ -13,16 +13,21 @@ func TestShape_UnmarshalJSON(t *testing.T) {
 		in      string
 		wantErr bool
 	}{
-		{"single expression", `"{{ self.result }}"`, false},
+		{"single expression", `"$: self.result"`, false},
 		{"plain string literal", `"hello"`, false},
-		{"nested object", `{"data": {"flag": "{{ self.result.charged }}"}}`, false},
+		{"nested object", `{"data": {"flag": "$: self.result.charged"}}`, false},
 		{"empty object", `{}`, false},
-		{"bare number rejected", `5`, true},
-		{"bare bool rejected", `true`, true},
-		{"array rejected", `["{{a}}", "{{b}}"]`, true},
-		{"nested number rejected", `{"n": 5}`, true},
-		{"nested array rejected", `{"tags": ["{{a}}"]}`, true},
-		{"null leaf rejected", `{"x": null}`, true},
+		// The widened grammar accepts every JSON value structurally; type-checking is
+		// deferred to inference, so none of these are rejected at unmarshal.
+		{"bare number", `5`, false},
+		{"bare bool", `true`, false},
+		{"bare null", `null`, false},
+		{"array", `["$: a", "$: b"]`, false},
+		{"mixed array", `[1, true, "$: a", null]`, false},
+		{"nested number", `{"n": 5}`, false},
+		{"nested array", `{"tags": ["$: a"]}`, false},
+		{"null leaf", `{"x": null}`, false},
+		{"deeply nested", `[{"a": [1, "$: b"]}]`, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -36,7 +41,7 @@ func TestShape_UnmarshalJSON(t *testing.T) {
 }
 
 func TestShape_RoundTrip(t *testing.T) {
-	in := `{"data":{"flag":"{{ self.result.charged }}"},"id":"{{ self.result.id }}"}`
+	in := `{"data":{"flag":"$: self.result.charged"},"id":"$: self.result.id"}`
 	var s Shape
 	if err := json.Unmarshal([]byte(in), &s); err != nil {
 		t.Fatal(err)
@@ -64,7 +69,7 @@ func TestShape_StringsAndPresent(t *testing.T) {
 	}
 
 	var s Shape
-	if err := json.Unmarshal([]byte(`{"a":"{{x}}","b":{"c":"{{y}}"}}`), &s); err != nil {
+	if err := json.Unmarshal([]byte(`{"a":"$: x","b":{"c":"$: y"}}`), &s); err != nil {
 		t.Fatal(err)
 	}
 	if !s.Present() {
@@ -72,8 +77,21 @@ func TestShape_StringsAndPresent(t *testing.T) {
 	}
 	got := s.Strings()
 	sort.Strings(got)
-	want := []string{"{{x}}", "{{y}}"}
+	want := []string{"$: x", "$: y"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Strings: got %v want %v", got, want)
+	}
+
+	// Strings must descend into arrays (scalars/null contribute no strings), or
+	// output-dependency and secret-taint analysis would silently miss array leaves.
+	var arr Shape
+	if err := json.Unmarshal([]byte(`{"a":"$: x","b":["$: y",5,"$: z",null],"c":[{"d":"$: w"}]}`), &arr); err != nil {
+		t.Fatal(err)
+	}
+	gotArr := arr.Strings()
+	sort.Strings(gotArr)
+	wantArr := []string{"$: w", "$: x", "$: y", "$: z"}
+	if !reflect.DeepEqual(gotArr, wantArr) {
+		t.Errorf("Strings over arrays: got %v want %v", gotArr, wantArr)
 	}
 }

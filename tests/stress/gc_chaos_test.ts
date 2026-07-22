@@ -202,7 +202,7 @@ test(
               },
             },
             on_error: [{ retries: 1 }],
-            output: "{{ self.result }}",
+            output: "$: self.result",
             switch: [
               { case: "outputs.gen.done == true", goto: "end" },
               { goto: "$scratch" },
@@ -210,11 +210,11 @@ test(
           },
           {
             id: "scratch",
-            output: "{{ input.blob }}-{{ outputs.gen.i }}",
+            output: "${ input.blob }-${ outputs.gen.i }",
             switch: [{ goto: "$gen" }],
           },
         ],
-        output: { echo: "{{ input.blob }}", rounds: "{{ outputs.gen.i }}" },
+        output: { echo: "$: input.blob", rounds: "$: outputs.gen.i" },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any,
     });
@@ -239,7 +239,7 @@ test(
               children: {
                 out: {
                   name: leaf,
-                  input: { blob: "{{ input.blob }}" },
+                  input: { blob: "$: input.blob" },
                   result_schema: {
                     type: "object",
                     properties: {
@@ -251,11 +251,11 @@ test(
                 },
               },
             },
-            output: "{{ self.result.out }}",
+            output: "$: self.result.out",
             switch: [{ goto: "end" }],
           },
         ],
-        output: { echo: "{{ outputs.call.echo }}" },
+        output: { echo: "$: outputs.call.echo" },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any,
     });

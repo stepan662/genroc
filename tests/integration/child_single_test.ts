@@ -19,7 +19,7 @@ test("child — result is the child's output unwrapped (not keyed)", async () =>
         required: ["n"],
       },
       tasks: [{ id: "done", switch: [{ goto: "end" }] }],
-      output: { value: "{{ input.n }}" },
+      output: { value: "$: input.n" },
     },
   });
 
@@ -37,7 +37,7 @@ test("child — result is the child's output unwrapped (not keyed)", async () =>
           action: {
             type: "child" as const,
             name: leaf,
-            input: { n: "{{ input.x }}" },
+            input: { n: "$: input.x" },
             result_schema: {
               type: "object",
               properties: { value: { type: "integer" } },
@@ -46,11 +46,11 @@ test("child — result is the child's output unwrapped (not keyed)", async () =>
           },
           // self.result is the child's output directly — a child_map here would need
           // self.result.<key>, which is exactly the difference being asserted.
-          output: "{{ self.result }}",
+          output: "$: self.result",
           switch: [{ goto: "end" }],
         },
       ],
-      output: { got: "{{ outputs.run }}" },
+      output: { got: "$: outputs.run" },
     },
   });
 

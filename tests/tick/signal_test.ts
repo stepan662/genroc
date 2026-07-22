@@ -33,7 +33,7 @@ test("a signal that arrives before the task arms is buffered, then consumed on a
     {
       id: "approval",
       action: { type: "external", result_schema: approvedSchema },
-      output: "{{ self.result }}",
+      output: "$: self.result",
       switch: "end",
     },
   ]);
@@ -61,7 +61,7 @@ test("a signal to a paused instance is delivered but does not advance it until r
     {
       id: "approval",
       action: { type: "external", result_schema: approvedSchema },
-      output: "{{ self.result }}",
+      output: "$: self.result",
       switch: "end",
     },
   ]);
@@ -101,7 +101,7 @@ test("a signal for a not-yet-reached task buffers while paused, and lands on arm
     {
       id: "approval",
       action: { type: "external", result_schema: approvedSchema },
-      output: "{{ self.result }}",
+      output: "$: self.result",
       switch: "end",
     },
   ]);

@@ -22,7 +22,7 @@ const sharedDefsProcess = `{
 				"type": "fetch", "url": "http://x",
 				"result_schema": {"type":"object","properties":{"buyer":{"$ref":"#/$defs/User"}},"required":["buyer"]}
 			},
-			"output": {"who": "'{{ self.result.buyer.name }}'"},
+			"output": {"who": "'${ self.result.buyer.name }'"},
 			"switch": [{"goto": "next"}]
 		},
 		{
@@ -31,7 +31,7 @@ const sharedDefsProcess = `{
 				"type": "fetch", "url": "http://y",
 				"result_schema": {"type":"object","properties":{"reviewer":{"$ref":"#/$defs/User"}},"required":["reviewer"]}
 			},
-			"output": {"flag": "{{ self.result.reviewer.vip }}"}
+			"output": {"flag": "$: self.result.reviewer.vip"}
 		}
 	]
 }`
@@ -73,7 +73,7 @@ func TestGenerate_SharedDefUsedByInputAndResults(t *testing.T) {
 				"type": "fetch", "url": "http://x",
 				"result_schema": {"type":"object","properties":{"owner":{"$ref":"#/$defs/User"}},"required":["owner"]}
 			},
-			"output": {"n": "'{{ self.result.owner.name }}'"}
+			"output": {"n": "'${ self.result.owner.name }'"}
 		}]
 	}`)
 	names := out.Defs.Names()
@@ -101,7 +101,7 @@ func TestGenerate_GeneratedNamesTakePrecedenceByRenaming(t *testing.T) {
 				"type": "fetch", "url": "http://x",
 				"result_schema": {"type":"object","properties":{"d":{"$ref":"#/$defs/s1_output"}},"required":["d"]}
 			},
-			"output": {"num": "{{ self.result.d.n }}"},
+			"output": {"num": "$: self.result.d.n"},
 			"switch": [{"goto": "end"}]
 		}]
 	}`)

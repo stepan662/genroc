@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"genroc/internal/shape"
 )
 
 // Fault is a terminal error: a machine-readable code and a human-readable message,
@@ -135,98 +137,11 @@ func (SwitchMap) JSONSchemaBytes() ([]byte, error) {
 	}`), nil
 }
 
-// Shape is a templated value used by the data-shaping fields (action input, output,
-// process output). It is recursively either a string expression
-// (a {{ }} template — literal text, a single expression preserving type, or a
-// mixed string) or an object whose values are themselves Shapes:
-//
-//	type Shape = string | Record<string, Shape>
-//
-// Arrays and non-string literals are not allowed structurally — produce them
-// from an expression at a string leaf instead (e.g. "{{ 5 }}", "{{ [a, b] }}").
-// The authoring structure is string|object, but the evaluated/inferred value can
-// be any shape, because a string leaf may evaluate to any type.
-type Shape struct {
-	Raw any // string | map[string]any (recursively)
-}
-
-func (s *Shape) UnmarshalJSON(b []byte) error {
-	var raw any
-	if err := json.Unmarshal(b, &raw); err != nil {
-		return err
-	}
-	if err := checkShape(raw); err != nil {
-		return fmt.Errorf("shape: %w", err)
-	}
-	s.Raw = raw
-	return nil
-}
-
-func (s Shape) MarshalJSON() ([]byte, error) {
-	return json.Marshal(s.Raw)
-}
-
-// Present reports whether the shape carries a value; nil-safe so callers can skip a
-// separate nil check.
-func (s *Shape) Present() bool {
-	return s != nil && s.Raw != nil
-}
-
-// Strings returns every string leaf in the shape, used to collect outputs.<id>
-// references for the output-dependency graph.
-func (s *Shape) Strings() []string {
-	if s == nil {
-		return nil
-	}
-	var out []string
-	var walk func(any)
-	walk = func(n any) {
-		switch v := n.(type) {
-		case string:
-			out = append(out, v)
-		case map[string]any:
-			for _, c := range v {
-				walk(c)
-			}
-		}
-	}
-	walk(s.Raw)
-	return out
-}
-
-// JSONSchemaBytes exposes the recursive Shape schema (string | object of Shape) for
-// OpenAPI reflection. The self-reference uses swaggest's generated def name
-// (#/$defs/ModelShape), which the spec builder rewrites to #/components/schemas/ModelShape.
-func (Shape) JSONSchemaBytes() ([]byte, error) {
-	return []byte(`{
-		"oneOf": [
-			{"type": "string", "description": "An expression / template ({{ ... }}) or a literal string."},
-			{
-				"type": "object",
-				"description": "Nested object; each value is recursively a Shape.",
-				"additionalProperties": {"$ref": "#/$defs/ModelShape"}
-			}
-		]
-	}`), nil
-}
-
-// checkShape recursively enforces the string | Record<string, Shape> grammar, rejecting
-// arrays and non-string scalar literals.
-func checkShape(n any) error {
-	switch v := n.(type) {
-	case string:
-		return nil
-	case map[string]any:
-		for k, c := range v {
-			if err := checkShape(c); err != nil {
-				return fmt.Errorf("%q: %w", k, err)
-			}
-		}
-		return nil
-	default:
-		return fmt.Errorf("must be a string expression or a nested object, got %T", n)
-	}
-}
+// Shape is the templated value used by the data-shaping fields (action input, output,
+// process output). The type and all its behaviour (grammar, Infer, Eval) live in the
+// self-contained shape package; this alias keeps the model's field types spelled
+// model.Shape.
+type Shape = shape.Shape
 
 // ErrorCase is a single error-routing rule evaluated when a task's call fails.
 // Rules are evaluated in order; the first match applies.

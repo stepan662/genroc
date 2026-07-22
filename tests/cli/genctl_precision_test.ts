@@ -64,9 +64,9 @@ input_schema:
       default: [${literal}]
 tasks:
   - id: shape
-    output: "{{ map(input.data, num => { num: num }) }}"
+    output: "$: map(input.data, num => { num: num })"
     switch: end
-output: "{{ outputs.shape }}"
+output: "$: outputs.shape"
 `;
 }
 
@@ -122,9 +122,9 @@ input_schema:
       default: ${PRECISE_FRACTION}
 tasks:
   - id: pass
-    output: { amount: "{{ input.amount }}" }
+    output: { amount: "$: input.amount" }
     switch: end
-output: "{{ outputs.pass }}"
+output: "$: outputs.pass"
 `;
   const out = await applyRunGet(def, name);
   expect(out).toContain(PRECISE_FRACTION);
@@ -142,9 +142,9 @@ input_schema:
   required: [id]
 tasks:
   - id: pass
-    output: { id: "{{ input.id }}" }
+    output: { id: "$: input.id" }
     switch: end
-output: "{{ outputs.pass }}"
+output: "$: outputs.pass"
 `;
   const out = await applyRunGet(def, name, ["--input", `{"id":${BIG_INT}}`]);
 
@@ -163,9 +163,9 @@ input_schema:
   required: [id]
 tasks:
   - id: pass
-    output: { id: "{{ input.id }}" }
+    output: { id: "$: input.id" }
     switch: end
-output: "{{ outputs.pass }}"
+output: "$: outputs.pass"
 `;
   const out = await applyRunGet(def, name, ["--set", `id=${BIG_INT}`]);
 
@@ -188,11 +188,11 @@ input_schema:
 tasks:
   - id: calc
     output:
-      sum: "{{ input.a + input.b }}"
-      exact: "{{ input.a + input.b == 0.3 }}"
-      bigPlusOne: "{{ input.big + 1 }}"
+      sum: "$: input.a + input.b"
+      exact: "$: input.a + input.b == 0.3"
+      bigPlusOne: "$: input.big + 1"
     switch: end
-output: "{{ outputs.calc }}"
+output: "$: outputs.calc"
 `;
   const out = await applyRunGet(def, name, [
     "--input",
@@ -230,9 +230,9 @@ input_schema:
     n: { type: integer, default: 0x1F }
 tasks:
   - id: pass
-    output: { n: "{{ input.n }}" }
+    output: { n: "$: input.n" }
     switch: end
-output: "{{ outputs.pass }}"
+output: "$: outputs.pass"
 `;
   const out = await applyRunGet(def, name);
   // 0x1F is 31; the point is that it applies and runs at all.

@@ -26,7 +26,7 @@ test("numbers — large integers survive a round trip untouched", async () => {
         required: ["id", "amount"],
       },
       tasks: [{ id: "done", switch: [{ goto: "end" }] }],
-      output: { id: "{{ input.id }}", amount: "{{ input.amount }}" },
+      output: { id: "$: input.id", amount: "$: input.amount" },
     },
   });
 
@@ -63,10 +63,10 @@ test("numbers — decimal arithmetic is exact", async () => {
       },
       tasks: [{ id: "done", switch: [{ goto: "end" }] }],
       output: {
-        sum: "{{ input.a + input.b }}",
-        exact: "{{ input.a + input.b == 0.3 }}",
-        bigPlusOne: "{{ input.big + 1 }}",
-        money: "{{ input.a * 3 }}",
+        sum: "$: input.a + input.b",
+        exact: "$: input.a + input.b == 0.3",
+        bigPlusOne: "$: input.big + 1",
+        money: "$: input.a * 3",
       },
     },
   });

@@ -18,7 +18,7 @@ async function defineProc() {
       },
       // The output reads the (externalized) input, exercising lazy resolution through
       // the engine's output projection.
-      output: { echo: "{{ input.blob }}" },
+      output: { echo: "$: input.blob" },
       tasks: [{ id: "work", switch: [{ goto: "end" }] }],
     },
   });
@@ -224,7 +224,7 @@ test("recursive + resolve inlines a child instance's externalized payload", asyn
           action: {
             type: "child_map" as const,
             children: {
-              out: { name: child, input: { blob: "{{ input.blob }}" } },
+              out: { name: child, input: { blob: "$: input.blob" } },
             },
           },
           switch: [{ goto: "end" }],
@@ -281,7 +281,7 @@ test("a big value round-trips through a child's input and output back to the par
         required: ["blob"],
       },
       // The child returns the big value it received straight back in its output.
-      output: { echo: "{{ input.blob }}" },
+      output: { echo: "$: input.blob" },
       tasks: [{ id: "leaf", switch: [{ goto: "end" }] }],
     },
   });
@@ -301,7 +301,7 @@ test("a big value round-trips through a child's input and output back to the par
             children: {
               out: {
                 name: child,
-                input: { blob: "{{ input.blob }}" },
+                input: { blob: "$: input.blob" },
                 result_schema: {
                   type: "object",
                   properties: { echo: { type: "string" } },
@@ -311,12 +311,12 @@ test("a big value round-trips through a child's input and output back to the par
             },
           },
           // Collect the child's (big) output into this task's output…
-          output: "{{ self.result.out }}",
+          output: "$: self.result.out",
           switch: [{ goto: "end" }],
         },
       ],
       // …and surface it again as the parent's own output.
-      output: { echo: "{{ outputs.spawn.echo }}" },
+      output: { echo: "$: outputs.spawn.echo" },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
   });

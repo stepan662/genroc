@@ -61,7 +61,7 @@ func TestGenerate_TaskOutput(t *testing.T) {
         }
       },
       "switch": "next",
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     },
     {
       "id": "notify",
@@ -110,7 +110,7 @@ func TestGenerate_FlatStepsWithOutputs(t *testing.T) {
           "goto": "$refund"
         }
       ],
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     },
     {
       "id": "ship",
@@ -127,7 +127,7 @@ func TestGenerate_FlatStepsWithOutputs(t *testing.T) {
         }
       },
       "switch": "end",
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     },
     {
       "id": "refund",
@@ -144,7 +144,7 @@ func TestGenerate_FlatStepsWithOutputs(t *testing.T) {
         }
       },
       "switch": "end",
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     }
   ]
 }`)
@@ -226,7 +226,7 @@ func TestGenerate_InnerDefsConflictRenamed(t *testing.T) {
           "required": ["y"]
         }
       },
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     }
   ]
 }`)
@@ -260,7 +260,7 @@ func TestGenerate_ChildMapSingleEntry_WithOutputSchema_ExposesTypedOutput(t *tes
         }
       },
       "switch": "end",
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     }
   ]
 }`)
@@ -319,7 +319,7 @@ func TestGenerate_ChildMapSingleEntry_OutputAvailableInDownstreamStep(t *testing
         }
       },
       "switch": "next",
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     },
     {
       "id": "report",
@@ -327,7 +327,7 @@ func TestGenerate_ChildMapSingleEntry_OutputAvailableInDownstreamStep(t *testing
         "type": "fetch",
         "url": "http://x",
         "body": {
-          "n": "{{outputs.spawn.out.count}}"
+          "n": "$: outputs.spawn.out.count"
         }
       }
     }
@@ -359,7 +359,7 @@ func TestGenerate_Child_WithResultSchema_ExposesUnwrappedOutput(t *testing.T) {
         }
       },
       "switch": "end",
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     }
   ]
 }`)
@@ -391,14 +391,14 @@ func TestGenerate_Child_OutputAvailableInDownstreamStep(t *testing.T) {
         }
       },
       "switch": "next",
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     },
     {
       "id": "report",
       "action": {
         "type": "fetch",
         "url": "http://x",
-        "body": { "n": "{{outputs.spawn.count}}" }
+        "body": { "n": "$: outputs.spawn.count" }
       }
     }
   ]
@@ -421,7 +421,7 @@ func TestGenerate_Child_WithoutResultSchema_ResultNotAccessible(t *testing.T) {
       "id": "spawn",
       "action": { "type": "child", "name": "worker" },
       "switch": "end",
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     }
   ]
 }`)
@@ -440,7 +440,7 @@ func TestGenerate_Child_WithoutResultSchema_ResultNotAccessible(t *testing.T) {
       "id": "spawn",
       "action": { "type": "child", "name": "worker" },
       "switch": "end",
-      "output": { "v": "{{ self.result.x }}" }
+      "output": { "v": "$: self.result.x" }
     }
   ]
 }`); err == nil {
@@ -503,7 +503,7 @@ func TestGenerate_ChildParallel_WithOutputSchemas_ExposesKeyedOutput(t *testing.
         }
       },
       "switch": "end",
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     }
   ]
 }`)
@@ -568,7 +568,7 @@ func TestGenerate_ChildParallel_KeyedOutputAvailableInDownstreamStep(t *testing.
         }
       },
       "switch": "next",
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     },
     {
       "id": "aggregate",
@@ -576,8 +576,8 @@ func TestGenerate_ChildParallel_KeyedOutputAvailableInDownstreamStep(t *testing.
         "type": "fetch",
         "url": "http://x",
         "body": {
-          "a": "{{outputs.spawn.left.num}}",
-          "b": "{{outputs.spawn.right.num}}"
+          "a": "$: outputs.spawn.left.num",
+          "b": "$: outputs.spawn.right.num"
         }
       }
     }
@@ -623,7 +623,7 @@ func TestGenerate_ChildParallel_MixedOutputSchemas_UntypedKeyOmitted(t *testing.
         }
       },
       "switch": "end",
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     }
   ]
 }`)
@@ -649,7 +649,7 @@ func TestGenerate_ChildMap_NoResultSchemas_ResultNotAccessible(t *testing.T) {
       "id": "spawn",
       "action": { "type": "child_map", "children": { "a": { "name": "x" }, "b": { "name": "y" } } },
       "switch": "end",
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     }
   ]
 }`)
@@ -688,9 +688,9 @@ func TestGenerate_ChildList_NoResultSchema_ResultNotAccessible(t *testing.T) {
   "tasks": [
     {
       "id": "spread",
-      "action": { "type": "child_list", "name": "worker", "over": "{{ input.items }}" },
+      "action": { "type": "child_list", "name": "worker", "over": "$: input.items" },
       "switch": "end",
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     }
   ]
 }`)
@@ -712,7 +712,7 @@ func TestGenerate_ChildList_NoResultSchema_ResultNotAccessible(t *testing.T) {
   "tasks": [
     {
       "id": "spread",
-      "action": { "type": "child_list", "name": "worker", "over": "{{ input.items }}" },
+      "action": { "type": "child_list", "name": "worker", "over": "$: input.items" },
       "switch": [{ "case": "self.result == null", "goto": "end" }]
     }
   ]
@@ -761,7 +761,7 @@ func TestGenerate_ChildFromArray_OutputIsTypedArray(t *testing.T) {
       "action": {
         "type": "child_list",
         "name": "worker",
-        "over": "{{ input.items }}",
+        "over": "$: input.items",
         "result_schema": {
           "type": "object",
           "properties": {"doubled": {"type": "integer"}},
@@ -769,7 +769,7 @@ func TestGenerate_ChildFromArray_OutputIsTypedArray(t *testing.T) {
         }
       },
       "switch": "end",
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     }
   ]
 }`)
@@ -809,7 +809,7 @@ func TestGenerate_ChildFromArray_ArrayElementTypedInDownstream(t *testing.T) {
       "action": {
         "type": "child_list",
         "name": "worker",
-        "over": "{{ input.items }}",
+        "over": "$: input.items",
         "result_schema": {
           "type": "object",
           "properties": {"doubled": {"type": "integer"}},
@@ -817,14 +817,14 @@ func TestGenerate_ChildFromArray_ArrayElementTypedInDownstream(t *testing.T) {
         }
       },
       "switch": "next",
-      "output": "{{ self.result }}"
+      "output": "$: self.result"
     },
     {
       "id": "use",
       "action": {
         "type": "fetch",
         "url": "http://x",
-        "body": {"first": "{{ outputs.spread[0].doubled }}"}
+        "body": {"first": "$: outputs.spread[0].doubled"}
       }
     }
   ]
@@ -846,7 +846,7 @@ func TestGenerate_ChildFromArray_OverMustBeArray(t *testing.T) {
   "tasks": [
     {
       "id": "spread",
-      "action": {"type": "child_list", "name": "worker", "over": "{{ input.n }}"},
+      "action": {"type": "child_list", "name": "worker", "over": "$: input.n"},
       "switch": "end"
     }
   ]
