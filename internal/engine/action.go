@@ -12,6 +12,7 @@ import (
 	"genroc/internal/errcode"
 	"genroc/internal/idgen"
 	"genroc/internal/model"
+	"genroc/internal/shape"
 	"genroc/internal/transport"
 )
 
@@ -51,7 +52,7 @@ func (e *Engine) executeAction(ctx context.Context, inst *model.ProcessInstance,
 	resolvedHeaders[transport.HeaderTaskID] = task.ID
 	var body any
 	if task.Action.Body.Present() {
-		body, err = e.evalShapeCtx(inst, task.Action.Body.Raw, nil)
+		body, err = e.evalShape(inst, shape.Shape{Raw: task.Action.Body.Raw}, nil)
 		if err != nil {
 			return nil, stop(e.failInstance(inst, errcode.EngineExpression, fmt.Sprintf("task %q body: %v", task.ID, err)))
 		}
@@ -104,7 +105,7 @@ func (e *Engine) buildTaskData(inst *model.ProcessInstance, task *model.Task) (a
 	if !task.Action.Input.Present() {
 		return map[string]any{}, nil
 	}
-	return e.evalShapeCtx(inst, task.Action.Input.Raw, nil)
+	return e.evalShape(inst, shape.Shape{Raw: task.Action.Input.Raw}, nil)
 }
 
 // runDelay implements the delay action. First entry (WakeAt nil, reset on every task
@@ -207,9 +208,9 @@ func evalDurationMs(expr string, ctx, config map[string]any) (int64, error) {
 }
 
 // evalDurationMsCtx is evalDurationMs against inst's context, resolving only the slots
-// the expression references.
+// the ms template references.
 func (e *Engine) evalDurationMsCtx(inst *model.ProcessInstance, expr string) (int64, error) {
-	v, err := e.evalAnyCtx(inst, expr)
+	v, err := e.evalShape(inst, shape.Shape{Raw: expr}, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -253,7 +254,7 @@ func (e *Engine) resolveURL(inst *model.ProcessInstance, call *model.Action) (st
 	if call.URL == "" {
 		return "", nil
 	}
-	val, err := e.evalAnyCtx(inst, call.URL)
+	val, err := e.evalShape(inst, shape.Shape{Raw: call.URL}, nil)
 	if err != nil {
 		return "", err
 	}
@@ -265,7 +266,7 @@ func (e *Engine) resolveMethod(inst *model.ProcessInstance, call *model.Action) 
 	if call.Method == "" {
 		return "POST", nil
 	}
-	val, err := e.evalAnyCtx(inst, call.Method)
+	val, err := e.evalShape(inst, shape.Shape{Raw: call.Method}, nil)
 	if err != nil {
 		return "", err
 	}
@@ -284,7 +285,7 @@ func (e *Engine) resolveHeaders(inst *model.ProcessInstance, call *model.Action)
 	if !call.Headers.Present() {
 		return nil, nil
 	}
-	val, err := e.evalShapeCtx(inst, call.Headers.Raw, nil)
+	val, err := e.evalShape(inst, shape.Shape{Raw: call.Headers.Raw}, nil)
 	if err != nil {
 		return nil, err
 	}

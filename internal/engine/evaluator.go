@@ -105,10 +105,14 @@ func (e *Engine) buildEnv(inst *model.ProcessInstance, self any, roots expressio
 	return env, nil
 }
 
-// evalShapeCtx evaluates a shape against inst's context, resolving only the slots the
-// shape references.
-func (e *Engine) evalShapeCtx(inst *model.ProcessInstance, node any, self any) (any, error) {
-	roots, err := shape.Roots(node)
+// evalShape is the single runtime entry point for every templated slot — action inputs,
+// url/method/over, outputs, switch cases, delays. It evaluates sh against inst's context,
+// resolving only the value-slots sh references (self is the task's self value, or nil for
+// action inputs that run before the action). This mirrors the single Shape.Check used at
+// registration: the same Shape drives both phases. sh.Roots() and sh.Eval() dispatch on
+// sh.Expr (a bare expression for a case, a template otherwise).
+func (e *Engine) evalShape(inst *model.ProcessInstance, sh shape.Shape, self any) (any, error) {
+	roots, err := sh.Roots()
 	if err != nil {
 		return nil, err
 	}
@@ -116,43 +120,7 @@ func (e *Engine) evalShapeCtx(inst *model.ProcessInstance, node any, self any) (
 	if err != nil {
 		return nil, err
 	}
-	return shape.Eval(node, env)
-}
-
-func (e *Engine) evalAnyCtx(inst *model.ProcessInstance, expr string) (any, error) {
-	t, err := tmpl.Get(expr)
-	if err != nil {
-		return nil, fmt.Errorf("param %q: %w", expr, err)
-	}
-	env, err := e.buildEnv(inst, nil, t.RootRefs())
-	if err != nil {
-		return nil, err
-	}
-	result, err := t.EvalAny(env)
-	if err != nil {
-		return nil, fmt.Errorf("param %q: %w", expr, err)
-	}
-	return result, nil
-}
-
-func (e *Engine) evalBoolCtx(inst *model.ProcessInstance, expr string, self any) (bool, error) {
-	roots, err := expression.RootRefs(expr)
-	if err != nil {
-		return false, fmt.Errorf("switch %q: %w", expr, err)
-	}
-	env, err := e.buildEnv(inst, self, roots)
-	if err != nil {
-		return false, err
-	}
-	result, err := expression.Eval(expr, env)
-	if err != nil {
-		return false, fmt.Errorf("switch %q: %w", expr, err)
-	}
-	b, ok := result.(bool)
-	if !ok {
-		return false, fmt.Errorf("switch %q: expected bool, got %T", expr, result)
-	}
-	return b, nil
+	return sh.Eval(env)
 }
 
 func evalEnv(contextData, config map[string]any, self any) map[string]any {

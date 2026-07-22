@@ -7,6 +7,7 @@ import (
 
 	"genroc/internal/errcode"
 	"genroc/internal/model"
+	"genroc/internal/shape"
 )
 
 // advanceOutcome is the next persisted state that advance() computes without
@@ -311,7 +312,7 @@ func (e *Engine) advance(ctx context.Context, inst *model.ProcessInstance) advan
 // prior output (its value from the last loop iteration, or nil on the first run).
 func (e *Engine) evalTaskOutput(inst *model.ProcessInstance, task *model.Task, result, previous any) (any, error) {
 	self := map[string]any{"result": result, "previous": previous}
-	return e.evalShapeCtx(inst, task.Output.Raw, self)
+	return e.evalShape(inst, shape.Shape{Raw: task.Output.Raw}, self)
 }
 
 // setTaskOutput stores value as the task's exported output (outputs.taskID), appending to
@@ -360,9 +361,13 @@ func (e *Engine) evalSwitch(inst *model.ProcessInstance, task *model.Task, selfO
 		if c.Case == "" {
 			return c, nil
 		}
-		ok, err := e.evalBoolCtx(inst, c.Case, selfOutput)
+		v, err := e.evalShape(inst, shape.Shape{Raw: c.Case, Expr: true}, selfOutput)
 		if err != nil {
 			return nil, fmt.Errorf("case %q: %w", c.Case, err)
+		}
+		ok, isBool := v.(bool)
+		if !isBool {
+			return nil, fmt.Errorf("case %q: expected bool, got %T", c.Case, v)
 		}
 		if ok {
 			return c, nil
@@ -450,7 +455,7 @@ func (e *Engine) computeOutput(inst *model.ProcessInstance) error {
 	if !def.Output.Present() {
 		return nil
 	}
-	out, err := e.evalShapeCtx(inst, def.Output.Raw, nil)
+	out, err := e.evalShape(inst, shape.Shape{Raw: def.Output.Raw}, nil)
 	if err != nil {
 		return fmt.Errorf("output: %w", err)
 	}

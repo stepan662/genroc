@@ -33,13 +33,23 @@ func buildInputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proces
 			hasBody := s.Action.Body.Present()
 			hasInput := s.Action.Input.Present()
 			hasOver := s.Action.Type == model.ActionTypeChildList && s.Action.Over != ""
-			if inMap || hasBody || hasInput || hasURL || hasMethod || hasHeaders || hasOver {
+			hasMs := s.Action.Type == model.ActionTypeDelay && s.Action.Ms != ""
+			if inMap || hasBody || hasInput || hasURL || hasMethod || hasHeaders || hasOver || hasMs {
 				ctx := contextSchema(required[s.ID], optional[s.ID], taskSchemas, processInput, configSchema, mustErr[s.ID], mayErr[s.ID]).WithDefs(defs)
 				// The child_list `over` expression must be a non-null array; each
 				// element becomes one child's input. Type-check it here so a malformed or
 				// non-array expression is rejected at registration.
 				if hasOver {
 					if _, err := checkArrayTemplate(s.Action.Over, ctx, s.ID); err != nil {
+						return err
+					}
+				}
+				// The delay `ms` template must evaluate to a number of milliseconds (a
+				// literal like "30000", which stringifies, or a numeric expression);
+				// type-check it so a malformed or non-numeric ms is rejected at
+				// registration rather than failing when the process reaches the delay.
+				if hasMs {
+					if err := checkMsTemplate(s.Action.Ms, ctx, s.ID); err != nil {
 						return err
 					}
 				}
@@ -117,6 +127,9 @@ var (
 	arraySchema  = schema.Array(schema.Schema{})
 	objectSchema = schema.Object()
 	boolSchema   = schema.Type("boolean")
+	// A delay ms is a number (a numeric expression) or a string (a literal like "30000",
+	// which stringifies and is parsed at runtime); array/object/boolean/null are rejected.
+	msSchema = schema.Type("number", "string")
 )
 
 // checkNonNullTemplate type-checks a fetch url/method against ctx: it must produce a
@@ -146,6 +159,18 @@ func checkArrayTemplate(expr string, ctx schema.Schema, taskID string) (schema.S
 			return fmt.Errorf("task %q over must evaluate to an array, got %q", taskID, inferred.TypeName())
 		},
 	})
+}
+
+// checkMsTemplate type-checks a delay `ms` against ctx: it must produce a number (a
+// numeric expression) or a string (a numeric literal, parsed at runtime).
+func checkMsTemplate(expr string, ctx schema.Schema, taskID string) error {
+	shp := shape.Shape{Raw: expr, Schema: &msSchema, Name: fmt.Sprintf("task %q delay ms", taskID)}
+	_, err := shp.CheckWith(ctx, shape.CheckHooks{
+		Result: func(inferred, _ schema.Schema) error {
+			return fmt.Errorf("task %q delay ms must evaluate to a number of milliseconds, got %q", taskID, inferred.TypeName())
+		},
+	})
+	return err
 }
 
 // inferActionPayload infers the schema of an action's payload shape — the fetch request

@@ -58,6 +58,13 @@ func (s *Shape) Eval(ctxData map[string]any) (any, error) {
 	return Eval(s.Raw, ctxData)
 }
 
+// Roots reports which context roots the shape's expressions reference — the bare
+// expression for an Expr shape, aggregated across every leaf otherwise — so the engine can
+// lazily resolve only the value-slots the shape reads.
+func (s *Shape) Roots() (expression.Roots, error) {
+	return s.refs()
+}
+
 // Roots unions the root references of every template-string leaf in a templated value, so
 // the engine lazily resolves only the value-slots the value reads.
 func Roots(node any) (expression.Roots, error) {

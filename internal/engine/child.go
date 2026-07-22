@@ -9,6 +9,7 @@ import (
 	"genroc/internal/errcode"
 	"genroc/internal/idgen"
 	"genroc/internal/model"
+	"genroc/internal/shape"
 )
 
 // runChildProcesses handles the two-phase child lifecycle:
@@ -271,7 +272,7 @@ func (e *Engine) buildListChildren(ctx context.Context, inst *model.ProcessInsta
 
 	// Evaluate `over` to the input array. Registration guarantees a non-null array
 	// type, but guard defensively: a null evaluates to the empty fan-out.
-	arrVal, err := e.evalAnyCtx(inst, task.Action.Over)
+	arrVal, err := e.evalShape(inst, shape.Shape{Raw: task.Action.Over}, nil)
 	if err != nil {
 		return nil, stop(e.failInstance(inst, errcode.EngineExpression, fmt.Sprintf("task %q child_list over: %v", task.ID, err)))
 	}
@@ -315,7 +316,7 @@ func (e *Engine) evalChildInput(inst *model.ProcessInstance, taskID, label strin
 	if !input.Present() {
 		return map[string]any{}, nil
 	}
-	val, err := e.evalShapeCtx(inst, input.Raw, nil)
+	val, err := e.evalShape(inst, shape.Shape{Raw: input.Raw}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("task %q %s input: %v", taskID, label, err)
 	}
