@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -439,10 +440,9 @@ func runInstancesCmd(server string, args []string) {
 	serverFlag := addServerFlag(fs, server)
 	statusFlag := fs.String("status", "", "filter by status (running, completed, failing, failed, raised, pausing, paused)")
 	codeFlag := fs.String("error-code", "", "filter by exact error code (e.g. card_declined, http.500)")
-	sortFlag := fs.String("sort", "created", "sort key: created (newest first) or updated (most recently active)")
-	limitFlag := fs.Int("limit", 20, "max instances to show (server caps a page at 100; use --all for more)")
-	allFlag := fs.Bool("all", false, "list every instance (follow all pages)")
-	jsonFlag := fs.Bool("json", false, "print the raw items as a JSON array (honors --limit/--all)")
+	sortFlag := fs.String("sort", "created", "sort key: created or updated (most recently active)")
+	limitFlag := fs.Int("limit", 20, "show the newest N instances (pages the server as needed)")
+	jsonFlag := fs.Bool("json", false, "print the raw items as a JSON array (honors --limit)")
 	fs.Parse(args)
 
 	q := url.Values{}
@@ -453,14 +453,15 @@ func runInstancesCmd(server string, args []string) {
 		q.Set("status", *statusFlag)
 	}
 	q.Set("sort", *sortFlag)
-	q.Set("order", "desc")
-	if !*allFlag {
-		q.Set("limit", strconv.Itoa(*limitFlag))
-	}
 	u := *serverFlag + "/instances?" + q.Encode()
 
 	if *jsonFlag {
-		printListJSON(u, *allFlag)
+		items, err := listNewest[json.RawMessage](u, *limitFlag)
+		if err != nil {
+			fatal("%v", err)
+		}
+		slices.Reverse(items)
+		printJSONItems(items)
 		return
 	}
 
@@ -475,16 +476,7 @@ func runInstancesCmd(server string, args []string) {
 		UpdatedAt string `json:"updated_at"`
 	}
 
-	var rows []instanceRow
-	var err error
-	if *allFlag {
-		rows, err = listAll[instanceRow](u)
-	} else {
-		var p page[instanceRow]
-		if err = callGet(u, &p); err == nil {
-			rows = p.Items
-		}
-	}
+	rows, err := listNewest[instanceRow](u, *limitFlag)
 	if err != nil {
 		fatal("%v", err)
 	}
@@ -492,6 +484,8 @@ func runInstancesCmd(server string, args []string) {
 		fmt.Println("no instances")
 		return
 	}
+	// Newest-first from the server; reverse so the most recent row prints last (bottom).
+	slices.Reverse(rows)
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "ID\tSTATUS\tPROCESS\tUPDATED\tCREATED\tCODE\tERROR")
@@ -513,8 +507,7 @@ func runExternalTasksCmd(server string, args []string) {
 	processFlag := fs.String("process", "", "filter by process name")
 	versionFlag := fs.Int("version", 0, "filter by process version (0 = any)")
 	taskFlag := fs.String("task", "", "filter by task id")
-	limitFlag := fs.Int("limit", 20, "max tasks to show (server caps a page at 100; use --all for more)")
-	allFlag := fs.Bool("all", false, "list every waiting task (follow all pages)")
+	limitFlag := fs.Int("limit", 20, "show the newest N waiting tasks (pages the server as needed)")
 	jsonFlag := fs.Bool("json", false, "print the raw items as a JSON array (includes each task's input and result_schema)")
 	fs.Parse(args)
 
@@ -528,16 +521,18 @@ func runExternalTasksCmd(server string, args []string) {
 	if *taskFlag != "" {
 		q.Set("task", *taskFlag)
 	}
-	if !*allFlag {
-		q.Set("limit", strconv.Itoa(*limitFlag))
-	}
 	u := *serverFlag + "/external-tasks"
 	if enc := q.Encode(); enc != "" {
 		u += "?" + enc
 	}
 
 	if *jsonFlag {
-		printListJSON(u, *allFlag)
+		items, err := listNewest[json.RawMessage](u, *limitFlag)
+		if err != nil {
+			fatal("%v", err)
+		}
+		slices.Reverse(items)
+		printJSONItems(items)
 		return
 	}
 
@@ -551,24 +546,16 @@ func runExternalTasksCmd(server string, args []string) {
 		WaitingSince string `json:"waiting_since"`
 	}
 
-	var rows []taskRow
-	var err error
-	if *allFlag {
-		rows, err = listAll[taskRow](u)
-	} else {
-		var p page[taskRow]
-		if err = callGet(u, &p); err == nil {
-			rows = p.Items
-		}
-	}
+	rows, err := listNewest[taskRow](u, *limitFlag)
 	if err != nil {
 		fatal("%v", err)
 	}
-
 	if len(rows) == 0 {
 		fmt.Println("no external tasks waiting")
 		return
 	}
+	// Newest-first from the server; reverse so the most recent row prints last (bottom).
+	slices.Reverse(rows)
 
 	// TOKEN goes last (it is long) and is what you pass to `genctl resolve`.
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -585,7 +572,7 @@ func runLogsCmd(server string, args []string) {
 	serverFlag := addServerFlag(fs, server)
 	levelFlag := fs.String("level", "", "filter by level (debug, info, warn, error); empty = all")
 	sinceFlag := fs.Int64("since", 0, "only logs at/after this unix-millis timestamp")
-	limitFlag := fs.Int("limit", 200, "max entries to return")
+	limitFlag := fs.Int("limit", 200, "show the newest N log entries (pages the server as needed)")
 	recursiveFlag := fs.Bool("recursive", false, "include the whole process subtree (root instance id)")
 	resolveFlag := fs.Bool("resolve", false, "inline full externalized payloads instead of a preview + reference")
 	modeFlag := fs.String("mode", "detail", "output: basic (no data body), detail (+ data), or json (one JSON object per line, untruncated)")
@@ -602,9 +589,6 @@ func runLogsCmd(server string, args []string) {
 	if *sinceFlag > 0 {
 		q.Set("since", strconv.FormatInt(*sinceFlag, 10))
 	}
-	if *limitFlag > 0 {
-		q.Set("limit", strconv.Itoa(*limitFlag))
-	}
 	if *recursiveFlag {
 		q.Set("recursive", "true")
 	}
@@ -619,13 +603,12 @@ func runLogsCmd(server string, args []string) {
 	// json mode dumps each entry as the server's JSON, one per line (JSONL):
 	// everything, untruncated, pipe-friendly (jq).
 	if mode == logview.ModeJSON {
-		var raw struct {
-			Items []json.RawMessage `json:"items"`
-		}
-		if err := callGet(u, &raw); err != nil {
+		items, err := listNewest[json.RawMessage](u, *limitFlag)
+		if err != nil {
 			fatal("%v", err)
 		}
-		for _, it := range raw.Items {
+		slices.Reverse(items) // oldest→newest, so the most recent line prints last
+		for _, it := range items {
 			os.Stdout.Write(it)
 			os.Stdout.Write([]byte("\n"))
 		}
@@ -648,23 +631,23 @@ func runLogsCmd(server string, args []string) {
 		DataRef  *logDataRef    `json:"data_ref"`
 		Meta     map[string]any `json:"meta"`
 	}
-	// A single page, bounded by --limit (the server caps it at 1000). Unlike
-	// instances/channels we don't follow next_cursor here: --limit is a deliberate
-	// cap on how much trail to print.
-	var resp page[logRow]
-	if err := callGet(u, &resp); err != nil {
+	// The newest --limit entries, gathered across pages, then reversed so they read
+	// oldest→newest with the most recent line at the bottom, nearest the prompt (tail).
+	rows, err := listNewest[logRow](u, *limitFlag)
+	if err != nil {
 		fatal("%v", err)
 	}
-	if len(resp.Items) == 0 {
+	if len(rows) == 0 {
 		return
 	}
+	slices.Reverse(rows)
 
 	// Render via the shared logview column layout — the same one the server console
 	// uses, so a row reads identically in either place. The CLI adds a header (it has
 	// the whole page) and shows the ID column only with --recursive (a single-instance view
 	// repeats one id). The data body is shown only in detail mode.
 	fmt.Println(logview.Header(*recursiveFlag))
-	for _, l := range resp.Items {
+	for _, l := range rows {
 		t, _ := parseTime(l.Time)
 		// An externalized payload comes back as a bare {ref, size} reference with no
 		// inline body — show the reference itself in the body's place (rendered raw via

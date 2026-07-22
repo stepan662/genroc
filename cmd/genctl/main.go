@@ -9,10 +9,14 @@
 //	genctl run      <process> [--channel C | --version N] [--input <json|-> | -f file] [--set k=v ...] [-q]
 //	genctl resolve  <token> [--result <json|-> | -f file] [--set k=v ...] [-q]
 //	genctl signal   <instance-id> --task <task-id> [--result <json|-> | -f file] [--set k=v ...] [-q]
-//	genctl instances [--status <status>] [--sort updated|created] [--limit <n>] [--all] [--json]
-//	genctl external-tasks [--process <name>] [--version <n>] [--task <id>] [--limit <n>] [--all] [--json]
+//	genctl instances [--status <status>] [--sort updated|created] [--limit <n>] [--json]
+//	genctl external-tasks [--process <name>] [--version <n>] [--task <id>] [--limit <n>] [--json]
 //	genctl get      <instance-id> [--resolve] [--json]
 //	genctl logs     [--level <level>] [--since <ms>] [--limit <n>] [--recursive] [--resolve] [--mode basic|detail|json] <instance-id>
+//
+// List commands (instances, external-tasks, logs) show the newest --limit items,
+// printed oldest→newest so the most recent row is at the bottom, nearest the prompt
+// (like tail). --limit pages the server as needed to gather that many.
 //	genctl pause    <instance-id>
 //	genctl resume   <instance-id>
 //	genctl retry    [--force] <instance-id>
@@ -53,15 +57,16 @@ import (
 //     server-side validation message via serverErrorDetail/resultValidationError.
 //   - List output. Default to a tabwriter table with an UPPERCASE header and
 //     shortTime() for timestamps; print "no <things>" when empty. Filters are
-//     `--<field>` flags mapped 1:1 to the endpoint's query params. Paging is
-//     `--limit <n>` (one page) + `--all` (follow cursors via listAll); fetch the
-//     table via callGet + page[T] / listAll[T].
+//     `--<field>` flags mapped 1:1 to the endpoint's query params. `--limit <n>` is
+//     the one paging knob: fetch the newest n via listNewest[T] (which follows the
+//     cursor across pages), then slices.Reverse for display so the newest row is at
+//     the bottom, nearest the prompt (tail-style).
 //   - Single-item output. Default to a `Key:\tvalue` tabwriter block using
 //     longTime() for timestamps.
 //   - --json is the one machine-readable form. On a list it prints the raw items as
-//     a JSON array via printListJSON (lossless, honoring --limit/--all); on a single
-//     item it prints the raw server object (get: callGet into json.RawMessage, then
-//     indent). Never invent a per-command machine format.
+//     a JSON array via printJSONItems (lossless, same newest-last order as the table);
+//     on a single item it prints the raw server object (get: callGet into
+//     json.RawMessage, then indent). Never invent a per-command machine format.
 //
 // Deliberate exceptions (special-purpose, not resource list/get — leave them):
 //   - `logs` keeps `--mode basic|detail|json`; it has three views and its json is
@@ -167,8 +172,8 @@ func usage() {
   genctl run      <process> [--channel C | --version N] [--input <json|-> | -f file] [--set k=v ...] [-q]
   genctl resolve  <token> [--result <json|-> | -f file] [--set k=v ...] [-q]
   genctl signal   <instance-id> --task <task-id> [--result <json|-> | -f file] [--set k=v ...] [-q]
-  genctl instances [--status <status>] [--sort updated|created] [--limit <n>] [--all] [--json]
-  genctl external-tasks [--process <name>] [--version <n>] [--task <id>] [--limit <n>] [--all] [--json]
+  genctl instances [--status <status>] [--sort updated|created] [--limit <n>] [--json]
+  genctl external-tasks [--process <name>] [--version <n>] [--task <id>] [--limit <n>] [--json]
   genctl get      <instance-id> [--resolve] [--json]
   genctl logs     [--level <level>] [--since <ms>] [--limit <n>] [--recursive] [--resolve] [--mode basic|detail|json] <instance-id>
   genctl pause    <instance-id>
@@ -191,6 +196,8 @@ Flags:
   --task    the external task id to signal
   --set     input/result field key=value (repeatable; dotted keys nest, values type-inferred)
   --server  genroc server URL (overrides $GENROC_SERVER and config file)
+  --limit   list commands: how many of the newest items to show; the CLI pages the
+            server as needed to gather that many (printed oldest→newest, newest last)
   --json    machine-readable output: a list (instances/external-tasks) prints its
             raw items as a JSON array; get prints the raw instance object
   --resolve get/logs: inline externalized context values/payloads instead of

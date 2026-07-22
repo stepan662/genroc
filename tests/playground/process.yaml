@@ -18,11 +18,4 @@ tasks:
     on_error:
       - code: ["fourth_%"]
         goto: end
-  - id: call
-    action:
-      type: fetch
-      url: ""
-      headers:
-        test: "100"
-    switch: end
 output: "$: error"

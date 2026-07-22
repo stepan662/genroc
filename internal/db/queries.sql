@@ -262,7 +262,8 @@ FROM process_dependencies pd
 JOIN process_channels pc  ON pc.name  = pd.parent_name AND pc.channel = sqlc.arg(channel)
 JOIN process_channels pc2 ON pc2.name = pd.child_name  AND pc2.channel = sqlc.arg(channel)
 WHERE pd.parent_version = pc.version
-  AND pd.child_version < pc2.version;
+  AND pd.child_version < pc2.version
+ORDER BY pd.parent_name, pd.child_name, pd.task_id;
 
 -- name: InsertLog :exec
 INSERT INTO process_logs

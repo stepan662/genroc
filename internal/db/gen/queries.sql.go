@@ -236,6 +236,7 @@ JOIN process_channels pc  ON pc.name  = pd.parent_name AND pc.channel = ?1
 JOIN process_channels pc2 ON pc2.name = pd.child_name  AND pc2.channel = ?1
 WHERE pd.parent_version = pc.version
   AND pd.child_version < pc2.version
+ORDER BY pd.parent_name, pd.child_name, pd.task_id
 `
 
 type FindStaleRefsRow struct {

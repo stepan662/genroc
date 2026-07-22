@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -48,6 +49,15 @@ type page[T any] struct {
 	} `json:"page"`
 }
 
+// appendQuery adds one query parameter to a URL that may already carry a query string.
+func appendQuery(u, key, val string) string {
+	sep := "?"
+	if strings.Contains(u, "?") {
+		sep = "&"
+	}
+	return u + sep + key + "=" + url.QueryEscape(val)
+}
+
 // listAll fetches every page of a list endpoint, following page.after until absent
 // (set only while more rows remain). base must omit an after cursor.
 func listAll[T any](base string) ([]T, error) {
@@ -56,11 +66,7 @@ func listAll[T any](base string) ([]T, error) {
 	for {
 		u := base
 		if after != "" {
-			sep := "?"
-			if strings.Contains(u, "?") {
-				sep = "&"
-			}
-			u += sep + "after=" + url.QueryEscape(after)
+			u = appendQuery(u, "after", after)
 		}
 		var p page[T]
 		if err := callGet(u, &p); err != nil {
@@ -74,24 +80,41 @@ func listAll[T any](base string) ([]T, error) {
 	}
 }
 
-// printListJSON writes a list endpoint's items as an indented JSON array — the shared,
-// lossless --json output, honoring paging (one --limit page, or all when all is true).
-func printListJSON(u string, all bool) {
-	var items []json.RawMessage
-	var err error
-	if all {
-		items, err = listAll[json.RawMessage](u)
-	} else {
-		var p page[json.RawMessage]
-		if err = callGet(u, &p); err == nil {
-			items = p.Items
+// listNewest fetches up to limit of the most-recent items from a list endpoint,
+// following page.after across pages until it has that many (or the source runs out).
+// It requests order=desc (newest first); base carries only filters/sort and must omit
+// order/limit/after. Items come back newest-first — callers reverse them for display
+// so the newest row lands at the bottom, nearest the prompt (tail-style).
+func listNewest[T any](base string, limit int) ([]T, error) {
+	all := make([]T, 0, limit)
+	after := ""
+	for len(all) < limit {
+		u := appendQuery(base, "order", "desc")
+		u = appendQuery(u, "limit", strconv.Itoa(limit-len(all)))
+		if after != "" {
+			u = appendQuery(u, "after", after)
 		}
+		var p page[T]
+		if err := callGet(u, &p); err != nil {
+			return nil, err
+		}
+		all = append(all, p.Items...)
+		if p.Page.After == "" || len(p.Items) == 0 {
+			break
+		}
+		after = p.Page.After
 	}
-	if err != nil {
-		fatal("%v", err)
+	if len(all) > limit {
+		all = all[:limit]
 	}
+	return all, nil
+}
+
+// printJSONItems writes items as an indented JSON array — the shared, lossless --json
+// output. An empty result renders as [] rather than null.
+func printJSONItems(items []json.RawMessage) {
 	if items == nil {
-		items = []json.RawMessage{} // render an empty result as [] rather than null
+		items = []json.RawMessage{}
 	}
 	b, err := json.MarshalIndent(items, "", "  ")
 	if err != nil {
