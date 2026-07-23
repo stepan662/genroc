@@ -57,13 +57,17 @@ func (e *Engine) executeAction(ctx context.Context, inst *model.ProcessInstance,
 			return nil, stop(e.failInstance(inst, errcode.EngineExpression, fmt.Sprintf("task %q body: %v", task.ID, err)))
 		}
 	}
+	acceptedStatus, err := e.resolveAcceptedStatus(inst, task.Action)
+	if err != nil {
+		return nil, stop(e.failInstance(inst, errcode.EngineExpression, fmt.Sprintf("task %q accepted_status: %v", task.ID, err)))
+	}
 
 	// action_started (debug): message = the action type; data = the request body; meta =
 	// {url} so the trail shows which URL was hit. Headers are intentionally omitted — they
 	// routinely carry secrets and the audit log is persisted.
 	e.audit(inst, logEvent{Level: model.LogDebug, Event: model.EventActionStarted, Task: task.ID, Msg: string(task.Action.Type), Data: e.snippet(body), Meta: map[string]any{"url": url}})
 
-	resp, err := transport.Send(taskCtx, task.Action, url, method, resolvedHeaders, body)
+	resp, err := transport.Send(taskCtx, task.Action, url, method, acceptedStatus, resolvedHeaders, body)
 	if err != nil {
 		code := transport.ClassifyGoError(err)
 		// action_failed (debug) records the call failure — error detail in data,
@@ -296,6 +300,30 @@ func (e *Engine) resolveHeaders(inst *model.ProcessInstance, call *model.Action)
 	resolved := make(map[string]string, len(m))
 	for k, v := range m {
 		resolved[k] = fmt.Sprintf("%v", v)
+	}
+	return resolved, nil
+}
+
+// resolveAcceptedStatus evaluates the fetch AcceptedStatus shape to a list of status
+// patterns. The shape may be a literal array of templated values or a single expression
+// yielding an array; either way it must resolve to an array, whose elements are coerced to
+// strings. Returns nil when the call sets no accepted_status (matchAcceptedStatus then
+// defaults to any 2xx).
+func (e *Engine) resolveAcceptedStatus(inst *model.ProcessInstance, call *model.Action) ([]string, error) {
+	if !call.AcceptedStatus.Present() {
+		return nil, nil
+	}
+	val, err := e.evalShape(inst, shape.Shape{Raw: call.AcceptedStatus.Raw}, nil)
+	if err != nil {
+		return nil, err
+	}
+	list, ok := val.([]any)
+	if !ok {
+		return nil, fmt.Errorf("accepted_status must evaluate to an array, got %T", val)
+	}
+	resolved := make([]string, len(list))
+	for i, v := range list {
+		resolved[i] = fmt.Sprintf("%v", v)
 	}
 	return resolved, nil
 }

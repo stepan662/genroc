@@ -188,6 +188,18 @@ func TestProcessDefinition_Validate(t *testing.T) {
 			wantErr: "",
 		},
 		{
+			// accepted_status is a shape; model.Validate accepts it structurally. Its
+			// array<string> conformance and per-literal format are enforced at registration
+			// (validation package) — see validationtest/accepted_status_test.go.
+			name: "accepted_status shape is accepted by model validation",
+			def: ProcessDefinition{Name: "p", Tasks: []*Task{{
+				ID:     "call",
+				Action: &Action{Type: ActionTypeFetch, URL: "http://x", AcceptedStatus: &Shape{Raw: []any{"2xx", "404"}}},
+				Switch: SwitchMap{{Goto: GotoEnd}},
+			}}},
+			wantErr: "",
+		},
+		{
 			name: "valid switch-only task",
 			def: ProcessDefinition{Name: "p", Tasks: []*Task{
 				{ID: "router", Switch: SwitchMap{

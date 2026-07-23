@@ -64,13 +64,14 @@ type ChildEntry struct {
 // resumes (the submitted result, for external). Without it the result is available only as "self" in
 // this task's switch.
 //
-// AcceptedStatus (fetch only): HTTP status patterns treated as non-errors. Defaults to any 2xx.
+// AcceptedStatus (fetch only): a shape evaluating to an array of HTTP status patterns
+// treated as non-errors ("2xx".."5xx" or a 3-digit code). Defaults to any 2xx.
 type Action struct {
 	Type           ActionType            `json:"type"`
 	URL            string                `json:"url,omitempty"`             // fetch: request URL (an expression)
 	Method         string                `json:"method,omitempty"`          // fetch: HTTP method (an expression); defaults to POST
 	Headers        *Shape                `json:"headers,omitempty"`         // fetch: request headers (a shape evaluating to a string map)
-	AcceptedStatus []string              `json:"accepted_status,omitempty"` // fetch: HTTP status patterns accepted as non-errors
+	AcceptedStatus *Shape                `json:"accepted_status,omitempty"` // fetch: a shape evaluating to an array of HTTP status patterns accepted as non-errors
 	ResultSchema   *schema.Schema        `json:"result_schema,omitempty"`   // fetch/child/child_list: validate & persist output
 	Name           string                `json:"name,omitempty"`            // child/child_list
 	Version        int                   `json:"version,omitempty"`         // child/child_list
@@ -94,7 +95,13 @@ func (Action) JSONSchemaBytes() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []byte(strings.Replace(actionSchemaTemplate, headersPlaceholder, string(headers), 1)), nil
+	acceptedStatus, err := relaxedAcceptedStatusSchema()
+	if err != nil {
+		return nil, err
+	}
+	out := strings.Replace(actionSchemaTemplate, headersPlaceholder, string(headers), 1)
+	out = strings.Replace(out, acceptedStatusPlaceholder, string(acceptedStatus), 1)
+	return []byte(out), nil
 }
 
 // relaxedHeadersSchema builds the editor schema for fetch headers from its object<string>
@@ -112,7 +119,23 @@ func relaxedHeadersSchema() ([]byte, error) {
 	return json.Marshal(node)
 }
 
+// relaxedAcceptedStatusSchema builds the editor schema for fetch accepted_status from its
+// array<string> target and merges a property-level description onto the generated node.
+func relaxedAcceptedStatusSchema() ([]byte, error) {
+	raw, err := shape.RelaxedSchema(schema.Array(schema.Type("string")))
+	if err != nil {
+		return nil, err
+	}
+	var node map[string]any
+	if err := json.Unmarshal(raw, &node); err != nil {
+		return nil, err
+	}
+	node["description"] = `HTTP status patterns accepted as non-errors, e.g. "2xx" or "404" (defaults to any 2xx). Author it as a literal array (each element a ${ } template or $: expression yielding a string), or as a single $: expression yielding the whole array.`
+	return json.Marshal(node)
+}
+
 const headersPlaceholder = "__HEADERS_SCHEMA__"
+const acceptedStatusPlaceholder = "__ACCEPTED_STATUS_SCHEMA__"
 
 var actionSchemaTemplate = `{
 		"oneOf": [
@@ -124,7 +147,7 @@ var actionSchemaTemplate = `{
 					"url":             {"type": "string", "description": "Request URL. May contain ${ } interpolations evaluated against the current context (e.g. ${ config.server_url }/path)."},
 					"method":          {"type": "string", "description": "HTTP method, a template (e.g. GET, POST, ${ input.method }). Defaults to POST."},
 					"headers":         __HEADERS_SCHEMA__,
-					"accepted_status": {"type": "array", "items": {"type": "string"}, "description": "HTTP status patterns accepted as non-errors, e.g. \"2xx\" or \"404\". Defaults to any 2xx."},
+					"accepted_status": __ACCEPTED_STATUS_SCHEMA__,
 					"body":            {"$ref": "#/$defs/ModelShape", "description": "Templated value (string expression or nested object) evaluated against the current context to build the request body. An object is sent as JSON."},
 					"result_schema":   {"type": "object", "additionalProperties": true, "description": "JSON Schema to validate and persist the response body. Without it the response is available only as 'self' in this task's switch."}
 				},

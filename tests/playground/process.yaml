@@ -17,5 +17,14 @@ tasks:
           message: test
     on_error:
       - code: ["fourth_%"]
-        goto: end
+        goto: $call
+  - id: call
+    action:
+      type: fetch
+      accepted_status: 
+        - "2xx"
+      url: "tst"
+      headers:
+        test: "100"
+    switch: end
 output: "$: error"

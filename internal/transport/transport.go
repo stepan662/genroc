@@ -38,12 +38,13 @@ type Response struct {
 	Status       int
 }
 
-// Send dispatches a fetch HTTP request. url, method, and headers are pre-resolved; body is
-// the raw payload — an object is marshaled to JSON, a string sent as-is, nil sends no body.
-func Send(ctx context.Context, call *model.Action, url, method string, headers map[string]string, body any) (*Response, error) {
+// Send dispatches a fetch HTTP request. url, method, acceptedStatus, and headers are
+// pre-resolved (accepted_status is a shape evaluated by the engine); body is the raw
+// payload — an object is marshaled to JSON, a string sent as-is, nil sends no body.
+func Send(ctx context.Context, call *model.Action, url, method string, acceptedStatus []string, headers map[string]string, body any) (*Response, error) {
 	switch call.Type {
 	case model.ActionTypeFetch:
-		return sendHTTP(ctx, url, method, call.AcceptedStatus, headers, body)
+		return sendHTTP(ctx, url, method, acceptedStatus, headers, body)
 	default:
 		return nil, fmt.Errorf("unknown call type: %q", call.Type)
 	}
@@ -127,6 +128,26 @@ func matchAcceptedStatus(code int, patterns []string) bool {
 		if n, err := strconv.Atoi(p); err == nil && n == code {
 			return true
 		}
+	}
+	return false
+}
+
+// ValidStatusPattern reports whether p is a well-formed accepted_status pattern — a
+// hundred-range "2xx".."5xx" or an exact 3-digit code like "404" — i.e. a pattern
+// matchAcceptedStatus can ever match. It is the format the registration validator applies
+// to statically-known (literal) patterns; a dynamic pattern (from an expression) is only
+// known at runtime, where an unrecognized value simply never matches.
+func ValidStatusPattern(p string) bool {
+	if len(p) == 3 && p[1] == 'x' && p[2] == 'x' && p[0] >= '1' && p[0] <= '5' {
+		return true
+	}
+	if len(p) == 3 {
+		for _, c := range p {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+		return true
 	}
 	return false
 }

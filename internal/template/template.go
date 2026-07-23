@@ -170,6 +170,24 @@ func parseBlock(s string) (expr string, node syntax.Node, rest string, err error
 // Source returns the template string this was parsed from.
 func (t *Template) Source() string { return t.src }
 
+// Static returns the template's constant value and true when it is a pure literal — not a
+// $: expression and free of any ${ } interpolation — so its value is fixed at authoring
+// time without a context. Callers use it to statically validate hand-written literals
+// (e.g. a fetch accepted_status pattern) while leaving dynamic leaves for runtime.
+func (t *Template) Static() (string, bool) {
+	if t.expr {
+		return "", false
+	}
+	var b strings.Builder
+	for _, c := range t.chunks {
+		if c.node != nil {
+			return "", false
+		}
+		b.WriteString(c.text)
+	}
+	return b.String(), true
+}
+
 // EvalAny evaluates the template against ctx. A $: expression returns the raw value,
 // preserving its type; a template stringifies each ${ } interpolation and concatenates
 // it with the literal text.

@@ -349,18 +349,13 @@ func validateOnError(s *Task, taskIDs map[string]struct{}) error {
 	return nil
 }
 
-// validateActionSchemas checks fetch accepted_status patterns and that any attached
-// result_schema documents (task-level and child_map entries) are valid schemas.
+// validateActionSchemas checks that any attached result_schema documents (task-level and
+// child_map entries) are valid schemas. accepted_status is a shape (evaluating to an array
+// of status patterns), so — like headers — it is not statically pattern-checked here; an
+// unrecognized pattern simply never matches at runtime (matchAcceptedStatus).
 func validateActionSchemas(s *Task, pool schema.Defs) error {
 	if s.Action == nil {
 		return nil
-	}
-	if s.Action.Type == ActionTypeFetch {
-		for _, pat := range s.Action.AcceptedStatus {
-			if !validAcceptedStatusPattern(pat) {
-				return fmt.Errorf("task %q: accepted_status %q must be \"2xx\"/\"3xx\"/\"4xx\"/\"5xx\" or a 3-digit code", s.ID, pat)
-			}
-		}
 	}
 	if err := checkSchemaDoc(fmt.Sprintf("task %q action.result_schema", s.ID), s.Action.ResultSchema, pool); err != nil {
 		return err
@@ -390,21 +385,6 @@ func patternOnlyMatchesPre(p string) bool {
 		}
 	}
 	return strings.HasPrefix(p, errcode.NotReached)
-}
-
-func validAcceptedStatusPattern(p string) bool {
-	if len(p) == 3 && p[1] == 'x' && p[2] == 'x' && p[0] >= '1' && p[0] <= '5' {
-		return true
-	}
-	if len(p) == 3 {
-		for _, c := range p {
-			if c < '0' || c > '9' {
-				return false
-			}
-		}
-		return true
-	}
-	return false
 }
 
 // configNameRe matches a valid config var name; it is used in the

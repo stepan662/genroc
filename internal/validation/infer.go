@@ -8,6 +8,8 @@ import (
 	"genroc/internal/model"
 	"genroc/internal/schema"
 	"genroc/internal/shape"
+	"genroc/internal/template"
+	"genroc/internal/transport"
 )
 
 func buildInputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, processInput, configSchema schema.Schema, defs schema.Defs) error {
@@ -31,11 +33,12 @@ func buildInputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proces
 			hasURL := isFetch && s.Action.URL != ""
 			hasMethod := isFetch && s.Action.Method != ""
 			hasHeaders := isFetch && s.Action.Headers.Present()
+			hasAcceptedStatus := isFetch && s.Action.AcceptedStatus.Present()
 			hasBody := s.Action.Body.Present()
 			hasInput := s.Action.Input.Present()
 			hasOver := s.Action.Type == model.ActionTypeChildList && s.Action.Over != ""
 			hasMs := s.Action.Type == model.ActionTypeDelay && s.Action.Ms != ""
-			if inMap || hasBody || hasInput || hasURL || hasMethod || hasHeaders || hasOver || hasMs {
+			if inMap || hasBody || hasInput || hasURL || hasMethod || hasHeaders || hasAcceptedStatus || hasOver || hasMs {
 				ctx := contextSchema(required[s.ID], optional[s.ID], taskSchemas, processInput, configSchema, mustErr[s.ID], mayErr[s.ID]).WithDefs(defs)
 				// The child_list `over` expression must be a non-null array; each
 				// element becomes one child's input. Type-check it here so a malformed or
@@ -70,6 +73,15 @@ func buildInputs(tasks []*model.Task, taskSchemas map[string]TaskSchemas, proces
 				// Headers is a shape that must evaluate to a non-null object.
 				if hasHeaders {
 					if err := checkHeadersShape(s.Action.Headers.Raw, ctx, s.ID); err != nil {
+						return err
+					}
+				}
+				// accepted_status is a shape that must evaluate to an array of strings.
+				// The per-pattern format ("2xx"/"404") is not checked — an expression's
+				// elements aren't known statically, and an unrecognized pattern simply
+				// never matches at runtime.
+				if hasAcceptedStatus {
+					if err := checkAcceptedStatusShape(s.Action.AcceptedStatus.Raw, ctx, s.ID); err != nil {
 						return err
 					}
 				}
@@ -148,7 +160,9 @@ var (
 	arraySchema  = schema.Array(schema.Schema{})
 	// Headers must be a non-null object whose values are all strings (HTTP header values).
 	headersSchema = schema.Map(schema.Type("string"))
-	boolSchema    = schema.Type("boolean")
+	// accepted_status must be an array whose elements are all strings (HTTP status patterns).
+	acceptedStatusSchema = schema.Array(schema.Type("string"))
+	boolSchema           = schema.Type("boolean")
 	// A delay ms is a number (a numeric expression) or a string (a literal like "30000",
 	// which stringifies and is parsed at runtime); array/object/boolean/null are rejected.
 	msSchema = schema.Type("number", "string")
@@ -224,6 +238,46 @@ func checkHeadersShape(raw any, ctx schema.Schema, taskID string) error {
 		},
 	})
 	return err
+}
+
+// checkAcceptedStatusShape verifies the fetch accepted_status shape produces an array of
+// strings (a literal array of templated values, or an expression yielding a string array),
+// and additionally format-checks any element that is a static literal: a hand-written
+// pattern like "2xx"/"404" is validated now, while a ${ } / $: leaf (value known only at
+// runtime) is left to matchAcceptedStatus, where an unrecognized value never matches.
+func checkAcceptedStatusShape(raw any, ctx schema.Schema, taskID string) error {
+	shp := shape.Shape{Raw: raw, Schema: &acceptedStatusSchema, Name: fmt.Sprintf("task %q accepted_status", taskID)}
+	if _, err := shp.CheckWith(ctx, shape.CheckHooks{
+		Result: func(inferred, _ schema.Schema) error {
+			if inferred.HasNull() || !inferred.IsType("array") {
+				return fmt.Errorf("task %q accepted_status must evaluate to an array of strings", taskID)
+			}
+			return fmt.Errorf("task %q accepted_status values must all be strings", taskID)
+		},
+	}); err != nil {
+		return err
+	}
+	// The structural check above guarantees array<string>. For a literal array, also
+	// validate the FORMAT of each statically-known element; a whole-value expression (raw
+	// is not an array) has no static elements to check.
+	elems, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	for _, el := range elems {
+		s, ok := el.(string)
+		if !ok {
+			continue // non-string elements were already rejected by the structural check
+		}
+		t, err := template.Get(s)
+		if err != nil {
+			continue // a malformed template already surfaced through inference above
+		}
+		if pat, static := t.Static(); static && !transport.ValidStatusPattern(pat) {
+			return fmt.Errorf("task %q accepted_status %q must be \"2xx\"/\"3xx\"/\"4xx\"/\"5xx\" or a 3-digit code", taskID, pat)
+		}
+	}
+	return nil
 }
 
 

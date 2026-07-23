@@ -404,3 +404,32 @@ func TestOutputRefs_InsideMapSource(t *testing.T) {
 		t.Errorf("OutputRefs = %v, want [a]", got)
 	}
 }
+
+// Static reports the constant value for a pure literal and false for any dynamic leaf
+// (a ${ } interpolation or a $: expression), so callers can format-check hand-written
+// literals while leaving dynamic values to runtime. $$ unescapes in a literal.
+func TestStatic(t *testing.T) {
+	cases := []struct {
+		src        string
+		wantVal    string
+		wantStatic bool
+	}{
+		{"2xx", "2xx", true},
+		{"404", "404", true},
+		{"", "", true},
+		{"a$$b", "a$b", true},          // $$ -> literal $
+		{"${ 1 }", "", false},          // interpolation is dynamic
+		{"pre${ x }post", "", false},   // mixed literal + interpolation
+		{"$: input.codes", "", false},  // typed expression leaf
+	}
+	for _, c := range cases {
+		tpl, err := Get(c.src)
+		if err != nil {
+			t.Fatalf("Get(%q): %v", c.src, err)
+		}
+		val, static := tpl.Static()
+		if static != c.wantStatic || val != c.wantVal {
+			t.Errorf("Static(%q) = (%q, %v), want (%q, %v)", c.src, val, static, c.wantVal, c.wantStatic)
+		}
+	}
+}
