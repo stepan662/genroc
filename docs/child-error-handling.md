@@ -43,6 +43,12 @@ Every decision is now closed:
   `raise:` clause exactly as `paused` pairs with `pause`, and cannot be misread
   as a synonym for `failed` in the status column that every dashboard keys on.
 
+Three **extensions** to this design were considered and declined, with the
+arguments recorded rather than lost: routing on batch shape, a diagnostic payload
+on `raise`, and opt-in exhaustiveness over a child's raise set. See
+[error-extensions.md](error-extensions.md) — none is accepted, all are additive,
+and each carries the trigger that should reopen it.
+
 ### What the pause/resume design changed here
 
 Nothing in §0–§6 was invalidated, but three arguments now rest on different

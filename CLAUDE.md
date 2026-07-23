@@ -98,6 +98,11 @@ describing the code as it stands:
   authorable as literal YAML (expression leaves) **or** a single expression, checked
   against a schema via `inferShape`→`IsSubset`; applies to action payloads / `input`,
   with editor autocomplete from a generated JSON Schema.
+- [docs/error-extensions.md](docs/error-extensions.md) — three considered-and-declined
+  extensions to the child error model (batch-shape routing, a diagnostic payload on
+  `raise`, opt-in exhaustiveness). Unlike the drafts below these are **open questions,
+  not intended work** — each records the case for and against and the signal that
+  should reopen it.
 - [docs/custom-tasks.md](docs/custom-tasks.md) — north-star: extend genroc **without
   plugins** — custom tasks are child processes, complex logic lives in an HTTP sidecar
   they call. Three tiers (engine / child process / sidecar), the poller & K8s-handler
